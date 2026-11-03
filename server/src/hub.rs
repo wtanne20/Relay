@@ -112,14 +112,16 @@ pub fn quant_of(name: &str) -> Option<String> {
     let stem = upper.trim_end_matches(".GGUF");
     const QUANTS: &[&str] = &[
         "IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ2_M", "IQ3_XXS", "IQ3_XS", "IQ3_S",
-        "IQ3_M", "IQ4_XS", "IQ4_NL", "Q2_K_L", "Q2_K_S", "Q2_K", "Q3_K_XL", "Q3_K_L", "Q3_K_M",
-        "Q3_K_S", "Q4_K_XL", "Q4_K_L", "Q4_K_M", "Q4_K_S", "Q4_0", "Q4_1", "Q5_K_XL", "Q5_K_L",
-        "Q5_K_M", "Q5_K_S", "Q5_0", "Q5_1", "Q6_K_XL", "Q6_K_L", "Q6_K", "Q8_K_XL", "Q8_0",
-        "MXFP4", "BF16", "F16", "F32",
+        "IQ3_M", "IQ4_XS", "IQ4_NL", "TQ1_0", "TQ2_0", "Q2_K_XL", "Q2_K_L", "Q2_K_S", "Q2_K",
+        "Q3_K_XL", "Q3_K_L", "Q3_K_M", "Q3_K_S", "Q4_K_XL", "Q4_K_L", "Q4_K_M", "Q4_K_S", "Q4_0",
+        "Q4_1", "Q5_K_XL", "Q5_K_L", "Q5_K_M", "Q5_K_S", "Q5_0", "Q5_1", "Q6_K_XL", "Q6_K_L",
+        "Q6_K", "Q8_K_XL", "Q8_0", "MXFP4", "BF16", "F16", "F32",
     ];
+    // Longest match wins, so "UD-Q2_K_XL" is Q2_K_XL rather than Q2_K.
     QUANTS
         .iter()
-        .find(|q| stem.contains(*q))
+        .filter(|q| stem.contains(*q))
+        .max_by_key(|q| q.len())
         .map(|q| q.to_string())
 }
 
@@ -370,6 +372,16 @@ mod tests {
         assert!(!valid_file("../x.gguf"));
         assert!(!valid_file("/abs.gguf"));
         assert!(!valid_file("readme.md"));
+    }
+
+    #[test]
+    fn reads_quant_names() {
+        assert_eq!(quant_of("M-UD-Q2_K_XL.gguf").as_deref(), Some("Q2_K_XL"));
+        assert_eq!(quant_of("M-Q2_K.gguf").as_deref(), Some("Q2_K"));
+        assert_eq!(quant_of("M-UD-TQ1_0.gguf").as_deref(), Some("TQ1_0"));
+        assert_eq!(quant_of("M-IQ2_XXS.gguf").as_deref(), Some("IQ2_XXS"));
+        assert_eq!(quant_of("M-Q4_K_M.gguf").as_deref(), Some("Q4_K_M"));
+        assert_eq!(quant_of("readme"), None);
     }
 
     #[test]
