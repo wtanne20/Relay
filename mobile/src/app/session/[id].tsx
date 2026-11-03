@@ -149,22 +149,11 @@ export default function ChatScreen() {
       </View>
 
       <KeyboardAvoidingView style={styles.flex} behavior="padding">
-        <FlatList
-          inverted
-          data={items}
-          keyExtractor={(it) => it.key}
-          contentContainerStyle={[styles.list, page, items.length === 0 && styles.listEmpty]}
-          keyboardDismissMode="interactive"
-          keyboardShouldPersistTaps="handled"
-          onEndReached={stream.loadOlder}
-          onEndReachedThreshold={0.3}
-          ListFooterComponent={
-            stream.loadingOlder ? (
-              <ActivityIndicator style={{ margin: space.md }} color={m3.onSurfaceVariant} />
-            ) : undefined
-          }
-          ListEmptyComponent={
-            stream.initialLoaded ? (
+        {items.length === 0 ? (
+          // Rendered outside the inverted list: how platforms flip an inverted
+          // list's empty component differs (it came out upside down on web).
+          <View style={[styles.flex, styles.emptyOuter]}>
+            {stream.initialLoaded ? (
               <View style={styles.emptyWrap}>
                 <View style={styles.spark}>
                   <Icon name="creation" size={28} color={m3.primary} />
@@ -176,20 +165,36 @@ export default function ChatScreen() {
               </View>
             ) : (
               <ActivityIndicator style={{ margin: space.xl }} color={m3.primary} />
-            )
-          }
-          renderItem={({ item }) => {
-            if (item.kind === 'user') return <UserBubble message={item.message} />;
-            if (item.kind === 'draft') return <DraftBlock content={item.content} reasoning={item.reasoning} />;
-            return (
-              <AssistantBlock
-                message={item.message}
-                results={results}
-                running={running && item.message.id === lastAssistantId}
-              />
-            );
-          }}
-        />
+            )}
+          </View>
+        ) : (
+          <FlatList
+            inverted
+            data={items}
+            keyExtractor={(it) => it.key}
+            contentContainerStyle={[styles.list, page]}
+            keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
+            onEndReached={stream.loadOlder}
+            onEndReachedThreshold={0.3}
+            ListFooterComponent={
+              stream.loadingOlder ? (
+                <ActivityIndicator style={{ margin: space.md }} color={m3.onSurfaceVariant} />
+              ) : undefined
+            }
+            renderItem={({ item }) => {
+              if (item.kind === 'user') return <UserBubble message={item.message} />;
+              if (item.kind === 'draft') return <DraftBlock content={item.content} reasoning={item.reasoning} />;
+              return (
+                <AssistantBlock
+                  message={item.message}
+                  results={results}
+                  running={running && item.message.id === lastAssistantId}
+                />
+              );
+            }}
+          />
+        )}
 
         <View style={page}>
           {stream.linkError && stream.link !== 'live' ? (
@@ -300,8 +305,8 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0, paddingHorizontal: space.xs },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   list: { paddingHorizontal: space.lg, paddingVertical: space.md },
-  listEmpty: { flexGrow: 1, justifyContent: 'center' },
-  emptyWrap: { transform: [{ scaleY: -1 }], alignItems: 'center', paddingHorizontal: space.xl, gap: space.md },
+  emptyOuter: { justifyContent: 'center' },
+  emptyWrap: { alignItems: 'center', paddingHorizontal: space.xl, gap: space.md },
   spark: {
     width: 56,
     height: 56,
