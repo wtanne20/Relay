@@ -47,7 +47,11 @@ Without `-Mock`, the desktop app runs the server from source with your real sett
 installed Relay is already running, it connects to that instead. Quit the installed one from its tray icon to
 work on server code.
 
-Other switches: `-NoDesktop` starts only Metro (phone work).
+Other switches: `-NoDesktop` starts only Metro (phone work). `-Follow` also pulls changes pushed to this branch every
+few seconds (`dev/follow.ps1`), so someone else's pushes show up live on your phone and desktop window. It never
+overwrites local edits.
+
+Double-click shortcuts: `dev\setup.cmd` runs the one-time setup, and `dev\live.cmd` runs `dev.ps1 -Follow`.
 
 On Linux or macOS, `./dev/dev.sh --mock` does the same.
 

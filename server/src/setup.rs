@@ -436,7 +436,7 @@ pub fn write_pairing_page(data_dir: &Path, url: &str, payload: &str, tailscale_f
     let warning = if tailscale_found {
         String::new()
     } else {
-        "<p class=warn>Tailscale was not detected on this PC. Install it from tailscale.com and sign in on both the PC and phone, then run <b>Relay → Pair phone</b> again.</p>".to_string()
+        "<p class=warn>Tailscale was not detected on this PC. Install it from tailscale.com and sign in on both the PC and phone, then open <b>Relay → Settings → Pair your phone</b> again.</p>".to_string()
     };
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -457,7 +457,7 @@ ol{{text-align:left;line-height:1.6}}.warn{{color:#f0c46c}}
 </ol>
 <p>Server address: <code>{url}</code></p>
 {warning}
-<p style="color:#bfc9c0;font-size:13px">This code contains your Relay access token. Don't share it. You can reopen this page any time from the Start menu (Relay → Pair phone).</p>
+<p style="color:#bfc9c0;font-size:13px">This code contains your Relay access token. Don't share it. You can see this code again any time in the Relay app: Settings, Pair your phone.</p>
 </main></body></html>"#
     );
     let path = data_dir.join("pairing.html");

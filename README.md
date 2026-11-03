@@ -37,22 +37,24 @@ You need a Windows 10/11 PC (an NVIDIA GPU is best; other GPUs work through Vulk
    `%LOCALAPPDATA%\Relay\models` after step 3.
 3. **PC app.** Download `RelaySetup-<version>.exe` (see [Downloads](#downloads)) and run it. Windows may say it
    protected your PC because the installer isn't code-signed: click **More info → Run anyway**. Keep the defaults
-   and finish with **Start Relay now**.
-4. **First start.** The Relay window finds your GPU, downloads the right llama.cpp build for it, picks the largest
-   model that fits in your VRAM, loads it, and shows a **QR code** (also opened in your browser).
+   and finish with **Open Relay now**.
+4. **First start.** Relay finds your GPU, downloads the right llama.cpp build for it, picks the largest model that
+   fits in your VRAM and loads it. The model status shows at the bottom left of the Relay window. Click
+   **Pair your phone** to see the **QR code**.
 5. **Phone app.** Install Relay on the phone (see [Downloads](#downloads)), open it and tap **Scan QR code**. That's
    the whole connection setup. Pointing the phone's own camera app at the QR code works too.
 6. **Use it.** Tap **Add project** and enter a folder path on the PC (for example `C:\code\my-app`), start a
    session, and ask for something.
 
-Keep the Relay window open (minimized is fine); closing it stops Relay and the model. To pair another phone or
-see the code again: **Start menu → Relay → Pair phone**.
+Relay keeps running in the tray when you close its window; use **Quit Relay** in the tray menu (or Settings) to stop
+it and the model. To pair another phone or see the code again: **Relay → Settings → Pair your phone**.
 
 ### What the installer does
 
-- Installs `relay.exe` into `Program Files\Relay` with Start menu shortcuts: **Relay**, **Pair phone**,
+- Installs the Relay Windows app (`relay-desktop.exe`, which runs the server and sits in the tray) and the
+  `relay.exe` command-line tool into `Program Files\Relay`, with Start menu shortcuts: **Relay**,
   **Relay data folder** and **Uninstall Relay**.
-- Optionally starts Relay (minimized) when you sign in, on by default, and adds a desktop shortcut.
+- Optionally starts Relay in the tray when you sign in, and adds a desktop shortcut.
 - Adds a Windows Firewall rule, *Relay (Tailscale only)*, allowing port 8765 **only from `100.64.0.0/10`**
   (Tailscale's address range). Uninstalling removes it.
 - Tells you if Tailscale is missing and offers the download page.

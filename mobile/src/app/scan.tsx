@@ -17,7 +17,7 @@ export default function ScanScreen() {
     if (handled.current) return;
     const creds = parsePairingLink(result.data);
     if (!creds) {
-      setError("That QR code isn't a Relay pairing code. Open Relay → Pair phone on your PC.");
+      setError("That QR code isn't a Relay pairing code. Open Relay on your PC → Settings → Pair your phone.");
       return;
     }
     handled.current = true;

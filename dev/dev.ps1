@@ -14,11 +14,13 @@
              or connects to the installed Relay if that is already running.
   -NoDesktop Only start Metro (phone work).
   -NoPhone   Don't print the phone instructions.
+  -Follow    Also pull changes pushed to this branch every few seconds, so
+             they show up live (see follow.ps1).
 
 .EXAMPLE
   .\dev\dev.ps1 -Mock
 #>
-param([switch]$Mock, [switch]$NoDesktop, [switch]$NoPhone)
+param([switch]$Mock, [switch]$NoDesktop, [switch]$NoPhone, [switch]$Follow)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -46,6 +48,11 @@ if ($ts) { $env:REACT_NATIVE_PACKAGER_HOSTNAME = $ts }
 Write-Host 'Starting Metro (live reload) in a new window...' -ForegroundColor Cyan
 $metroEnv = "`$env:REACT_NATIVE_PACKAGER_HOSTNAME='$ts';"
 Start-Process powershell -WorkingDirectory "$root\mobile" -ArgumentList '-NoExit', '-Command', "$metroEnv npx expo start --dev-client"
+
+if ($Follow) {
+  Write-Host 'Following the branch on GitHub in a new window...' -ForegroundColor Cyan
+  Start-Process powershell -WorkingDirectory $root -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', "$PSScriptRoot\follow.ps1"
+}
 
 if (-not $NoPhone) {
   Write-Host ''

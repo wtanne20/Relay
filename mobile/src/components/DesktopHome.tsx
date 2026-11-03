@@ -213,6 +213,15 @@ export function DesktopHome() {
             Works in {project.path} · Enter to send · Shift+Enter for a new line
           </Text>
         ) : null}
+        <Pressable
+          onPress={() => router.replace('/settings')}
+          style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.pair, hovered && styles.pairHover]}
+          accessibilityRole="button"
+          accessibilityLabel="Pair your phone"
+        >
+          <Icon name="cellphone-link" size={18} color={m3.onSurfaceVariant} />
+          <Text style={type.labelLarge}>Pair your phone</Text>
+        </Pressable>
       </View>
 
       <AddProjectSheet
@@ -312,4 +321,17 @@ const styles = StyleSheet.create({
     paddingVertical: space.xs,
   },
   hint: { textAlign: 'center', color: m3.outline },
+  pair: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    height: 36,
+    paddingHorizontal: space.lg,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+    marginTop: space.sm,
+  },
+  pairHover: { backgroundColor: m3.hover },
 });

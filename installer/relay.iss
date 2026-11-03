@@ -1,11 +1,12 @@
 ; Inno Setup script for the Relay Windows installer.
 ; Built by .github/workflows/windows.yml:
-;   iscc /DAppVersion=0.1.0 /DSourceExe=..\server\target\release\relay.exe installer\relay.iss
+;   iscc /DAppVersion=0.1.0 installer\relay.iss
 ;
 ; What it does:
-;  - installs relay.exe to Program Files\Relay
-;  - Start menu: "Relay" (starts the server), "Pair phone" (shows the QR code),
-;    "Relay data folder"; optional desktop icon and start-with-Windows
+;  - installs the Relay Windows app (relay-desktop.exe, which runs the server
+;    and sits in the tray) and the relay.exe command-line tool to Program Files\Relay
+;  - Start menu: "Relay" (the app) and "Relay data folder"; optional desktop
+;    icon and start-with-Windows (starts minimised to the tray)
 ;  - adds a firewall rule that lets only Tailscale addresses (100.64.0.0/10)
 ;    reach port 8765; nothing is opened to the internet or the local network
 ;  - points you to Tailscale if it isn't installed
@@ -20,6 +21,9 @@
 #endif
 #ifndef SourceExe
   #define SourceExe "..\server\target\release\relay.exe"
+#endif
+#ifndef DesktopExe
+  #define DesktopExe "..\desktop\src-tauri\target\release\relay-desktop.exe"
 #endif
 
 #define AppName "Relay"
@@ -61,26 +65,31 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "relay.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\server\config.example.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Relay"; Filename: "{app}\relay.exe"; Parameters: "serve"; WorkingDir: "{app}"; IconFilename: "{app}\relay.ico"; Comment: "Start the Relay server (keep the window open)"
-Name: "{group}\Pair phone"; Filename: "{app}\relay.exe"; Parameters: "pair"; WorkingDir: "{app}"; IconFilename: "{app}\relay.ico"; Comment: "Show the QR code for the Relay phone app"
+Name: "{group}\Relay"; Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Comment: "Chat with your coding agents and manage projects"
 Name: "{group}\Relay data folder"; Filename: "{localappdata}\Relay"; Comment: "Settings, logs, models and chat history"
 Name: "{group}\Uninstall Relay"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Relay"; Filename: "{app}\relay.exe"; Parameters: "serve"; WorkingDir: "{app}"; IconFilename: "{app}\relay.ico"; Tasks: desktopicon
-Name: "{userstartup}\Relay"; Filename: "{app}\relay.exe"; Parameters: "serve"; WorkingDir: "{app}"; IconFilename: "{app}\relay.ico"; Flags: runminimized; Tasks: startup
+Name: "{autodesktop}\Relay"; Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userstartup}\Relay"; Filename: "{app}\relay-desktop.exe"; Parameters: "--minimized"; WorkingDir: "{app}"; Tasks: startup
 
 [Run]
-; Allow inbound connections to Relay only from Tailscale's address range.
+; Allow inbound connections to Relay only from Tailscale's address range, for both
+; the app (which runs the server in-process) and the command-line server. Deleting
+; by name removes every rule with that name, including older single-program ones.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows Firewall..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=TCP localport=8765 remoteip=100.64.0.0/10 program=""{app}\relay-desktop.exe"" profile=any enable=yes"; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows Firewall..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=TCP localport=8765 remoteip=100.64.0.0/10 program=""{app}\relay.exe"" profile=any enable=yes"; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows Firewall..."
+Filename: "https://go.microsoft.com/fwlink/p/?LinkId=2124703"; Description: "Get Microsoft Edge WebView2 (needed by the Relay app)"; Flags: postinstall shellexec skipifsilent runasoriginaluser; Check: not WebView2Installed
 Filename: "https://tailscale.com/download/windows"; Description: "Get Tailscale (needed to reach Relay from your phone)"; Flags: postinstall shellexec skipifsilent runasoriginaluser; Check: not TailscaleInstalled
-Filename: "{app}\relay.exe"; Parameters: "serve"; WorkingDir: "{app}"; Description: "Start Relay now and pair your phone"; Flags: postinstall nowait skipifsilent runasoriginaluser
+Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Description: "Open Relay now"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/IM relay-desktop.exe /T /F"; Flags: runhidden; RunOnceId: "StopRelayApp"
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM relay.exe /T /F"; Flags: runhidden; RunOnceId: "StopRelay"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
 
@@ -92,11 +101,21 @@ begin
     or RegKeyExists(HKLM, 'SOFTWARE\Tailscale IPN');
 end;
 
+{ The Relay app draws its window with WebView2, which ships with Windows 11 and current Windows 10. }
+function WebView2Installed: Boolean;
+var
+  V: String;
+begin
+  Result := (RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', V) and (V <> '') and (V <> '0.0.0.0'))
+    or (RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', V) and (V <> '') and (V <> '0.0.0.0'));
+end;
+
 { Stop a running Relay (and its llama-server) so the exe can be replaced. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM relay-desktop.exe /T /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM relay.exe /T /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := '';
 end;

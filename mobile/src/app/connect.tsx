@@ -94,7 +94,7 @@ export default function ConnectScreen() {
             <View style={styles.steps}>
               <Step icon="download-outline" text="Install and open Relay on your PC." />
               <Step icon="shield-lock-outline" text="Turn on Tailscale on the PC and this phone." />
-              <Step icon="qrcode" text="Scan the QR code Relay shows (Start menu, Relay, Pair phone)." />
+              <Step icon="qrcode" text="Scan the QR code in the Relay app on your PC (Settings, Pair your phone)." />
             </View>
             {Platform.OS !== 'web' ? (
               <Button

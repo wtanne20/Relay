@@ -98,7 +98,7 @@ export class RelayClient {
     }
     if (res.status === 401) {
       throw new ApiError(
-        'The PC rejected the token. Scan the QR code again (Start menu → Relay → Pair phone).',
+        'The PC rejected the token. Scan the QR code again (Relay on your PC → Settings → Pair your phone).',
         'auth',
         401,
       );

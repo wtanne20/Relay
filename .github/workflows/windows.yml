@@ -105,12 +105,15 @@ jobs:
           Run-Setup $setup.FullName @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""') "$env:RUNNER_TEMP\install.log"
           $exe = "$env:ProgramFiles\Relay\relay.exe"
           if (-not (Test-Path $exe)) { throw "relay.exe was not installed" }
+          if (-not (Test-Path "$env:ProgramFiles\Relay\relay-desktop.exe")) { throw "relay-desktop.exe was not installed" }
           Write-Host "Installed. Checking version"
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "relay.exe --version failed" }
           Write-Host "Checking firewall rule"
           $rule = netsh advfirewall firewall show rule name="Relay (Tailscale only)" | Out-String
           if ($rule -notmatch '100\.64\.0\.0/10') { throw "firewall rule missing or not limited to Tailscale: $rule" }
+          if ($rule -notmatch 'relay-desktop\.exe') { throw "firewall rule for relay-desktop.exe missing: $rule" }
+          if ($rule -match 'RemoteIP:\s+Any') { throw "a firewall rule is not limited to Tailscale: $rule" }
           Write-Host "Uninstalling"
           Run-Setup "$env:ProgramFiles\Relay\unins000.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') "$env:RUNNER_TEMP\uninstall.log"
           # The uninstaller hands off to a temporary copy of itself; give it a moment to finish.

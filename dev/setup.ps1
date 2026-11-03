@@ -24,6 +24,7 @@ function Need($cmd, $hint) {
 }
 
 $missing = $false
+Need git   'Install Git from https://git-scm.com/download/win'
 Need node  'Install Node.js 22 LTS from https://nodejs.org'
 Need npm   'It comes with Node.js'
 Need cargo 'Install Rust from https://rustup.rs (choose the default MSVC toolchain)'
@@ -56,4 +57,4 @@ netsh advfirewall firewall add rule name="Relay dev: server (Tailscale only)" di
   Write-Host 'If Windows asks whether Node.js may use the network, click Cancel: the rules above already allow Tailscale.' -ForegroundColor Yellow
 }
 
-Write-Host "`nDone. Start developing with: .\dev\dev.ps1 -Mock" -ForegroundColor Green
+Write-Host "`nDone. Start developing with: .\dev\dev.ps1 -Mock   (or double-click dev\live.cmd)" -ForegroundColor Green
