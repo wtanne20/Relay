@@ -10,6 +10,7 @@
 //! - user text starting with "run:"   -> run_command(<rest>)
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
 //! - anything else                    -> echoes the prompt
+//! - a non-streaming request          -> a chat title
 
 #![allow(dead_code)]
 
@@ -110,12 +111,19 @@ fn text_chunks(text: &str) -> Vec<String> {
 async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Value>) -> Response {
     let n = s.requests.fetch_add(1, Ordering::SeqCst);
     if body.get("stream").and_then(Value::as_bool) != Some(true) {
-        return (StatusCode::BAD_REQUEST, "mock only supports stream=true").into_response();
+        // Relay's only non-streaming request is the chat title.
+        return axum::Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "\"Mock chat title.\""}}]
+        }))
+        .into_response();
     }
-    if body
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_none_or(|t| t.is_empty())
+    let system = body["messages"][0]["content"].as_str().unwrap_or("");
+    // Plain chats send no tools; agent chats must.
+    if !system.contains("can't browse the web")
+        && body
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_none_or(|t| t.is_empty())
     {
         return (StatusCode::BAD_REQUEST, "expected tool definitions").into_response();
     }

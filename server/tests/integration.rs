@@ -450,6 +450,7 @@ async fn system_prompt_includes_agents_md_and_skills() {
         name: "proj".into(),
         path: dir.join("proj").to_string_lossy().into_owned(),
         instructions: "Prefer small commits.".into(),
+        model: None,
         created_at: String::new(),
     };
     let skills = relay::skills::discover(&[dir.join("skills")]);
@@ -812,5 +813,113 @@ async fn projects_folder_creates_named_folders() {
     assert_eq!(st, 409, "same folder twice");
     let (st, _) = h.post("/projects", json!({"name": "CON"})).await;
     assert_eq!(st, 400, "reserved Windows name");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
+async fn plain_chats_titles_and_models() {
+    let h = Harness::start().await;
+
+    // The plain chats space exists but is never listed as a project.
+    let projects = h.get("/projects").await;
+    assert!(
+        projects["projects"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .all(|p| p["id"] != "chats")
+    );
+    let (st, _) = h
+        .req(reqwest::Method::DELETE, "/projects/chats", None)
+        .await;
+    assert_eq!(st, 400, "plain chats can't be removed");
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/projects/chats",
+            Some(json!({"name": "x"})),
+        )
+        .await;
+    assert_eq!(st, 400);
+
+    // A chat without a title is "New chat" until the first reply names it.
+    let (st, v) = h.post("/projects/chats/sessions", json!({})).await;
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["session"]["title"], "New chat");
+    assert_eq!(v["session"]["auto_title"], true);
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+
+    let mut ws = h.ws(&sid).await;
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "What is a GPU?"}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    let events = ws.until_status(&["done", "error"]).await;
+    assert!(
+        events.iter().any(|e| e["type"] == "final"),
+        "plain chat answered without tools: {events:?}"
+    );
+    let title = ws.until_type("title").await;
+    assert_eq!(title["title"], "Mock chat title");
+    let s = h.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(s["session"]["title"], "Mock chat title");
+    assert_eq!(s["session"]["auto_title"], false);
+
+    // A title the user typed is kept.
+    let (st, v) = h
+        .post("/projects/chats/sessions", json!({"title": "Mine"}))
+        .await;
+    assert_eq!(st, 201);
+    assert_eq!(v["session"]["auto_title"], false);
+
+    // Recent lists chats from every project with the project's name.
+    let recent = h.get("/recent?limit=5").await;
+    let first = &recent["sessions"][0];
+    assert_eq!(first["project_name"], "Chats");
+    assert!(first["id"].is_string());
+
+    // Models per chat and per project must be real .gguf files.
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{sid}"),
+            Some(json!({"model": "C:/nope.gguf"})),
+        )
+        .await;
+    assert_eq!(st, 400);
+    std::fs::create_dir_all(h.dir.join("data/models")).expect("mkdir");
+    let model = h.dir.join("data/models/Other-Q4.gguf");
+    std::fs::write(&model, b"GGUF").expect("write");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{sid}"),
+            Some(json!({"model": model.to_string_lossy()})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["session"]["model"], json!(model.to_string_lossy()));
+    assert_eq!(v["session"]["title"], "Mock chat title", "title untouched");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{sid}"),
+            Some(json!({"model": ""})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    assert!(v["session"]["model"].is_null());
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/projects/chats",
+            Some(json!({"model": model.to_string_lossy()})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["project"]["model"], json!(model.to_string_lossy()));
     let _ = std::fs::remove_dir_all(&h.dir);
 }

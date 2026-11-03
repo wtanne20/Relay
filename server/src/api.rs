@@ -101,6 +101,7 @@ impl From<StartError> for ApiError {
             StartError::NotFound => ApiError::NotFound("session"),
             StartError::AlreadyRunning => ApiError::Conflict(e.to_string()),
             StartError::Invalid(m) => ApiError::BadRequest(m),
+            StartError::Busy(m) => ApiError::Conflict(m),
             StartError::Internal(e) => e.into(),
         }
     }
@@ -174,6 +175,7 @@ pub fn router(state: AppState) -> Router {
             get(get_system_prompt).put(put_system_prompt),
         )
         .route("/skills", get(list_skills))
+        .route("/recent", get(recent))
         .route("/projects", get(list_projects).post(create_project))
         .route(
             "/projects/{id}",
@@ -187,9 +189,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/sessions/{id}",
-            get(get_session)
-                .patch(rename_session)
-                .delete(delete_session),
+            get(get_session).patch(patch_session).delete(delete_session),
         )
         .route("/sessions/{id}/messages", get(list_messages))
         .route("/sessions/{id}/prompt", post(send_prompt))
@@ -783,6 +783,27 @@ struct UpdateProject {
     name: Option<String>,
     path: Option<String>,
     instructions: Option<String>,
+    /// A model file for the project's chats; "" goes back to the loaded model.
+    model: Option<String>,
+}
+
+/// `Some("")` clears the choice; otherwise it must be a .gguf file on the PC.
+fn validate_model(model: Option<String>) -> ApiResult<Option<Option<String>>> {
+    let Some(m) = model else { return Ok(None) };
+    let m = m.trim().trim_matches('"').to_string();
+    if m.is_empty() {
+        return Ok(Some(None));
+    }
+    let p = Path::new(&m);
+    let is_gguf = p
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !is_gguf || !p.is_file() {
+        return Err(ApiError::BadRequest(format!(
+            "model must be an existing .gguf file on the PC: {m}"
+        )));
+    }
+    Ok(Some(Some(m)))
 }
 
 /// Validates and canonicalizes a project folder path.
@@ -880,7 +901,13 @@ async fn update_project(
         Some("") => return Err(ApiError::BadRequest("name must not be empty".into())),
         other => other.map(str::to_string),
     };
+    if id == db::CHATS_PROJECT_ID && (name.is_some() || body.path.is_some()) {
+        return Err(ApiError::BadRequest(
+            "plain chats have no name or folder to change".into(),
+        ));
+    }
     let path = body.path.as_deref().map(validate_folder).transpose()?;
+    let model = validate_model(body.model)?;
     let instructions = body.instructions;
     if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
         return Err(ApiError::BadRequest(
@@ -895,6 +922,7 @@ async fn update_project(
                 name.as_deref(),
                 path.as_deref(),
                 instructions.as_deref(),
+                model.as_ref().map(|m| m.as_deref()),
             )
         })
         .await?
@@ -907,6 +935,9 @@ async fn delete_project(
     State(s): State<AppState>,
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<Json<Value>> {
+    if id == db::CHATS_PROJECT_ID {
+        return Err(ApiError::BadRequest("plain chats can't be removed".into()));
+    }
     let pid = id.clone();
     let sessions =
         s.db.call(move |c| db::list_session_ids_for_project(c, &pid))
@@ -934,8 +965,22 @@ struct CreateSession {
 }
 
 #[derive(Deserialize)]
-struct RenameSession {
-    title: String,
+struct PatchSession {
+    title: Option<String>,
+    /// A model file for this chat; "" follows the project again.
+    model: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecentQuery {
+    limit: Option<usize>,
+}
+
+/// Recent chats across every project and plain chats, for the home screen.
+async fn recent(State(s): State<AppState>, Query(q): Query<RecentQuery>) -> ApiResult<Json<Value>> {
+    let limit = q.limit.unwrap_or(30).clamp(1, 200);
+    let sessions = s.db.call(move |c| db::recent_sessions(c, limit)).await?;
+    Ok(Json(json!({ "sessions": sessions })))
 }
 
 async fn list_sessions(
@@ -966,17 +1011,20 @@ async fn create_session(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?
     };
-    let title = parsed
+    // Without a title, the chat is called "New chat" until Relay names it
+    // after the first reply.
+    let given = parsed
         .title
         .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| format!("Chat {}", chrono::Local::now().format("%b %-d, %H:%M")));
+        .filter(|t| !t.is_empty());
+    let auto = given.is_none();
+    let title = given.unwrap_or_else(|| "New chat".into());
     let session =
         s.db.call(move |c| {
             if db::get_project(c, &id)?.is_none() {
                 return Ok(None);
             }
-            Ok(Some(db::create_session(c, &id, &title)?))
+            Ok(Some(db::create_session(c, &id, &title, auto)?))
         })
         .await?
         .ok_or(ApiError::NotFound("project"))?;
@@ -994,19 +1042,31 @@ async fn get_session(
     Ok(Json(json!({ "session": session })))
 }
 
-async fn rename_session(
+async fn patch_session(
     State(s): State<AppState>,
     UrlPath(id): UrlPath<String>,
-    JsonBody(body): JsonBody<RenameSession>,
+    JsonBody(body): JsonBody<PatchSession>,
 ) -> ApiResult<Json<Value>> {
-    let title = body.title.trim().to_string();
-    if title.is_empty() {
-        return Err(ApiError::BadRequest("title must not be empty".into()));
-    }
+    let title = match body.title.as_deref().map(str::trim) {
+        Some("") => return Err(ApiError::BadRequest("title must not be empty".into())),
+        other => other.map(str::to_string),
+    };
+    let model = validate_model(body.model)?;
     let session =
-        s.db.call(move |c| db::rename_session(c, &id, &title))
-            .await?
-            .ok_or(ApiError::NotFound("session"))?;
+        s.db.call(move |c| {
+            if db::get_session(c, &id)?.is_none() {
+                return Ok(None);
+            }
+            if let Some(t) = &title {
+                db::rename_session(c, &id, t)?;
+            }
+            if let Some(m) = &model {
+                db::set_session_model(c, &id, m.as_deref())?;
+            }
+            db::get_session(c, &id)
+        })
+        .await?
+        .ok_or(ApiError::NotFound("session"))?;
     Ok(Json(json!({ "session": session })))
 }
 

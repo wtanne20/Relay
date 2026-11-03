@@ -13,6 +13,11 @@ pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// The built-in space for plain chats: no folder and no tools. It's a
+/// project row so chats share all the session machinery, but it is never
+/// listed as a project.
+pub const CHATS_PROJECT_ID: &str = "chats";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -22,6 +27,15 @@ pub struct Project {
     #[serde(default)]
     pub instructions: String,
     pub created_at: String,
+    /// Model file this project's chats use unless a chat picks its own.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Project {
+    pub fn is_chats(&self) -> bool {
+        self.id == CHATS_PROJECT_ID
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +47,20 @@ pub struct Session {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Model file for this chat; None follows the project.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// True while the title is the placeholder, so Relay may write one.
+    #[serde(default)]
+    pub auto_title: bool,
+}
+
+/// A session with its project's name, for the home screen.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentSession {
+    #[serde(flatten)]
+    pub session: Session,
+    pub project_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,12 +189,34 @@ fn upgrade(conn: &Connection) -> Result<()> {
             "ALTER TABLE projects ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
         )?;
     }
+    let has_col = |table: &str, col: &str| -> Result<bool> {
+        Ok(conn
+            .prepare(&format!(
+                "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
+            ))?
+            .exists([col])?)
+    };
+    if !has_col("projects", "model")? {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN model TEXT")?;
+    }
+    if !has_col("sessions", "model")? {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN model TEXT")?;
+    }
+    if !has_col("sessions", "auto_title")? {
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO projects (id, name, path, created_at) VALUES (?1, 'Chats', '', ?2)",
+        params![CHATS_PROJECT_ID, now()],
+    )?;
     Ok(())
 }
 
 // ---------- projects ----------
 
-const PROJECT_COLS: &str = "id, name, path, created_at, instructions";
+const PROJECT_COLS: &str = "id, name, path, created_at, instructions, model";
 
 fn project_row(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -175,15 +225,16 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         path: r.get(2)?,
         created_at: r.get(3)?,
         instructions: r.get(4)?,
+        model: r.get(5)?,
     })
 }
 
 pub fn list_projects(c: &Connection) -> Result<Vec<Project>> {
     let mut st = c.prepare(&format!(
-        "SELECT {PROJECT_COLS} FROM projects ORDER BY name COLLATE NOCASE"
+        "SELECT {PROJECT_COLS} FROM projects WHERE id != ?1 ORDER BY name COLLATE NOCASE"
     ))?;
     let rows = st
-        .query_map([], project_row)?
+        .query_map([CHATS_PROJECT_ID], project_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -199,7 +250,9 @@ pub fn get_project(c: &Connection, id: &str) -> Result<Option<Project>> {
 
 pub fn find_project_by_path(c: &Connection, path: &str) -> Result<Option<Project>> {
     Ok(c.query_row(
-        &format!("SELECT {PROJECT_COLS} FROM projects WHERE path = ?1 COLLATE NOCASE"),
+        &format!(
+            "SELECT {PROJECT_COLS} FROM projects WHERE path = ?1 COLLATE NOCASE AND path != ''"
+        ),
         [path],
         project_row,
     )
@@ -213,6 +266,7 @@ pub fn create_project(c: &Connection, name: &str, path: &str) -> Result<Project>
         path: path.to_string(),
         instructions: String::new(),
         created_at: now(),
+        model: None,
     };
     c.execute(
         "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -227,7 +281,14 @@ pub fn update_project(
     name: Option<&str>,
     path: Option<&str>,
     instructions: Option<&str>,
+    model: Option<Option<&str>>,
 ) -> Result<Option<Project>> {
+    if let Some(m) = model {
+        c.execute(
+            "UPDATE projects SET model = ?1 WHERE id = ?2",
+            params![m, id],
+        )?;
+    }
     if let Some(i) = instructions {
         c.execute(
             "UPDATE projects SET instructions = ?1 WHERE id = ?2",
@@ -257,7 +318,8 @@ pub fn delete_project(c: &Connection, id: &str) -> Result<bool> {
 
 // ---------- sessions ----------
 
-const SESSION_COLS: &str = "id, project_id, title, status, error, created_at, updated_at";
+const SESSION_COLS: &str =
+    "id, project_id, title, status, error, created_at, updated_at, model, auto_title";
 
 fn session_row(r: &Row) -> rusqlite::Result<Session> {
     Ok(Session {
@@ -268,7 +330,30 @@ fn session_row(r: &Row) -> rusqlite::Result<Session> {
         error: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
+        model: r.get(7)?,
+        auto_title: r.get::<_, i64>(8)? != 0,
     })
+}
+
+/// The most recently active chats across all projects and plain chats.
+pub fn recent_sessions(c: &Connection, limit: usize) -> Result<Vec<RecentSession>> {
+    let cols = SESSION_COLS
+        .split(", ")
+        .map(|col| format!("s.{col}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut st = c.prepare(&format!(
+        "SELECT {cols}, p.name FROM sessions s JOIN projects p ON p.id = s.project_id ORDER BY s.updated_at DESC LIMIT ?1"
+    ))?;
+    let rows = st
+        .query_map([limit as i64], |r| {
+            Ok(RecentSession {
+                session: session_row(r)?,
+                project_name: r.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 pub fn list_sessions(c: &Connection, project_id: &str) -> Result<Vec<Session>> {
@@ -298,7 +383,12 @@ pub fn get_session(c: &Connection, id: &str) -> Result<Option<Session>> {
     .optional()?)
 }
 
-pub fn create_session(c: &Connection, project_id: &str, title: &str) -> Result<Session> {
+pub fn create_session(
+    c: &Connection,
+    project_id: &str,
+    title: &str,
+    auto_title: bool,
+) -> Result<Session> {
     let t = now();
     let s = Session {
         id: uuid::Uuid::new_v4().to_string(),
@@ -308,18 +398,37 @@ pub fn create_session(c: &Connection, project_id: &str, title: &str) -> Result<S
         error: None,
         created_at: t.clone(),
         updated_at: t,
+        model: None,
+        auto_title,
     };
     c.execute(
-        "INSERT INTO sessions (id, project_id, title, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![s.id, s.project_id, s.title, s.status, s.created_at, s.updated_at],
+        "INSERT INTO sessions (id, project_id, title, status, created_at, updated_at, auto_title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![s.id, s.project_id, s.title, s.status, s.created_at, s.updated_at, auto_title as i64],
     )?;
     Ok(s)
 }
 
+/// A title the user typed: Relay won't replace it.
 pub fn rename_session(c: &Connection, id: &str, title: &str) -> Result<Option<Session>> {
     c.execute(
-        "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE sessions SET title = ?1, auto_title = 0, updated_at = ?2 WHERE id = ?3",
         params![title, now(), id],
+    )?;
+    get_session(c, id)
+}
+
+/// A title Relay wrote. Only replaces the placeholder, never a user's title.
+pub fn set_auto_title(c: &Connection, id: &str, title: &str) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE sessions SET title = ?1, auto_title = 0 WHERE id = ?2 AND auto_title = 1",
+        params![title, id],
+    )? > 0)
+}
+
+pub fn set_session_model(c: &Connection, id: &str, model: Option<&str>) -> Result<Option<Session>> {
+    c.execute(
+        "UPDATE sessions SET model = ?1 WHERE id = ?2",
+        params![model, id],
     )?;
     get_session(c, id)
 }
@@ -498,6 +607,7 @@ mod tests {
     fn mem() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(SCHEMA).unwrap();
+        upgrade(&c).unwrap();
         c
     }
 
@@ -505,7 +615,7 @@ mod tests {
     fn paging() {
         let c = mem();
         let p = create_project(&c, "p", "C:\\x").unwrap();
-        let s = create_session(&c, &p.id, "s").unwrap();
+        let s = create_session(&c, &p.id, "s", false).unwrap();
         for i in 0..10 {
             insert_message(
                 &c,
@@ -539,7 +649,7 @@ mod tests {
     fn cascade_delete_keeps_nothing() {
         let c = mem();
         let p = create_project(&c, "p", "C:\\x").unwrap();
-        let s = create_session(&c, &p.id, "s").unwrap();
+        let s = create_session(&c, &p.id, "s", false).unwrap();
         insert_message(
             &c,
             &s.id,
@@ -559,7 +669,7 @@ mod tests {
     fn tool_calls_roundtrip() {
         let c = mem();
         let p = create_project(&c, "p", "C:\\x").unwrap();
-        let s = create_session(&c, &p.id, "s").unwrap();
+        let s = create_session(&c, &p.id, "s", false).unwrap();
         let tc = ToolCall {
             id: "a".into(),
             name: "read_file".into(),

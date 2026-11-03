@@ -105,6 +105,24 @@ impl ModelManager {
         let _ = self.tx.send(Cmd::Restart).await;
     }
 
+    /// Restarts llama-server on another model file (already saved to the
+    /// config). Marks the model as loading right away, so a task waiting for
+    /// it never talks to the old one.
+    pub async fn switch_to(&self, path: &str) {
+        {
+            let mut st = self.status.write().unwrap_or_else(|e| e.into_inner());
+            st.state = ModelState::Starting;
+            st.since = crate::db::now();
+            st.model_path = path.to_string();
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            st.message = Some(format!("Switching to {name}"));
+        }
+        self.restart().await;
+    }
+
     /// Stops the child process (if Relay launched it) and waits for it to exit.
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = oneshot::channel();

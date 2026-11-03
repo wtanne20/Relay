@@ -67,6 +67,10 @@ pub enum Event {
         tool_call_id: String,
         approved: bool,
     },
+    /// Relay named the chat after its first reply.
+    Title {
+        title: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +123,9 @@ pub enum StartError {
     AlreadyRunning,
     #[error("{0}")]
     Invalid(String),
+    /// Another chat is busy on a different model.
+    #[error("{0}")]
+    Busy(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -257,6 +264,11 @@ impl AgentManager {
         let Some((session, project)) = found else {
             return Err(StartError::NotFound);
         };
+        let wanted = session
+            .model
+            .clone()
+            .or_else(|| project.model.clone())
+            .filter(|m| !m.trim().is_empty());
 
         let cancel = CancellationToken::new();
         let draft = Arc::new(Mutex::new(Draft::default()));
@@ -265,6 +277,26 @@ impl AgentManager {
             let mut running = lock(&self.running);
             if running.contains_key(session_id) {
                 return Err(StartError::AlreadyRunning);
+            }
+            // Only one model is loaded at a time, so a switch waits for
+            // other chats to finish.
+            let loaded = self.cfg.get().llama.model_path;
+            let switch = wanted
+                .as_ref()
+                .filter(|w| !same_path(w, &loaded) && !self.model.status().external);
+            if let Some(w) = switch {
+                if !running.is_empty() {
+                    return Err(StartError::Busy(format!(
+                        "another chat is still running on {}. Wait for it to finish (or stop it) to switch to {}",
+                        file_name(&loaded),
+                        file_name(w)
+                    )));
+                }
+                if !Path::new(w).is_file() {
+                    return Err(StartError::Invalid(format!(
+                        "the model for this chat is missing: {w}. Pick another one"
+                    )));
+                }
             }
             running.insert(
                 session_id.to_string(),
@@ -313,6 +345,17 @@ impl AgentManager {
                 error: None,
             },
         );
+
+        if let Some(w) = wanted {
+            let loaded = self.cfg.get().llama.model_path;
+            if !same_path(&w, &loaded) && !self.model.status().external {
+                let path = w.clone();
+                match self.cfg.update(move |c| c.llama.model_path = path) {
+                    Ok(_) => self.model.switch_to(&w).await,
+                    Err(e) => tracing::error!("could not switch model: {e:#}"),
+                }
+            }
+        }
 
         let this = self.clone();
         tokio::spawn(async move {
@@ -391,8 +434,14 @@ impl AgentManager {
             },
         );
 
+        let mut title = title.ok().flatten().unwrap_or(session.title.clone());
+        if status == "done"
+            && session.auto_title
+            && let Some(t) = self.write_title(&session.id).await
+        {
+            title = t;
+        }
         // Only names and status leave the machine.
-        let title = title.ok().flatten().unwrap_or(session.title);
         self.pusher.notify(&project, &session.id, &title, status);
     }
 
@@ -418,16 +467,24 @@ impl AgentManager {
             })
             .collect();
         let skill_dirs: Vec<PathBuf> = found_skills.iter().map(|s| s.dir.clone()).collect();
-        let sandbox = Sandbox::new(Path::new(&project.path), &skill_dirs)?;
-        let ctx = ToolContext {
-            sandbox,
-            shell: conf.shell.clone(),
-            default_timeout: conf.agent.command_timeout_seconds,
+        // Plain chats have no folder: no sandbox and no tools.
+        let ctx = if project.is_chats() {
+            None
+        } else {
+            Some(ToolContext {
+                sandbox: Sandbox::new(Path::new(&project.path), &skill_dirs)?,
+                shell: conf.shell.clone(),
+                default_timeout: conf.agent.command_timeout_seconds,
+            })
         };
-        let system =
-            build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await;
+        let (system, tool_defs) = match &ctx {
+            Some(ctx) => (
+                build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await,
+                tools::definitions(&conf.agent.tools),
+            ),
+            None => (chat_system_prompt(project), json!([])),
+        };
         let url = format!("{}/v1/chat/completions", self.model.base_url());
-        let tool_defs = tools::definitions(&conf.agent.tools);
         let mut approval_mode = conf.agent.approval;
 
         for _step in 0..conf.agent.max_steps {
@@ -528,7 +585,7 @@ impl AgentManager {
                                 if d == Decision::ApproveAll {
                                     approval_mode = ApprovalMode::Never;
                                 }
-                                tools::execute(&ctx, &call.name, &call.arguments, cancel).await
+                                run_tool(ctx.as_ref(), call, cancel).await
                             }
                             None => tools::ToolOutput {
                                 content: "cancelled by user before running".into(),
@@ -536,7 +593,7 @@ impl AgentManager {
                             },
                         }
                     } else {
-                        tools::execute(&ctx, &call.name, &call.arguments, cancel).await
+                        run_tool(ctx.as_ref(), call, cancel).await
                     }
                 };
                 let truncated = output.content.chars().count() > EVENT_RESULT_CHARS;
@@ -622,6 +679,55 @@ impl AgentManager {
         answer
     }
 
+    /// Names a chat in a few plain words from its first exchange. Best
+    /// effort: on any failure the chat keeps its placeholder title.
+    async fn write_title(&self, session_id: &str) -> Option<String> {
+        let sid = session_id.to_string();
+        let history = self
+            .db
+            .call(move |c| db::all_messages(c, &sid))
+            .await
+            .ok()?;
+        let question = history.iter().find(|m| m.role == "user")?.content.clone();
+        let answer = history
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let conf = self.cfg.get();
+        let body = title_request(&conf, &question, &answer);
+        let url = format!("{}/v1/chat/completions", self.model.base_url());
+        let res = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .ok()?;
+        let v: Value = res.error_for_status().ok()?.json().await.ok()?;
+        let raw = v["choices"][0]["message"]["content"].as_str()?;
+        let title = clean_title(raw)?;
+        let sid = session_id.to_string();
+        let t = title.clone();
+        let stored = self
+            .db
+            .call(move |c| db::set_auto_title(c, &sid, &t))
+            .await
+            .ok()?;
+        if !stored {
+            return None;
+        }
+        self.emit(
+            session_id,
+            Event::Title {
+                title: title.clone(),
+            },
+        );
+        Some(title)
+    }
+
     async fn save(&self, session_id: &str, m: NewMessage) -> Result<Message> {
         let sid = session_id.to_string();
         self.db.call(move |c| db::insert_message(c, &sid, &m)).await
@@ -651,6 +757,95 @@ impl AgentManager {
             }
         }
     }
+}
+
+async fn run_tool(
+    ctx: Option<&ToolContext>,
+    call: &db::ToolCall,
+    cancel: &CancellationToken,
+) -> tools::ToolOutput {
+    match ctx {
+        Some(ctx) => tools::execute(ctx, &call.name, &call.arguments, cancel).await,
+        None => tools::ToolOutput {
+            content: "error: tools are not available in a plain chat".into(),
+            is_error: true,
+        },
+    }
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.trim().replace('\\', "/").to_lowercase();
+    norm(a) == norm(b)
+}
+
+fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// System prompt for plain chats: a helpful assistant, no files or tools.
+pub fn chat_system_prompt(project: &Project) -> String {
+    let mut s = format!(
+        "You are Relay, a helpful assistant running privately on the user's own PC. \
+Answer questions clearly and directly, and keep answers as short as the question allows. \
+Use Markdown for lists, tables and code. You can't browse the web, read files or run \
+commands in this chat; say so if a question needs that. If you're not sure of a fact, say so.\n\n\
+Today: {}\n",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    if !project.instructions.trim().is_empty() {
+        s.push_str("\n# Notes from the user\n");
+        s.push_str(project.instructions.trim());
+        s.push('\n');
+    }
+    s
+}
+
+/// A short, non-streaming request for a chat title.
+pub fn title_request(conf: &Config, question: &str, answer: &str) -> Value {
+    let cut = |t: &str, n: usize| t.chars().take(n).collect::<String>();
+    json!({
+        "model": conf.llama.model_name,
+        "messages": [
+            {"role": "system", "content": "You name chats. Reply with a title of 2 to 5 simple, plain words that says what the chat is about. No quotes, no punctuation at the end, no emoji. Reply with the title only."},
+            {"role": "user", "content": format!("User asked:\n{}\n\nAssistant replied:\n{}\n\nTitle:", cut(question, 1500), cut(answer, 800))},
+        ],
+        "stream": false,
+        "temperature": 0.2,
+        "max_tokens": 24,
+        "chat_template_kwargs": { "enable_thinking": false },
+    })
+}
+
+/// Tidies a model-written title; None if nothing usable is left.
+pub fn clean_title(raw: &str) -> Option<String> {
+    // Some models still think out loud; keep what follows the last </think>.
+    let text = raw.rsplit("</think>").next().unwrap_or(raw);
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line
+        .trim_start_matches(|c: char| c == '#' || c == '*' || c.is_whitespace())
+        .trim();
+    let line = line
+        .strip_prefix("Title:")
+        .or_else(|| line.strip_prefix("title:"))
+        .unwrap_or(line)
+        .trim();
+    let t: String = line
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '“' | '”' | '‘' | '’'))
+        .trim_end_matches(['.', '!', '?', ':', ';', ','])
+        .trim()
+        .to_string();
+    let words: Vec<&str> = t.split_whitespace().take(7).collect();
+    let t = words.join(" ");
+    if t.is_empty() {
+        return None;
+    }
+    let mut chars = t.chars();
+    let first = chars.next()?.to_uppercase().collect::<String>();
+    let t = format!("{first}{}", chars.as_str());
+    Some(t.chars().take(60).collect())
 }
 
 pub fn needs_approval(mode: ApprovalMode, tool: &str) -> bool {
@@ -795,6 +990,33 @@ mod tests {
             is_error: false,
             created_at: String::new(),
         }
+    }
+
+    #[test]
+    fn cleans_titles() {
+        assert_eq!(
+            clean_title("\"Fix login bug.\"").as_deref(),
+            Some("Fix login bug")
+        );
+        assert_eq!(
+            clean_title("Title: gpu basics").as_deref(),
+            Some("Gpu basics")
+        );
+        assert_eq!(
+            clean_title("<think>hmm</think>\n\n**Weekly meal plan**").as_deref(),
+            Some("Weekly meal plan")
+        );
+        assert_eq!(clean_title("   \n  ").as_deref(), None);
+        assert_eq!(
+            clean_title("one two three four five six seven eight nine").as_deref(),
+            Some("One two three four five six seven")
+        );
+    }
+
+    #[test]
+    fn compares_model_paths_loosely() {
+        assert!(same_path("C:\\Models\\a.gguf", "c:/models/a.gguf"));
+        assert!(!same_path("C:/models/a.gguf", "C:/models/b.gguf"));
     }
 
     #[test]
