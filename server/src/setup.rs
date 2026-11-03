@@ -165,6 +165,44 @@ pub fn parse_tailscale_status(json: &str) -> Option<Tailscale> {
 
 /// Looks for an existing llama-server: Relay's own download folder, PATH,
 /// and common install locations.
+/// The machine type in a Windows PE file's header (0x8664 = x64, 0xAA64 = ARM64),
+/// or None if the file isn't a PE file.
+pub fn pe_machine(path: &Path) -> Option<u16> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut mz = [0u8; 64];
+    f.read_exact(&mut mz).ok()?;
+    if &mz[..2] != b"MZ" {
+        return None;
+    }
+    let pe_offset = u32::from_le_bytes([mz[60], mz[61], mz[62], mz[63]]);
+    f.seek(SeekFrom::Start(u64::from(pe_offset))).ok()?;
+    let mut hdr = [0u8; 6];
+    f.read_exact(&mut hdr).ok()?;
+    if &hdr[..4] != b"PE\0\0" {
+        return None;
+    }
+    Some(u16::from_le_bytes([hdr[4], hdr[5]]))
+}
+
+/// True if a folder holds DLLs built for another CPU architecture (for example
+/// an ARM64 CUDA runtime next to an x64 llama-server), which makes llama.cpp
+/// silently fall back to the CPU.
+pub fn has_foreign_dlls(dir: &Path) -> bool {
+    const X64: u16 = 0x8664;
+    if !cfg!(target_arch = "x86_64") {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = e.path();
+        p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dll"))
+            && pe_machine(&p).is_some_and(|m| m != X64)
+    })
+}
+
 pub fn find_llama_server(data_dir: &Path) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let own = data_dir.join("llama.cpp");
@@ -177,7 +215,11 @@ pub fn find_llama_server(data_dir: &Path) -> Option<PathBuf> {
             .collect();
         dirs.sort();
         dirs.reverse();
-        candidates.extend(dirs.into_iter().map(|d| d.join(LLAMA_SERVER_EXE)));
+        candidates.extend(
+            dirs.into_iter()
+                .filter(|d| !has_foreign_dlls(d))
+                .map(|d| d.join(LLAMA_SERVER_EXE)),
+        );
     }
     candidates.push(own.join(LLAMA_SERVER_EXE));
     if let Some(path) = std::env::var_os("PATH") {
@@ -218,7 +260,9 @@ pub fn choose_assets(names: &[String], hw: &Hardware, windows: bool) -> Result<V
         cuda.sort();
         if let Some((ver, main)) = cuda.last() {
             let cudart = names.iter().find(|n| {
-                n.starts_with("cudart-") && cuda_version_in(n, "-bin-win-cuda-") == Some(*ver)
+                n.starts_with("cudart-")
+                    && n.ends_with("-x64.zip")
+                    && cuda_version_in(n, "-bin-win-cuda-") == Some(*ver)
             });
             let mut out = vec![(*main).clone()];
             if let Some(c) = cudart {
@@ -318,7 +362,9 @@ pub async fn download_llama_server(
         .cloned()
         .unwrap_or_default();
 
-    let dest = data_dir.join("llama.cpp").join(&tag);
+    // The folder name includes the architecture so a fresh download never mixes
+    // with an older, broken one.
+    let dest = data_dir.join("llama.cpp").join(format!("{tag}-x64"));
     let downloads = data_dir.join("downloads");
     tokio::fs::create_dir_all(&dest).await?;
     tokio::fs::create_dir_all(&downloads).await?;
@@ -675,6 +721,46 @@ mod tests {
                 "cudart-llama-bin-win-cuda-12.4-x64.zip"
             ]
         );
+    }
+
+    #[test]
+    fn picks_x64_cuda_runtime() {
+        let names = names(&[
+            "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+            "cudart-llama-bin-win-cuda-13.4-x64.zip",
+            "llama-b12063-bin-win-cuda-13.4-arm64.zip",
+            "llama-b12063-bin-win-cuda-13.4-x64.zip",
+        ]);
+        let a = choose_assets(&names, &nvidia((13, 3)), true).unwrap();
+        assert_eq!(
+            a,
+            [
+                "llama-b12063-bin-win-cuda-13.4-x64.zip",
+                "cudart-llama-bin-win-cuda-13.4-x64.zip"
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_foreign_architecture_dlls() {
+        let dir = std::env::temp_dir().join(format!("relay-pe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pe = |machine: u16| {
+            let mut b = vec![0u8; 0x48];
+            b[..2].copy_from_slice(b"MZ");
+            b[60..64].copy_from_slice(&0x40u32.to_le_bytes());
+            b[0x40..0x44].copy_from_slice(b"PE\0\0");
+            b[0x44..0x46].copy_from_slice(&machine.to_le_bytes());
+            b
+        };
+        std::fs::write(dir.join("good.dll"), pe(0x8664)).unwrap();
+        std::fs::write(dir.join("notes.txt"), "hi").unwrap();
+        assert_eq!(pe_machine(&dir.join("good.dll")), Some(0x8664));
+        assert_eq!(pe_machine(&dir.join("notes.txt")), None);
+        assert!(!has_foreign_dlls(&dir));
+        std::fs::write(dir.join("cudart64_13.dll"), pe(0xAA64)).unwrap();
+        assert_eq!(has_foreign_dlls(&dir), cfg!(target_arch = "x86_64"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

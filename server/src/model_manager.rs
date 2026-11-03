@@ -364,8 +364,15 @@ impl Supervisor {
         if !self.cfg.auto_setup {
             return Ok(());
         }
-        let exe_ok =
-            !self.cfg.llama_server_path.trim().is_empty() && self.cfg.executable().is_file();
+        let exe = self.cfg.executable();
+        let broken = exe.parent().is_some_and(setup::has_foreign_dlls);
+        if broken {
+            tracing::warn!(
+                "{} has DLLs for another CPU architecture; downloading llama.cpp again",
+                exe.display()
+            );
+        }
+        let exe_ok = !self.cfg.llama_server_path.trim().is_empty() && exe.is_file() && !broken;
         if !exe_ok {
             let found = match setup::find_llama_server(&self.data_dir) {
                 Some(p) => p,
