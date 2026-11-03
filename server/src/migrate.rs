@@ -474,6 +474,7 @@ mod tests {
         let loaded = LoadedConfig::load(&cfg).unwrap();
         assert_eq!(loaded.config.skills_paths.len(), 2);
         assert!(loaded.config.llama.model_path.ends_with("model-Q6_K.gguf"));
-        std::fs::remove_dir_all(base).unwrap();
+        // Best effort: on Windows SQLite may still hold the db file briefly.
+        let _ = std::fs::remove_dir_all(base);
     }
 }
