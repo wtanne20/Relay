@@ -477,9 +477,13 @@ async fn settings_skills_and_approvals() {
     assert_eq!(s["settings"]["agent"]["max_steps"], 50);
     assert_eq!(s["settings"]["sampling"]["temperature"], 0.6);
     assert_eq!(s["tools"].as_array().map(Vec::len), Some(5));
-    assert!(s["settings"].get("token").is_none(), "token must not be exposed");
+    assert!(
+        s["settings"].get("token").is_none(),
+        "token must not be exposed"
+    );
 
-    let (st, v) = patch(json!({"sampling": {"temperature": 0.2}, "agent": {"max_steps": 12}})).await;
+    let (st, v) =
+        patch(json!({"sampling": {"temperature": 0.2}, "agent": {"max_steps": 12}})).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["settings"]["sampling"]["temperature"], 0.2);
     assert_eq!(v["model_restarting"], false);
@@ -501,7 +505,10 @@ async fn settings_skills_and_approvals() {
         let (st, v) = patch(bad.clone()).await;
         assert_eq!(st, 400, "{bad} -> {v}");
     }
-    assert_eq!(h.get("/settings").await["settings"]["sampling"]["temperature"], 0.2);
+    assert_eq!(
+        h.get("/settings").await["settings"]["sampling"]["temperature"],
+        0.2
+    );
 
     // Changing a llama-server setting restarts the model.
     let (st, v) = patch(json!({"llama": {"context_size": 32768}})).await;
@@ -516,16 +523,35 @@ async fn settings_skills_and_approvals() {
 
     // --- system prompt ---
     let p = h.get("/system-prompt").await;
-    assert!(p["content"].as_str().unwrap_or("").contains("You are Relay"));
+    assert!(
+        p["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("You are Relay")
+    );
     let (st, _) = h
-        .req(reqwest::Method::PUT, "/system-prompt", Some(json!({"content": "Be terse."})))
+        .req(
+            reqwest::Method::PUT,
+            "/system-prompt",
+            Some(json!({"content": "Be terse."})),
+        )
         .await;
     assert_eq!(st, 200);
     assert_eq!(h.get("/system-prompt").await["content"], "Be terse.");
     let (_, v) = h
-        .req(reqwest::Method::PUT, "/system-prompt", Some(json!({"content": "  "})))
+        .req(
+            reqwest::Method::PUT,
+            "/system-prompt",
+            Some(json!({"content": "  "})),
+        )
         .await;
-    assert!(v["content"].as_str().unwrap_or("").contains("You are Relay"), "reset to default");
+    assert!(
+        v["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("You are Relay"),
+        "reset to default"
+    );
 
     // --- skills ---
     let sk = h.get("/skills").await;
@@ -543,7 +569,9 @@ async fn settings_skills_and_approvals() {
     // --- project instructions ---
     let proj_dir = h.dir.join("approvals");
     std::fs::create_dir_all(&proj_dir).expect("mkdir");
-    let (_, v) = h.post("/projects", json!({"path": proj_dir.to_string_lossy()})).await;
+    let (_, v) = h
+        .post("/projects", json!({"path": proj_dir.to_string_lossy()}))
+        .await;
     let pid = v["project"]["id"].as_str().expect("id").to_string();
     assert_eq!(v["project"]["instructions"], "");
     let (st, v) = h
@@ -553,23 +581,34 @@ async fn settings_skills_and_approvals() {
             Some(json!({"instructions": "Use 4 spaces."})),
         )
         .await;
-    assert_eq!((st, v["project"]["instructions"].as_str()), (200, Some("Use 4 spaces.")));
+    assert_eq!(
+        (st, v["project"]["instructions"].as_str()),
+        (200, Some("Use 4 spaces."))
+    );
 
     // --- approvals ---
     let (st, _) = patch(json!({"agent": {"approval": "commands"}})).await;
     assert_eq!(st, 200);
-    let (_, v) = h.post(&format!("/projects/{pid}/sessions"), json!({})).await;
+    let (_, v) = h
+        .post(&format!("/projects/{pid}/sessions"), json!({}))
+        .await;
     let sid = v["session"]["id"].as_str().expect("id").to_string();
     let mut ws = h.ws(&sid).await;
     assert_eq!(ws.next().await["type"], "hello");
 
     // Deny: the command never runs.
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo denied > marker.txt"}))
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo denied > marker.txt"}),
+        )
         .await;
     assert_eq!(st, 202);
     let req = ws.until_type("approval_request").await;
-    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    let call_id = req["approval"]["tool_call_id"]
+        .as_str()
+        .expect("id")
+        .to_string();
     assert_eq!(req["approval"]["name"], "run_command");
 
     // A client connecting now sees the pending request in hello.
@@ -578,11 +617,17 @@ async fn settings_skills_and_approvals() {
     assert_eq!(hello["pending_approval"]["tool_call_id"], call_id.as_str());
 
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": "nope", "decision": "approve"}))
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": "nope", "decision": "approve"}),
+        )
         .await;
     assert_eq!(st, 409);
     let (st, v) = h
-        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "deny"}))
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "deny"}),
+        )
         .await;
     assert_eq!(st, 200, "{v}");
     let resolved = ws.until_type("approval_resolved").await;
@@ -596,36 +641,59 @@ async fn settings_skills_and_approvals() {
 
     // Approve: it runs.
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo approved"}))
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo approved"}),
+        )
         .await;
     assert_eq!(st, 202);
     let req = ws.until_type("approval_request").await;
-    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    let call_id = req["approval"]["tool_call_id"]
+        .as_str()
+        .expect("id")
+        .to_string();
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "approve"}))
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "approve"}),
+        )
         .await;
     assert_eq!(st, 200);
     let result = ws.until_type("tool_result").await;
     assert_eq!(result["is_error"], false, "{result}");
-    assert!(result["content"].as_str().unwrap_or("").contains("approved"));
+    assert!(
+        result["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("approved")
+    );
     ws.until_status(&["done", "error", "stopped"]).await;
 
     // Nothing pending any more.
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "approve"}))
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "approve"}),
+        )
         .await;
     assert_eq!(st, 409);
 
     // Stopping while waiting for approval ends the task.
     let (st, _) = h
-        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo never"}))
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo never"}),
+        )
         .await;
     assert_eq!(st, 202);
     ws.until_type("approval_request").await;
     let (st, _) = h.post(&format!("/sessions/{sid}/stop"), json!({})).await;
     assert_eq!(st, 200);
     let ev = ws.until_status(&["done", "error", "stopped"]).await;
-    assert_eq!(ev.last().map(|e| e["status"].clone()), Some(json!("stopped")));
+    assert_eq!(
+        ev.last().map(|e| e["status"].clone()),
+        Some(json!("stopped"))
+    );
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
@@ -634,7 +702,12 @@ async fn pairing_and_cors() {
     let h = Harness::start().await;
 
     // The pairing endpoint needs the token like everything else.
-    let r = h.http.get(format!("{}/pairing", h.base)).send().await.expect("pairing");
+    let r = h
+        .http
+        .get(format!("{}/pairing", h.base))
+        .send()
+        .await
+        .expect("pairing");
     assert_eq!(r.status(), 401);
     let p = h.get("/pairing").await;
     let link = p["link"].as_str().expect("link");
@@ -651,10 +724,16 @@ async fn pairing_and_cors() {
             .send()
     };
     // The desktop window and the local dev server may read responses...
-    for origin in ["http://tauri.localhost", "tauri://localhost", "http://localhost:8081"] {
+    for origin in [
+        "http://tauri.localhost",
+        "tauri://localhost",
+        "http://localhost:8081",
+    ] {
         let r = preflight(origin).await.expect("preflight");
         assert_eq!(
-            r.headers().get("access-control-allow-origin").and_then(|v| v.to_str().ok()),
+            r.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
             Some(origin),
             "{origin}"
         );

@@ -176,7 +176,11 @@ impl AgentManager {
     pub fn subscribe(
         &self,
         session_id: &str,
-    ) -> (broadcast::Receiver<Event>, Option<Draft>, Option<PendingApproval>) {
+    ) -> (
+        broadcast::Receiver<Event>,
+        Option<Draft>,
+        Option<PendingApproval>,
+    ) {
         let rx = self.sender(session_id).subscribe();
         let running = lock(&self.running);
         let task = running.get(session_id);
@@ -187,7 +191,9 @@ impl AgentManager {
 
     /// The tool call currently waiting for approval, if any.
     pub fn pending_approval(&self, session_id: &str) -> Option<PendingApproval> {
-        lock(&self.running).get(session_id).and_then(|t| lock(&t.approval).as_ref().map(|a| a.info.clone()))
+        lock(&self.running)
+            .get(session_id)
+            .and_then(|t| lock(&t.approval).as_ref().map(|a| a.info.clone()))
     }
 
     /// Answers a pending approval request.
@@ -200,11 +206,15 @@ impl AgentManager {
     ) -> Result<(), ApprovalError> {
         let slot = {
             let running = lock(&self.running);
-            let task = running.get(session_id).ok_or(ApprovalError::NothingPending)?;
+            let task = running
+                .get(session_id)
+                .ok_or(ApprovalError::NothingPending)?;
             let mut guard = lock(&task.approval);
             match guard.as_ref() {
                 None => return Err(ApprovalError::NothingPending),
-                Some(a) if a.info.tool_call_id != tool_call_id => return Err(ApprovalError::WrongCall),
+                Some(a) if a.info.tool_call_id != tool_call_id => {
+                    return Err(ApprovalError::WrongCall);
+                }
                 Some(_) => {}
             }
             guard.take()
@@ -305,7 +315,10 @@ impl AgentManager {
         );
 
         let this = self.clone();
-        tokio::spawn(async move { this.run_task(session, project, cancel, draft, approval).await });
+        tokio::spawn(async move {
+            this.run_task(session, project, cancel, draft, approval)
+                .await
+        });
         Ok(user_msg)
     }
 
@@ -343,7 +356,9 @@ impl AgentManager {
         approval: Arc<Mutex<Option<ApprovalSlot>>>,
     ) {
         tracing::info!(session = %session.id, project = %project.name, "task started");
-        let result = self.agent_loop(&session, &project, &cancel, &draft, &approval).await;
+        let result = self
+            .agent_loop(&session, &project, &cancel, &draft, &approval)
+            .await;
         let (status, error) = match result {
             Ok(LoopEnd::Done) => ("done", None),
             Ok(LoopEnd::Stopped) => ("stopped", None),
@@ -391,10 +406,16 @@ impl AgentManager {
     ) -> Result<LoopEnd> {
         // Settings are read once per task; changes apply to the next prompt.
         let conf: Config = self.cfg.get();
-        let (skill_roots, prompt_path) = self.cfg.read(|l| (l.skill_roots(), l.system_prompt_path()));
+        let (skill_roots, prompt_path) =
+            self.cfg.read(|l| (l.skill_roots(), l.system_prompt_path()));
         let found_skills: Vec<skills::Skill> = skills::discover(&skill_roots)
             .into_iter()
-            .filter(|s| !conf.disabled_skills.iter().any(|d| d.eq_ignore_ascii_case(&s.name)))
+            .filter(|s| {
+                !conf
+                    .disabled_skills
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case(&s.name))
+            })
             .collect();
         let skill_dirs: Vec<PathBuf> = found_skills.iter().map(|s| s.dir.clone()).collect();
         let sandbox = Sandbox::new(Path::new(&project.path), &skill_dirs)?;
@@ -403,7 +424,8 @@ impl AgentManager {
             shell: conf.shell.clone(),
             default_timeout: conf.agent.command_timeout_seconds,
         };
-        let system = build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await;
+        let system =
+            build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await;
         let url = format!("{}/v1/chat/completions", self.model.base_url());
         let tool_defs = tools::definitions(&conf.agent.tools);
         let mut approval_mode = conf.agent.approval;
@@ -487,7 +509,10 @@ impl AgentManager {
                     );
                     if !conf.agent.tools.enabled(&call.name) {
                         tools::ToolOutput {
-                            content: format!("error: the {} tool is turned off in Relay's settings", call.name),
+                            content: format!(
+                                "error: the {} tool is turned off in Relay's settings",
+                                call.name
+                            ),
                             is_error: true,
                         }
                     } else if needs_approval(approval_mode, &call.name) {
@@ -545,7 +570,10 @@ impl AgentManager {
                 self.emit(&session.id, Event::Message { message: saved });
             }
         }
-        bail!("stopped after reaching the limit of {} steps", conf.agent.max_steps)
+        bail!(
+            "stopped after reaching the limit of {} steps",
+            conf.agent.max_steps
+        )
     }
 
     /// Publishes an approval request, notifies the phone, and waits for the
@@ -565,7 +593,10 @@ impl AgentManager {
             requested_at: db::now(),
         };
         let (tx, rx) = oneshot::channel();
-        *lock(slot) = Some(ApprovalSlot { info: info.clone(), tx });
+        *lock(slot) = Some(ApprovalSlot {
+            info: info.clone(),
+            tx,
+        });
         self.emit(&session.id, Event::ApprovalRequest { approval: info });
         let sid = session.id.clone();
         let title = self

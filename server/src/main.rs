@@ -34,7 +34,10 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config_path = cli.config.clone().unwrap_or_else(relay::config::default_config_path);
+    let config_path = cli
+        .config
+        .clone()
+        .unwrap_or_else(relay::config::default_config_path);
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => {
             tracing_subscriber::fmt()

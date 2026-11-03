@@ -271,7 +271,10 @@ impl Supervisor {
                 None => Outcome::Shutdown(oneshot::channel().0),
             };
         }
-        self.status.write().unwrap_or_else(|e| e.into_inner()).model_path = self.cfg.model_path.clone();
+        self.status
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .model_path = self.cfg.model_path.clone();
 
         let mut child = match self.spawn().await {
             Ok(c) => c,
@@ -361,7 +364,8 @@ impl Supervisor {
         if !self.cfg.auto_setup {
             return Ok(());
         }
-        let exe_ok = !self.cfg.llama_server_path.trim().is_empty() && self.cfg.executable().is_file();
+        let exe_ok =
+            !self.cfg.llama_server_path.trim().is_empty() && self.cfg.executable().is_file();
         if !exe_ok {
             let found = match setup::find_llama_server(&self.data_dir) {
                 Some(p) => p,
@@ -375,7 +379,12 @@ impl Supervisor {
                         });
                         s.progress = frac;
                     };
-                    self.set(ModelState::Starting, Some("Setting up llama.cpp".into()), None, false);
+                    self.set(
+                        ModelState::Starting,
+                        Some("Setting up llama.cpp".into()),
+                        None,
+                        false,
+                    );
                     tracing::info!("llama-server not found; downloading llama.cpp");
                     setup::download_llama_server(&self.data_dir, &self.hardware, &progress)
                         .await
@@ -390,7 +399,8 @@ impl Supervisor {
                 .map_err(|e| anyhow!("{e}"))?
                 .llama;
         }
-        let model_ok = !self.cfg.model_path.trim().is_empty() && PathBuf::from(&self.cfg.model_path).is_file();
+        let model_ok =
+            !self.cfg.model_path.trim().is_empty() && PathBuf::from(&self.cfg.model_path).is_file();
         if !model_ok {
             let dirs = self.shared.read(|l| l.model_dirs());
             let models = tokio::task::spawn_blocking(move || setup::discover_models(&dirs)).await?;
@@ -414,7 +424,9 @@ impl Supervisor {
     async fn spawn(&self) -> Result<Child> {
         let exe = self.cfg.executable();
         if self.cfg.llama_server_path.trim().is_empty() {
-            bail!("llama-server is not set up: set llama_server_path in config.toml, or turn auto_setup on");
+            bail!(
+                "llama-server is not set up: set llama_server_path in config.toml, or turn auto_setup on"
+            );
         }
         if !exe.is_file() {
             bail!("llama-server not found at {}", exe.display());

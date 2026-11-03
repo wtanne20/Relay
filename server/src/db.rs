@@ -157,7 +157,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
         .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'instructions'")?
         .exists([])?;
     if !has_instructions {
-        conn.execute_batch("ALTER TABLE projects ADD COLUMN instructions TEXT NOT NULL DEFAULT ''")?;
+        conn.execute_batch(
+            "ALTER TABLE projects ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
+        )?;
     }
     Ok(())
 }
@@ -177,8 +179,9 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
 }
 
 pub fn list_projects(c: &Connection) -> Result<Vec<Project>> {
-    let mut st =
-        c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects ORDER BY name COLLATE NOCASE"))?;
+    let mut st = c.prepare(&format!(
+        "SELECT {PROJECT_COLS} FROM projects ORDER BY name COLLATE NOCASE"
+    ))?;
     let rows = st
         .query_map([], project_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;

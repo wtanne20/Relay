@@ -9,15 +9,25 @@ use relay::model_manager::{ModelManager, ModelState};
 use relay::setup::Hardware;
 
 /// Starts a manager whose data folder (config.toml, logs/) is `dir`.
-fn start(llama: LlamaConfig, dir: &std::path::Path) -> (ModelManager, std::sync::Arc<SharedConfig>) {
+fn start(
+    llama: LlamaConfig,
+    dir: &std::path::Path,
+) -> (ModelManager, std::sync::Arc<SharedConfig>) {
     std::fs::create_dir_all(dir).expect("mkdir");
     let shared = SharedConfig::new(LoadedConfig {
-        config: Config { llama, token: "t".into(), ..Default::default() },
+        config: Config {
+            llama,
+            token: "t".into(),
+            ..Default::default()
+        },
         path: dir.join("config.toml"),
         data_dir: dir.to_path_buf(),
         token_generated: false,
     });
-    (ModelManager::start(shared.clone(), Hardware::default()), shared)
+    (
+        ModelManager::start(shared.clone(), Hardware::default()),
+        shared,
+    )
 }
 
 /// Path to the mock_llama example binary, building it if needed.
@@ -192,10 +202,16 @@ async fn first_run_picks_a_model_and_saves_it() {
     let model = model_dir.join("some-Q4_K_M.gguf");
     std::fs::write(&model, b"GGUF").expect("write");
     let (m, shared) = start(cfg, &dir);
-    assert!(wait_for(&m, ModelState::Ready, 20).await, "{:?}", m.status());
+    assert!(
+        wait_for(&m, ModelState::Ready, 20).await,
+        "{:?}",
+        m.status()
+    );
     // Compare as paths so separators don't matter on Windows.
     assert_eq!(
-        std::path::Path::new(&shared.get().llama.model_path).components().collect::<Vec<_>>(),
+        std::path::Path::new(&shared.get().llama.model_path)
+            .components()
+            .collect::<Vec<_>>(),
         model.components().collect::<Vec<_>>()
     );
     let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config saved");

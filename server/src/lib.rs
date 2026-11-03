@@ -98,14 +98,26 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
         wait_for_shutdown_signal().await;
         signal.cancel();
     });
-    let opts = ServeOptions { console: true, open_pairing_page: true, shutdown };
+    let opts = ServeOptions {
+        console: true,
+        open_pairing_page: true,
+        shutdown,
+    };
     if run_server(cfg, opts).await? == ServeOutcome::AlreadyRunning {
         println!();
-        println!("  Relay is already running on this PC (port {} is in use).", port_of(&bind));
+        println!(
+            "  Relay is already running on this PC (port {} is in use).",
+            port_of(&bind)
+        );
         println!("  Opening the pairing page instead...");
         let ts = setup::detect_tailscale().await;
         let url = setup::pairing_url(ts.as_ref(), port_of(&bind));
-        if let Ok(page) = setup::write_pairing_page(&data_dir, &url, &setup::pairing_payload(&url, &token), ts.is_some()) {
+        if let Ok(page) = setup::write_pairing_page(
+            &data_dir,
+            &url,
+            &setup::pairing_payload(&url, &token),
+            ts.is_some(),
+        ) {
             setup::open_in_browser(&page);
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -125,7 +137,9 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
 
     let listener = match tokio::net::TcpListener::bind(&bind).await {
         Ok(l) => l,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Ok(ServeOutcome::AlreadyRunning),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            return Ok(ServeOutcome::AlreadyRunning);
+        }
         Err(e) => return Err(e).with_context(|| format!("binding {bind}")),
     };
     let (app, state) = build_app(cfg).await?;
@@ -136,8 +150,14 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
 
     if opts.console {
         println!();
-        println!("  Relay {} is running. Keep this window open (you can minimize it).", env!("CARGO_PKG_VERSION"));
-        println!("  Settings and data: {}", cfg_path.parent().unwrap_or(&data_dir).display());
+        println!(
+            "  Relay {} is running. Keep this window open (you can minimize it).",
+            env!("CARGO_PKG_VERSION")
+        );
+        println!(
+            "  Settings and data: {}",
+            cfg_path.parent().unwrap_or(&data_dir).display()
+        );
         println!();
         match setup::qr_console(&payload) {
             Ok(qr) => {
@@ -151,7 +171,9 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
         println!("    Token:   {token}");
         if state.tailscale.is_none() {
             println!();
-            println!("  Tailscale was not found on this PC. Install it from https://tailscale.com and");
+            println!(
+                "  Tailscale was not found on this PC. Install it from https://tailscale.com and"
+            );
             println!("  sign in with the same account as your phone, then restart Relay.");
         }
         println!();
@@ -173,7 +195,8 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
     });
 
     let graceful = state.shutdown.clone();
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move { graceful.cancelled().await });
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { graceful.cancelled().await });
     let forced = state.shutdown.clone();
     tokio::select! {
         r = server => r.context("server error")?,

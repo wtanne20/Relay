@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentManager, ApprovalError, Decision, StartError};
-use crate::config::{CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, UpdateError, constant_time_eq};
+use crate::config::{
+    CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, UpdateError, constant_time_eq,
+};
 use crate::db::{self, Db};
 use crate::model_manager::ModelManager;
 use crate::push::Pusher;
@@ -129,7 +131,10 @@ pub fn router(state: AppState) -> Router {
         .route("/model/restart", post(model_restart))
         .route("/models", get(list_models))
         .route("/settings", get(get_settings).patch(patch_settings))
-        .route("/system-prompt", get(get_system_prompt).put(put_system_prompt))
+        .route(
+            "/system-prompt",
+            get(get_system_prompt).put(put_system_prompt),
+        )
         .route("/skills", get(list_skills))
         .route("/projects", get(list_projects).post(create_project))
         .route(
@@ -178,10 +183,19 @@ pub const ALLOWED_ORIGINS: &[&str] = &[
 
 fn cors() -> tower_http::cors::CorsLayer {
     use axum::http::{HeaderValue, Method};
-    let origins: Vec<HeaderValue> = ALLOWED_ORIGINS.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+    let origins: Vec<HeaderValue> = ALLOWED_ORIGINS
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
     tower_http::cors::CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
         .max_age(std::time::Duration::from_secs(600))
 }
@@ -244,11 +258,16 @@ async fn info(State(s): State<AppState>) -> ApiResult<Json<Value>> {
 /// the relay:// link and the QR code as SVG. Lets the desktop app show the
 /// pairing code.
 async fn pairing(State(s): State<AppState>) -> ApiResult<Json<Value>> {
-    let (bind, token) = s.cfg.read(|l| (l.config.bind.clone(), l.config.token.clone()));
+    let (bind, token) = s
+        .cfg
+        .read(|l| (l.config.bind.clone(), l.config.token.clone()));
     let url = setup::pairing_url(s.tailscale.as_ref(), crate::port_of(&bind));
     let payload = setup::pairing_payload(&url, &token);
-    let svg = setup::qr_svg(&payload, 256).map_err(|e| ApiError::Internal(format!("QR code: {e}")))?;
-    Ok(Json(json!({ "url": url, "link": payload, "svg": svg, "tailscale": s.tailscale.is_some() })))
+    let svg =
+        setup::qr_svg(&payload, 256).map_err(|e| ApiError::Internal(format!("QR code: {e}")))?;
+    Ok(Json(
+        json!({ "url": url, "link": payload, "svg": svg, "tailscale": s.tailscale.is_some() }),
+    ))
 }
 
 // ---------- settings ----------
@@ -288,7 +307,11 @@ fn merge(base: &mut Value, patch: &Value, path: &str) -> ApiResult<()> {
     match (base, patch) {
         (Value::Object(b), Value::Object(p)) => {
             for (k, v) in p {
-                let child = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let child = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
                 match b.get_mut(k) {
                     Some(slot) => merge(slot, v, &child)?,
                     None => return Err(ApiError::BadRequest(format!("unknown setting '{child}'"))),
@@ -315,8 +338,13 @@ async fn patch_settings(
     let Value::Object(obj) = &patch else {
         return Err(ApiError::BadRequest("expected a JSON object".into()));
     };
-    if let Some(k) = obj.keys().find(|k| !EDITABLE_SECTIONS.contains(&k.as_str())) {
-        return Err(ApiError::BadRequest(format!("'{k}' cannot be changed from the app")));
+    if let Some(k) = obj
+        .keys()
+        .find(|k| !EDITABLE_SECTIONS.contains(&k.as_str()))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "'{k}' cannot be changed from the app"
+        )));
     }
     let current = s.cfg.get();
     let mut view = settings_view(&current);
@@ -331,7 +359,8 @@ async fn patch_settings(
     }
     let next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
-    if next.llama.model_path != current.llama.model_path && !next.llama.model_path.trim().is_empty() {
+    if next.llama.model_path != current.llama.model_path && !next.llama.model_path.trim().is_empty()
+    {
         let p = Path::new(next.llama.model_path.trim());
         let is_gguf = p
             .extension()
@@ -397,7 +426,9 @@ async fn put_system_prompt(
     JsonBody(body): JsonBody<SystemPrompt>,
 ) -> ApiResult<Json<Value>> {
     if body.content.len() > 200_000 {
-        return Err(ApiError::BadRequest("system prompt is too long (max 200,000 bytes)".into()));
+        return Err(ApiError::BadRequest(
+            "system prompt is too long (max 200,000 bytes)".into(),
+        ));
     }
     let content = if body.content.trim().is_empty() {
         DEFAULT_SYSTEM_PROMPT.to_string()
@@ -412,8 +443,13 @@ async fn put_system_prompt(
 }
 
 async fn list_skills(State(s): State<AppState>) -> ApiResult<Json<Value>> {
-    let (roots, disabled) = s.cfg.read(|l| (l.skill_roots(), l.config.disabled_skills.clone()));
-    let roots_out: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+    let (roots, disabled) = s
+        .cfg
+        .read(|l| (l.skill_roots(), l.config.disabled_skills.clone()));
+    let roots_out: Vec<String> = roots
+        .iter()
+        .map(|r| r.to_string_lossy().into_owned())
+        .collect();
     let found = tokio::task::spawn_blocking(move || crate::skills::discover(&roots))
         .await
         .map_err(|e| anyhow::anyhow!("skill scan failed: {e}"))?;
@@ -432,8 +468,13 @@ async fn list_skills(State(s): State<AppState>) -> ApiResult<Json<Value>> {
 }
 
 async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
-    let (dirs, current) = s.cfg.read(|l| (l.model_dirs(), l.config.llama.model_path.clone()));
-    let dirs_out: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+    let (dirs, current) = s
+        .cfg
+        .read(|l| (l.model_dirs(), l.config.llama.model_path.clone()));
+    let dirs_out: Vec<String> = dirs
+        .iter()
+        .map(|d| d.to_string_lossy().into_owned())
+        .collect();
     let cur = current.clone();
     let models = tokio::task::spawn_blocking(move || {
         let mut found = crate::setup::discover_models(&dirs);
@@ -444,7 +485,10 @@ async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
                 0,
                 crate::setup::ModelFile {
                     path: cur.clone(),
-                    name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    name: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
                     size_bytes: p.metadata().map(|m| m.len()).unwrap_or(0),
                 },
             );
@@ -561,14 +605,22 @@ async fn update_project(
     let path = body.path.as_deref().map(validate_folder).transpose()?;
     let instructions = body.instructions;
     if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
-        return Err(ApiError::BadRequest("instructions are too long (max 50,000 bytes)".into()));
+        return Err(ApiError::BadRequest(
+            "instructions are too long (max 50,000 bytes)".into(),
+        ));
     }
     let project =
         s.db.call(move |c| {
-            db::update_project(c, &id, name.as_deref(), path.as_deref(), instructions.as_deref())
+            db::update_project(
+                c,
+                &id,
+                name.as_deref(),
+                path.as_deref(),
+                instructions.as_deref(),
+            )
         })
-            .await?
-            .ok_or(ApiError::NotFound("project"))?;
+        .await?
+        .ok_or(ApiError::NotFound("project"))?;
     Ok(Json(json!({ "project": project })))
 }
 
@@ -769,7 +821,8 @@ async fn answer_approval(
     JsonBody(body): JsonBody<ApprovalAnswer>,
 ) -> ApiResult<Json<Value>> {
     let note = body.note.map(|n| n.chars().take(2000).collect::<String>());
-    s.agent.resolve_approval(&id, &body.tool_call_id, body.decision, note)?;
+    s.agent
+        .resolve_approval(&id, &body.tool_call_id, body.decision, note)?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -36,7 +36,15 @@ impl Hardware {
 /// Uses nvidia-smi when available. Missing tools simply mean "no NVIDIA GPU".
 pub async fn detect_hardware() -> Hardware {
     let mut hw = Hardware::default();
-    if let Some(out) = run_capture("nvidia-smi", &["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]).await {
+    if let Some(out) = run_capture(
+        "nvidia-smi",
+        &[
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+    )
+    .await
+    {
         hw.gpus = parse_gpu_csv(&out);
     }
     if !hw.gpus.is_empty()
@@ -51,28 +59,51 @@ pub fn parse_gpu_csv(s: &str) -> Vec<GpuInfo> {
     s.lines()
         .filter_map(|l| {
             let (name, mem) = l.rsplit_once(',')?;
-            Some(GpuInfo { name: name.trim().to_string(), vram_mb: mem.trim().parse().ok()? })
+            Some(GpuInfo {
+                name: name.trim().to_string(),
+                vram_mb: mem.trim().parse().ok()?,
+            })
         })
         .collect()
 }
 
+/// Reads the CUDA version the driver supports from nvidia-smi's header. Older
+/// drivers print "CUDA Version: 13.0", newer ones "CUDA UMD Version: 13.3".
 pub fn parse_cuda_version(s: &str) -> Option<(u32, u32)> {
-    let idx = s.find("CUDA Version:")?;
-    let rest = s[idx + "CUDA Version:".len()..].trim_start();
-    let ver: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
-    let (a, b) = ver.split_once('.')?;
-    Some((a.parse().ok()?, b.parse().ok()?))
+    s.match_indices("CUDA").find_map(|(i, _)| {
+        let after = &s[i + "CUDA".len()..];
+        let (label, rest) = after.split_once(':')?;
+        if !label.trim_end().ends_with("Version") || label.contains('|') || label.len() > 24 {
+            return None;
+        }
+        let ver: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let (a, b) = ver.split_once('.')?;
+        Some((a.parse().ok()?, b.parse().ok()?))
+    })
 }
 
 async fn run_capture(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     #[cfg(windows)]
     {
         cmd.creation_flags(0x0800_0000);
     }
-    let out = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await.ok()?.ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = tokio::time::timeout(Duration::from_secs(10), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 // ---------- Tailscale ----------
@@ -89,7 +120,13 @@ pub async fn detect_tailscale() -> Option<Tailscale> {
     if cfg!(windows) {
         for var in ["ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(pf) = std::env::var_os(var) {
-                candidates.push(PathBuf::from(pf).join("Tailscale").join("tailscale.exe").to_string_lossy().into_owned());
+                candidates.push(
+                    PathBuf::from(pf)
+                        .join("Tailscale")
+                        .join("tailscale.exe")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
     }
@@ -112,7 +149,12 @@ pub fn parse_tailscale_status(json: &str) -> Option<Tailscale> {
     let ip = me
         .get("TailscaleIPs")
         .and_then(Value::as_array)
-        .and_then(|a| a.iter().filter_map(Value::as_str).find(|ip| ip.contains('.')).map(str::to_string));
+        .and_then(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .find(|ip| ip.contains('.'))
+                .map(str::to_string)
+        });
     if dns_name.is_none() && ip.is_none() {
         return None;
     }
@@ -128,7 +170,11 @@ pub fn find_llama_server(data_dir: &Path) -> Option<PathBuf> {
     let own = data_dir.join("llama.cpp");
     if let Ok(rd) = std::fs::read_dir(&own) {
         // Newest download first (folders are named after the release tag).
-        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
         dirs.sort();
         dirs.reverse();
         candidates.extend(dirs.into_iter().map(|d| d.join(LLAMA_SERVER_EXE)));
@@ -160,18 +206,20 @@ pub fn choose_assets(names: &[String], hw: &Hardware, windows: bool) -> Result<V
         return Ok(vec![cpu.clone()]);
     }
     if !hw.gpus.is_empty() {
-        let max = hw.cuda_driver.unwrap_or((12, 0));
+        // CUDA minor-version compatibility: a driver for CUDA X.y runs any X.* build.
+        // With an unknown driver version, stay on CUDA 12, which every current driver runs.
+        let max_major = hw.cuda_driver.map_or(12, |(major, _)| major);
         let mut cuda: Vec<((u32, u32), &String)> = names
             .iter()
             .filter(|n| n.starts_with("llama-") && n.ends_with("-x64.zip"))
             .filter_map(|n| cuda_version_in(n, "-bin-win-cuda-").map(|v| (v, n)))
-            .filter(|(v, _)| *v <= max)
+            .filter(|((major, _), _)| *major <= max_major)
             .collect();
         cuda.sort();
         if let Some((ver, main)) = cuda.last() {
-            let cudart = names
-                .iter()
-                .find(|n| n.starts_with("cudart-") && cuda_version_in(n, "-bin-win-cuda-") == Some(*ver));
+            let cudart = names.iter().find(|n| {
+                n.starts_with("cudart-") && cuda_version_in(n, "-bin-win-cuda-") == Some(*ver)
+            });
             let mut out = vec![(*main).clone()];
             if let Some(c) = cudart {
                 out.push(c.clone());
@@ -180,17 +228,52 @@ pub fn choose_assets(names: &[String], hw: &Hardware, windows: bool) -> Result<V
         }
     }
     for kind in ["-bin-win-vulkan-x64.zip", "-bin-win-cpu-x64.zip"] {
-        if let Some(n) = names.iter().find(|n| n.starts_with("llama-") && n.ends_with(kind)) {
+        if let Some(n) = names
+            .iter()
+            .find(|n| n.starts_with("llama-") && n.ends_with(kind))
+        {
             return Ok(vec![n.clone()]);
         }
     }
     bail!("no suitable Windows build found in the latest llama.cpp release")
 }
 
+fn asset_names(release: &Value) -> Vec<String> {
+    release
+        .get("assets")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The newest non-draft release (GitHub lists newest first) that has a build for this PC.
+pub fn pick_release<'a>(
+    releases: &'a [Value],
+    hw: &Hardware,
+    windows: bool,
+) -> Result<(&'a Value, Vec<String>)> {
+    releases
+        .iter()
+        .filter(|r| r.get("draft").and_then(Value::as_bool) != Some(true))
+        .find_map(|r| {
+            choose_assets(&asset_names(r), hw, windows)
+                .ok()
+                .map(|c| (r, c))
+        })
+        .ok_or_else(|| anyhow!("no recent llama.cpp release has a build for this PC"))
+}
+
 fn cuda_version_in(name: &str, marker: &str) -> Option<(u32, u32)> {
     let idx = name.find(marker)?;
     let rest = &name[idx + marker.len()..];
-    let ver: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let ver: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let (a, b) = ver.split_once('.')?;
     Some((a.parse().ok()?, b.trim_end_matches('.').parse().ok()?))
 }
@@ -208,8 +291,10 @@ pub async fn download_llama_server(
         .connect_timeout(Duration::from_secs(20))
         .build()?;
     progress("Looking up the latest llama.cpp release".into(), None);
-    let release: Value = http
-        .get("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
+    // Not /releases/latest: llama.cpp publishes its builds (b1234 tags) as prereleases,
+    // and "latest" can be a release with no binaries at all.
+    let releases: Value = http
+        .get("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -217,11 +302,21 @@ pub async fn download_llama_server(
         .error_for_status()?
         .json()
         .await?;
-    let tag = release.get("tag_name").and_then(Value::as_str).unwrap_or("latest").to_string();
-    let assets = release.get("assets").and_then(Value::as_array).cloned().unwrap_or_default();
-    let names: Vec<String> =
-        assets.iter().filter_map(|a| a.get("name").and_then(Value::as_str).map(str::to_string)).collect();
-    let chosen = choose_assets(&names, hw, cfg!(windows))?;
+    let (release, chosen) = pick_release(
+        releases.as_array().map(Vec::as_slice).unwrap_or_default(),
+        hw,
+        cfg!(windows),
+    )?;
+    let tag = release
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .unwrap_or("latest")
+        .to_string();
+    let assets = release
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let dest = data_dir.join("llama.cpp").join(&tag);
     let downloads = data_dir.join("downloads");
@@ -234,13 +329,17 @@ pub async fn download_llama_server(
             .and_then(|a| a.get("browser_download_url").and_then(Value::as_str))
             .ok_or_else(|| anyhow!("asset {name} has no download URL"))?;
         let zip = downloads.join(name);
-        download_file(&http, url, &zip, &|f| progress(format!("Downloading {name}"), Some(f))).await?;
+        download_file(&http, url, &zip, &|f| {
+            progress(format!("Downloading {name}"), Some(f))
+        })
+        .await?;
         progress(format!("Extracting {name}"), None);
         extract_zip(&zip, &dest).await?;
         let _ = tokio::fs::remove_file(&zip).await;
     }
-    let exe = find_file(&dest, LLAMA_SERVER_EXE, 3)
-        .ok_or_else(|| anyhow!("downloaded llama.cpp {tag} but {LLAMA_SERVER_EXE} was not in it"))?;
+    let exe = find_file(&dest, LLAMA_SERVER_EXE, 3).ok_or_else(|| {
+        anyhow!("downloaded llama.cpp {tag} but {LLAMA_SERVER_EXE} was not in it")
+    })?;
     // CUDA runtime DLLs must sit next to the exe.
     if let Some(exe_dir) = exe.parent()
         && exe_dir != dest
@@ -262,7 +361,12 @@ pub async fn download_llama_server(
     Ok(exe)
 }
 
-async fn download_file(http: &reqwest::Client, url: &str, dest: &Path, progress: &(dyn Fn(f32) + Send + Sync)) -> Result<()> {
+async fn download_file(
+    http: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    progress: &(dyn Fn(f32) + Send + Sync),
+) -> Result<()> {
     let mut resp = http.get(url).send().await?.error_for_status()?;
     let total = resp.content_length();
     let tmp = dest.with_extension("part");
@@ -304,7 +408,14 @@ async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
         }
         cmd.status().await
     } else {
-        tokio::process::Command::new("unzip").arg("-o").arg("-q").arg(zip).arg("-d").arg(dest).status().await
+        tokio::process::Command::new("unzip")
+            .arg("-o")
+            .arg("-q")
+            .arg(zip)
+            .arg("-d")
+            .arg(dest)
+            .status()
+            .await
     }
     .context("could not run the zip extractor")?;
     if !status.success() {
@@ -322,7 +433,10 @@ fn find_file(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         return None;
     }
     let rd = std::fs::read_dir(dir).ok()?;
-    rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).find_map(|d| find_file(&d, name, depth - 1))
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .find_map(|d| find_file(&d, name, depth - 1))
 }
 
 // ---------- models ----------
@@ -347,7 +461,9 @@ pub fn discover_models(dirs: &[PathBuf]) -> Vec<ModelFile> {
 }
 
 fn walk_ggufs(dir: &Path, depth: usize, out: &mut Vec<ModelFile>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -356,7 +472,9 @@ fn walk_ggufs(dir: &Path, depth: usize, out: &mut Vec<ModelFile>) {
             }
             continue;
         }
-        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
         let lower = name.to_lowercase();
         if !lower.ends_with(".gguf") || lower.starts_with("mmproj") {
             continue;
@@ -369,7 +487,11 @@ fn walk_ggufs(dir: &Path, depth: usize, out: &mut Vec<ModelFile>) {
             }
         }
         let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-        out.push(ModelFile { path: p.to_string_lossy().into_owned(), name, size_bytes: size });
+        out.push(ModelFile {
+            path: p.to_string_lossy().into_owned(),
+            name,
+            size_bytes: size,
+        });
     }
 }
 
@@ -380,8 +502,13 @@ pub fn pick_model(models: &[ModelFile], vram_mb: u64) -> Option<ModelFile> {
         return None;
     }
     let budget = vram_mb.saturating_sub(2560) * 1024 * 1024;
-    let fitting = models.iter().filter(|m| m.size_bytes <= budget).max_by_key(|m| m.size_bytes);
-    fitting.or_else(|| models.iter().min_by_key(|m| m.size_bytes)).cloned()
+    let fitting = models
+        .iter()
+        .filter(|m| m.size_bytes <= budget)
+        .max_by_key(|m| m.size_bytes);
+    fitting
+        .or_else(|| models.iter().min_by_key(|m| m.size_bytes))
+        .cloned()
 }
 
 // ---------- pairing ----------
@@ -398,7 +525,11 @@ pub fn pairing_url(ts: Option<&Tailscale>, port: &str) -> String {
 
 /// What the QR code encodes. The app parses this to fill in the connection.
 pub fn pairing_payload(url: &str, token: &str) -> String {
-    format!("relay://pair?url={}&token={}", percent_encode(url), percent_encode(token))
+    format!(
+        "relay://pair?url={}&token={}",
+        percent_encode(url),
+        percent_encode(token)
+    )
 }
 
 fn percent_encode(s: &str) -> String {
@@ -427,11 +558,20 @@ pub fn qr_console(payload: &str) -> Result<String> {
 /// The pairing QR code as an SVG document.
 pub fn qr_svg(payload: &str, size: u32) -> Result<String> {
     let code = qrcode::QrCode::new(payload.as_bytes())?;
-    Ok(code.render::<qrcode::render::svg::Color>().min_dimensions(size, size).quiet_zone(true).build())
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(size, size)
+        .quiet_zone(true)
+        .build())
 }
 
 /// Writes pairing.html (QR code + instructions) into the data folder.
-pub fn write_pairing_page(data_dir: &Path, url: &str, payload: &str, tailscale_found: bool) -> Result<PathBuf> {
+pub fn write_pairing_page(
+    data_dir: &Path,
+    url: &str,
+    payload: &str,
+    tailscale_found: bool,
+) -> Result<PathBuf> {
     let svg = qr_svg(payload, 320)?;
     let warning = if tailscale_found {
         String::new()
@@ -469,11 +609,19 @@ ol{{text-align:left;line-height:1.6}}.warn{{color:#f0c46c}}
 pub fn open_in_browser(path: &Path) {
     let p = path.to_string_lossy().into_owned();
     let result = if cfg!(windows) {
-        std::process::Command::new("cmd").args(["/C", "start", "", &p]).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &p])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
     } else if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(&p).spawn()
     } else {
-        std::process::Command::new("xdg-open").arg(&p).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
     };
     if let Err(e) = result {
         tracing::debug!("could not open {p}: {e}");
@@ -500,15 +648,33 @@ mod tests {
     ];
 
     fn nvidia(cuda: (u32, u32)) -> Hardware {
-        Hardware { gpus: vec![GpuInfo { name: "RTX".into(), vram_mb: 32768 }], cuda_driver: Some(cuda) }
+        Hardware {
+            gpus: vec![GpuInfo {
+                name: "RTX".into(),
+                vram_mb: 32768,
+            }],
+            cuda_driver: Some(cuda),
+        }
     }
 
     #[test]
     fn picks_cuda_matching_driver() {
         let a = choose_assets(&names(RELEASE), &nvidia((13, 2)), true).unwrap();
-        assert_eq!(a, ["llama-b7000-bin-win-cuda-13.1-x64.zip", "cudart-llama-bin-win-cuda-13.1-x64.zip"]);
+        assert_eq!(
+            a,
+            [
+                "llama-b7000-bin-win-cuda-13.1-x64.zip",
+                "cudart-llama-bin-win-cuda-13.1-x64.zip"
+            ]
+        );
         let a = choose_assets(&names(RELEASE), &nvidia((12, 8)), true).unwrap();
-        assert_eq!(a, ["llama-b7000-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]);
+        assert_eq!(
+            a,
+            [
+                "llama-b7000-bin-win-cuda-12.4-x64.zip",
+                "cudart-llama-bin-win-cuda-12.4-x64.zip"
+            ]
+        );
     }
 
     #[test]
@@ -522,9 +688,67 @@ mod tests {
     #[test]
     fn parses_nvidia_smi() {
         let gpus = parse_gpu_csv("NVIDIA GeForce RTX 5090, 32607\n");
-        assert_eq!(gpus, vec![GpuInfo { name: "NVIDIA GeForce RTX 5090".into(), vram_mb: 32607 }]);
+        assert_eq!(
+            gpus,
+            vec![GpuInfo {
+                name: "NVIDIA GeForce RTX 5090".into(),
+                vram_mb: 32607
+            }]
+        );
         let head = "| NVIDIA-SMI 580.88   Driver Version: 580.88   CUDA Version: 13.0     |";
         assert_eq!(parse_cuda_version(head), Some((13, 0)));
+        let new = "| NVIDIA-SMI 610.88   Driver Version: 610.88   CUDA UMD Version: 13.3     |";
+        assert_eq!(parse_cuda_version(new), Some((13, 3)));
+        assert_eq!(parse_cuda_version("no gpu here"), None);
+    }
+
+    #[test]
+    fn same_major_cuda_build_is_allowed() {
+        let names = names(&[
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-13.4-x64.zip",
+            "llama-b12063-bin-win-cuda-12.4-x64.zip",
+            "llama-b12063-bin-win-cuda-13.4-x64.zip",
+            "llama-b12063-bin-win-vulkan-x64.zip",
+        ]);
+        let a = choose_assets(&names, &nvidia((13, 3)), true).unwrap();
+        assert_eq!(
+            a,
+            [
+                "llama-b12063-bin-win-cuda-13.4-x64.zip",
+                "cudart-llama-bin-win-cuda-13.4-x64.zip"
+            ]
+        );
+        let mut unknown = nvidia((0, 0));
+        unknown.cuda_driver = None;
+        let a = choose_assets(&names, &unknown, true).unwrap();
+        assert_eq!(
+            a,
+            [
+                "llama-b12063-bin-win-cuda-12.4-x64.zip",
+                "cudart-llama-bin-win-cuda-12.4-x64.zip"
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_releases_without_binaries() {
+        let rel = |tag: &str, assets: &[&str]| serde_json::json!({ "tag_name": tag, "assets": assets.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() });
+        let releases = vec![
+            rel("v0.8.0", &["nightly-tag.txt"]),
+            rel(
+                "b12063",
+                &[
+                    "llama-b12063-bin-win-vulkan-x64.zip",
+                    "llama-b12063-bin-ubuntu-x64.zip",
+                ],
+            ),
+            rel("b12061", &["llama-b12061-bin-win-vulkan-x64.zip"]),
+        ];
+        let (r, chosen) = pick_release(&releases, &Hardware::default(), true).unwrap();
+        assert_eq!(r["tag_name"], "b12063");
+        assert_eq!(chosen, ["llama-b12063-bin-win-vulkan-x64.zip"]);
+        assert!(pick_release(&releases[..1], &Hardware::default(), true).is_err());
     }
 
     #[test]
@@ -539,7 +763,11 @@ mod tests {
     #[test]
     fn model_choice_fits_vram() {
         let gb = 1024 * 1024 * 1024;
-        let m = |n: &str, s: u64| ModelFile { path: n.into(), name: n.into(), size_bytes: s * gb };
+        let m = |n: &str, s: u64| ModelFile {
+            path: n.into(),
+            name: n.into(),
+            size_bytes: s * gb,
+        };
         let models = vec![m("small", 5), m("q6", 22), m("huge", 40)];
         assert_eq!(pick_model(&models, 32768).unwrap().name, "q6");
         assert_eq!(pick_model(&models, 4096).unwrap().name, "small");
@@ -550,10 +778,19 @@ mod tests {
     fn discovers_models_skipping_projectors_and_extra_parts() {
         let base = std::env::temp_dir().join(format!("relay-models-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(base.join("pub/Model-GGUF")).unwrap();
-        for f in ["a-Q6_K.gguf", "mmproj-a.gguf", "big-00001-of-00002.gguf", "big-00002-of-00002.gguf", "notes.txt"] {
+        for f in [
+            "a-Q6_K.gguf",
+            "mmproj-a.gguf",
+            "big-00001-of-00002.gguf",
+            "big-00002-of-00002.gguf",
+            "notes.txt",
+        ] {
             std::fs::write(base.join("pub/Model-GGUF").join(f), b"x").unwrap();
         }
-        let found: Vec<String> = discover_models(std::slice::from_ref(&base)).into_iter().map(|m| m.name).collect();
+        let found: Vec<String> = discover_models(std::slice::from_ref(&base))
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
         assert_eq!(found, ["a-Q6_K.gguf", "big-00001-of-00002.gguf"]);
         std::fs::remove_dir_all(base).unwrap();
     }
@@ -561,7 +798,10 @@ mod tests {
     #[test]
     fn pairing_payload_round_trip() {
         let p = pairing_payload("http://my-pc.ts.net:8765", "abc123");
-        assert_eq!(p, "relay://pair?url=http%3A%2F%2Fmy-pc.ts.net%3A8765&token=abc123");
+        assert_eq!(
+            p,
+            "relay://pair?url=http%3A%2F%2Fmy-pc.ts.net%3A8765&token=abc123"
+        );
         assert!(qr_console(&p).unwrap().lines().count() > 10);
     }
 }

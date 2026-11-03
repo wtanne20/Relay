@@ -55,7 +55,13 @@ pub struct ToolToggles {
 
 impl Default for ToolToggles {
     fn default() -> Self {
-        Self { list_dir: true, read_file: true, write_file: true, edit_file: true, run_command: true }
+        Self {
+            list_dir: true,
+            read_file: true,
+            write_file: true,
+            edit_file: true,
+            run_command: true,
+        }
     }
 }
 
@@ -173,7 +179,11 @@ impl Default for Config {
             system_prompt_path: "system_prompt.md".into(),
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
-            shell: if cfg!(windows) { "powershell.exe".into() } else { "sh".into() },
+            shell: if cfg!(windows) {
+                "powershell.exe".into()
+            } else {
+                "sh".into()
+            },
             agent: AgentConfig::default(),
             sampling: SamplingConfig::default(),
             llama: LlamaConfig::default(),
@@ -213,7 +223,11 @@ impl LlamaConfig {
     /// the folder that contains it.
     pub fn executable(&self) -> PathBuf {
         let p = PathBuf::from(&self.llama_server_path);
-        if p.is_dir() { p.join(LLAMA_SERVER_EXE) } else { p }
+        if p.is_dir() {
+            p.join(LLAMA_SERVER_EXE)
+        } else {
+            p
+        }
     }
 
     /// llama-server arguments other than -m and --port (Relay adds those).
@@ -238,7 +252,11 @@ impl LlamaConfig {
     }
 }
 
-pub const LLAMA_SERVER_EXE: &str = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+pub const LLAMA_SERVER_EXE: &str = if cfg!(windows) {
+    "llama-server.exe"
+} else {
+    "llama-server"
+};
 
 impl Config {
     /// Checks values coming from the app before they are saved.
@@ -247,19 +265,48 @@ impl Config {
         let a = &self.agent;
         let l = &self.llama;
         let checks: [(bool, &str); 12] = [
-            ((0.0..=2.0).contains(&s.temperature), "temperature must be between 0 and 2"),
-            ((0.0..=1.0).contains(&s.top_p), "top_p must be between 0 and 1"),
-            (s.top_k <= 1000, "top_k must be at most 1000"),
-            ((0.0..=1.0).contains(&s.min_p), "min_p must be between 0 and 1"),
-            ((0.5..=2.0).contains(&s.repeat_penalty), "repeat_penalty must be between 0.5 and 2"),
-            ((-2.0..=2.0).contains(&s.presence_penalty), "presence_penalty must be between -2 and 2"),
-            ((1..=500).contains(&a.max_steps), "max_steps must be between 1 and 500"),
-            ((1..=3600).contains(&a.command_timeout_seconds), "command timeout must be between 1 and 3600 seconds"),
-            ((512..=1_048_576).contains(&l.context_size), "context size must be between 512 and 1048576"),
-            (l.gpu_layers <= 999, "gpu_layers must be at most 999"),
-            (["on", "off", "auto"].contains(&l.flash_attn.as_str()), "flash_attn must be on, off or auto"),
             (
-                [&l.cache_type_k, &l.cache_type_v].iter().all(|t| CACHE_TYPES.contains(&t.as_str())),
+                (0.0..=2.0).contains(&s.temperature),
+                "temperature must be between 0 and 2",
+            ),
+            (
+                (0.0..=1.0).contains(&s.top_p),
+                "top_p must be between 0 and 1",
+            ),
+            (s.top_k <= 1000, "top_k must be at most 1000"),
+            (
+                (0.0..=1.0).contains(&s.min_p),
+                "min_p must be between 0 and 1",
+            ),
+            (
+                (0.5..=2.0).contains(&s.repeat_penalty),
+                "repeat_penalty must be between 0.5 and 2",
+            ),
+            (
+                (-2.0..=2.0).contains(&s.presence_penalty),
+                "presence_penalty must be between -2 and 2",
+            ),
+            (
+                (1..=500).contains(&a.max_steps),
+                "max_steps must be between 1 and 500",
+            ),
+            (
+                (1..=3600).contains(&a.command_timeout_seconds),
+                "command timeout must be between 1 and 3600 seconds",
+            ),
+            (
+                (512..=1_048_576).contains(&l.context_size),
+                "context size must be between 512 and 1048576",
+            ),
+            (l.gpu_layers <= 999, "gpu_layers must be at most 999"),
+            (
+                ["on", "off", "auto"].contains(&l.flash_attn.as_str()),
+                "flash_attn must be on, off or auto",
+            ),
+            (
+                [&l.cache_type_k, &l.cache_type_v]
+                    .iter()
+                    .all(|t| CACHE_TYPES.contains(&t.as_str())),
                 "cache types must be one of f16, bf16, q8_0, q5_1, q5_0, q4_1, q4_0",
             ),
         ];
@@ -268,7 +315,10 @@ impl Config {
                 return Err(msg.to_string());
             }
         }
-        if l.extra_args.iter().any(|a| matches!(a.as_str(), "--host" | "--port" | "-m" | "--model")) {
+        if l.extra_args
+            .iter()
+            .any(|a| matches!(a.as_str(), "--host" | "--port" | "-m" | "--model"))
+        {
             return Err("extra_args may not set --host, --port or the model".into());
         }
         Ok(())
@@ -311,7 +361,9 @@ pub fn default_data_dir() -> PathBuf {
 
 /// The user's home folder (USERPROFILE on Windows).
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
 }
 
 /// LM Studio's data folder (%USERPROFILE%\.lmstudio).
@@ -346,7 +398,8 @@ impl LoadedConfig {
 
         let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
         let data_dir = abs
             .parent()
@@ -406,7 +459,10 @@ impl LoadedConfig {
             let r = self.resolve(p);
             // `relay migrate` may already have listed LM Studio's folder.
             let key = dunce::canonicalize(&r).unwrap_or_else(|_| r.clone());
-            if !roots.iter().any(|x| dunce::canonicalize(x).unwrap_or_else(|_| x.clone()) == key) {
+            if !roots
+                .iter()
+                .any(|x| dunce::canonicalize(x).unwrap_or_else(|_| x.clone()) == key)
+            {
                 roots.push(r);
             }
         }
@@ -420,7 +476,13 @@ impl LoadedConfig {
             dirs.push(h.join(".lmstudio").join("models"));
             dirs.push(h.join(".cache").join("lm-studio").join("models"));
         }
-        dirs.extend(self.config.llama.models_dirs.iter().map(|p| self.resolve(p)));
+        dirs.extend(
+            self.config
+                .llama
+                .models_dirs
+                .iter()
+                .map(|p| self.resolve(p)),
+        );
         dirs
     }
 }
@@ -433,7 +495,9 @@ pub struct SharedConfig {
 
 impl SharedConfig {
     pub fn new(loaded: LoadedConfig) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { inner: std::sync::RwLock::new(loaded) })
+        std::sync::Arc::new(Self {
+            inner: std::sync::RwLock::new(loaded),
+        })
     }
 
     /// Runs `f` with read access.
@@ -542,7 +606,10 @@ mod tests {
     #[test]
     fn default_server_args_match_spec() {
         let args = LlamaConfig::default().server_args().join(" ");
-        assert_eq!(args, "--jinja -ngl 99 -c 65536 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0");
+        assert_eq!(
+            args,
+            "--jinja -ngl 99 -c 65536 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0"
+        );
     }
 
     #[test]
