@@ -5,6 +5,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, Text
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
+import { relativeTime } from '../lib/format';
 import { enterToSend } from '../lib/layout';
 import type { Project } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
@@ -236,12 +237,32 @@ export function DesktopHome() {
 function PairCard() {
   const { client } = useConnection();
   const [svg, setSvg] = useState<string | null>(null);
+  // undefined while loading, so the card doesn't flash for paired phones.
+  const [phoneSeen, setPhoneSeen] = useState<string | null | undefined>(undefined);
   useEffect(() => {
+    client
+      ?.info()
+      .then((i) => setPhoneSeen(i.phone_last_seen ?? null))
+      .catch(() => setPhoneSeen(null));
     client
       ?.pairing()
       .then((p) => setSvg(p.svg))
       .catch(() => setSvg(null));
   }, [client]);
+  if (phoneSeen === undefined) return null;
+  if (phoneSeen) {
+    return (
+      <Pressable
+        onPress={() => router.replace('/settings')}
+        style={styles.phoneOk}
+        accessibilityRole="button"
+        accessibilityLabel="Phone connected. Opens Settings to pair another phone."
+      >
+        <View style={[styles.dot, { backgroundColor: m3.success }]} />
+        <Text style={[type.bodySmall, styles.pairBody]}>Phone connected · last seen {relativeTime(phoneSeen)}</Text>
+      </Pressable>
+    );
+  }
   return (
     <Pressable
       onPress={() => router.replace('/settings')}
@@ -384,4 +405,6 @@ const styles = StyleSheet.create({
   pairTitle: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   pairBody: { color: m3.onSurfaceVariant },
   pairLink: { color: m3.primary },
+  phoneOk: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.md },
+  dot: { width: 8, height: 8, borderRadius: 4 },
 });

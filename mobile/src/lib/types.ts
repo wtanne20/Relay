@@ -36,6 +36,8 @@ export interface ServerInfo {
   model: ModelStatus;
   gpus?: GpuInfo[];
   tailscale?: TailscaleInfo | null;
+  /** When a phone last talked to this PC (null if never). */
+  phone_last_seen?: string | null;
 }
 
 export interface Project {

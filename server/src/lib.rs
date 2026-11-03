@@ -48,6 +48,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     for g in &hardware.gpus {
         tracing::info!("GPU: {} ({} MB)", g.name, g.vram_mb);
     }
+    let data_dir = cfg.data_dir.clone();
     let shared = SharedConfig::new(cfg);
     let model = ModelManager::start(shared.clone(), hardware.clone());
     let pusher = Pusher::new(db.clone(), shared.clone());
@@ -62,6 +63,8 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         pusher,
         shutdown: CancellationToken::new(),
         started_at: chrono::Utc::now(),
+        phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
+        data_dir,
     });
     Ok((api::router(state.clone()), state))
 }
@@ -195,8 +198,11 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
     });
 
     let graceful = state.shutdown.clone();
-    let server = axum::serve(listener, app)
-        .with_graceful_shutdown(async move { graceful.cancelled().await });
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move { graceful.cancelled().await });
     let forced = state.shutdown.clone();
     tokio::select! {
         r = server => r.context("server error")?,

@@ -35,6 +35,37 @@ pub struct AppInner {
     /// Cancelled when Relay is shutting down (closes WebSockets).
     pub shutdown: CancellationToken,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// When a client other than this PC (the phone) last made an
+    /// authenticated request. Persisted in `<data>/phone_seen`.
+    pub phone_seen: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    pub data_dir: std::path::PathBuf,
+}
+
+/// Reads the persisted "phone last seen" time.
+pub fn load_phone_seen(data_dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = std::fs::read_to_string(data_dir.join("phone_seen")).ok()?;
+    chrono::DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// Records a request from another device, at most once a minute.
+fn note_remote_client(state: &AppInner, ip: std::net::IpAddr) {
+    if ip.is_loopback() {
+        return;
+    }
+    let now = chrono::Utc::now();
+    let mut seen = state.phone_seen.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.is_some_and(|t| (now - t).num_seconds() < 60) {
+        return;
+    }
+    *seen = Some(now);
+    let path = state.data_dir.join("phone_seen");
+    tokio::spawn(async move {
+        if let Err(e) = tokio::fs::write(&path, now.to_rfc3339()).await {
+            tracing::debug!("could not save {}: {e}", path.display());
+        }
+    });
 }
 
 pub type AppState = Arc<AppInner>;
@@ -228,6 +259,12 @@ async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Respon
     if !ok {
         return ApiError::Unauthorized.into_response();
     }
+    if let Some(axum::extract::ConnectInfo(addr)) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        note_remote_client(&state, addr.ip());
+    }
     next.run(req).await
 }
 
@@ -251,6 +288,11 @@ async fn info(State(s): State<AppState>) -> ApiResult<Json<Value>> {
         "model": s.model.status(),
         "gpus": s.hardware.gpus,
         "tailscale": s.tailscale,
+        "phone_last_seen": s
+            .phone_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.to_rfc3339()),
     })))
 }
 
