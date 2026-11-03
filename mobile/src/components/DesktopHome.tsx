@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
@@ -213,15 +213,7 @@ export function DesktopHome() {
             Works in {project.path} · Enter to send · Shift+Enter for a new line
           </Text>
         ) : null}
-        <Pressable
-          onPress={() => router.replace('/settings')}
-          style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.pair, hovered && styles.pairHover]}
-          accessibilityRole="button"
-          accessibilityLabel="Pair your phone"
-        >
-          <Icon name="cellphone-link" size={18} color={m3.onSurfaceVariant} />
-          <Text style={type.labelLarge}>Pair your phone</Text>
-        </Pressable>
+        <PairCard />
       </View>
 
       <AddProjectSheet
@@ -237,6 +229,48 @@ export function DesktopHome() {
         }}
       />
     </ScrollView>
+  );
+}
+
+/** Small pairing QR on the home screen; opens Settings for the larger code and details. */
+function PairCard() {
+  const { client } = useConnection();
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    client
+      ?.pairing()
+      .then((p) => setSvg(p.svg))
+      .catch(() => setSvg(null));
+  }, [client]);
+  return (
+    <Pressable
+      onPress={() => router.replace('/settings')}
+      style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.pair, hovered && styles.pairHover]}
+      accessibilityRole="button"
+      accessibilityLabel="Pair your phone. Opens Settings with a larger code."
+    >
+      <View style={styles.pairQr}>
+        {svg ? (
+          <Image
+            source={{ uri: `data:image/svg+xml;base64,${globalThis.btoa(svg)}` }}
+            style={styles.pairQrImage}
+            accessibilityLabel="Pairing QR code"
+          />
+        ) : (
+          <Icon name="qrcode" size={40} color={m3.surfaceContainerHighest} />
+        )}
+      </View>
+      <View style={styles.pairText}>
+        <View style={styles.pairTitle}>
+          <Icon name="cellphone-link" size={18} color={m3.primary} />
+          <Text style={type.titleSmall}>Pair your phone</Text>
+        </View>
+        <Text style={[type.bodySmall, styles.pairBody]}>
+          In the Relay app on your phone, tap Scan QR code and point it at this code.
+        </Text>
+        <Text style={[type.labelMedium, styles.pairLink]}>Bigger code and details</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -325,13 +359,29 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
-    height: 36,
-    paddingHorizontal: space.lg,
-    borderRadius: radius.pill,
+    gap: space.lg,
+    width: '100%',
+    maxWidth: 440,
+    padding: space.md,
+    borderRadius: radius.lg,
+    backgroundColor: m3.surfaceContainer,
     borderWidth: 1,
     borderColor: m3.outlineVariant,
-    marginTop: space.sm,
+    marginTop: space.lg,
   },
-  pairHover: { backgroundColor: m3.hover },
+  pairHover: { backgroundColor: m3.surfaceContainerHigh },
+  pairQr: {
+    width: 96,
+    height: 96,
+    borderRadius: radius.sm,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 4,
+  },
+  pairQrImage: { width: 88, height: 88 },
+  pairText: { flex: 1, minWidth: 0, gap: space.xs },
+  pairTitle: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  pairBody: { color: m3.onSurfaceVariant },
+  pairLink: { color: m3.primary },
 });
