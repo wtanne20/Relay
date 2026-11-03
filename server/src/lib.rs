@@ -84,9 +84,7 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
 
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!("Ctrl+C received, shutting down");
-        }
+        wait_for_shutdown_signal().await;
         shutdown.cancel();
     });
 
@@ -108,6 +106,38 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
     state.model.shutdown().await;
     tracing::info!("bye");
     Ok(())
+}
+
+/// Ctrl+C everywhere; on Windows also closing the console window, logoff and
+/// system shutdown, so llama-server is stopped instead of left running.
+async fn wait_for_shutdown_signal() {
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        let (mut close, mut logoff, mut shutdown) = match (
+            windows::ctrl_close(),
+            windows::ctrl_logoff(),
+            windows::ctrl_shutdown(),
+        ) {
+            (Ok(c), Ok(l), Ok(s)) => (c, l, s),
+            _ => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => tracing::info!("Ctrl+C received, shutting down"),
+            _ = close.recv() => tracing::info!("console closing, shutting down"),
+            _ = logoff.recv() => tracing::info!("user logging off, shutting down"),
+            _ = shutdown.recv() => tracing::info!("system shutting down"),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("Ctrl+C received, shutting down");
+        }
+    }
 }
 
 fn port_of(bind: &str) -> &str {
