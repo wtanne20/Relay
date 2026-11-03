@@ -274,6 +274,12 @@ export default function SettingsScreen() {
           onPress={() => router.push('/agent')}
         />
         <NavRow
+          icon="download-outline"
+          label="Download models"
+          value="Find and download models from Hugging Face"
+          onPress={() => router.push('/hub')}
+        />
+        <NavRow
           icon="text-box-outline"
           label="System prompt"
           value="Instructions the agent always follows"

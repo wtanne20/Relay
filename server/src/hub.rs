@@ -1,0 +1,396 @@
+//! Model downloads from Hugging Face: search GGUF repositories, list a
+//! repository's GGUF files, and download them into `<data>/models` in the
+//! background (like LM Studio's model browser).
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde::Serialize;
+use serde_json::Value;
+use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
+
+const HF: &str = "https://huggingface.co";
+
+fn client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(concat!("relay/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(20))
+        .build()?)
+}
+
+/// `owner/name`, letters, digits, `-`, `_` and `.` only.
+pub fn valid_repo(repo: &str) -> bool {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    };
+    matches!(repo.split_once('/'), Some((a, b)) if ok(a) && ok(b))
+}
+
+/// A path inside a repository: relative, no `..`, ends in .gguf.
+pub fn valid_file(file: &str) -> bool {
+    !file.is_empty()
+        && !file.starts_with('/')
+        && !file.contains('\\')
+        && file
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != "..")
+        && file.to_ascii_lowercase().ends_with(".gguf")
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RepoHit {
+    pub id: String,
+    pub downloads: u64,
+    pub likes: u64,
+    pub updated: Option<String>,
+}
+
+pub async fn search(query: &str) -> Result<Vec<RepoHit>> {
+    let resp: Value = client()?
+        .get(format!("{HF}/api/models"))
+        .query(&[
+            ("search", query),
+            ("filter", "gguf"),
+            ("sort", "downloads"),
+            ("direction", "-1"),
+            ("limit", "40"),
+        ])
+        .send()
+        .await
+        .context("could not reach Hugging Face")?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some(RepoHit {
+                        id: m.get("id")?.as_str()?.to_string(),
+                        downloads: m.get("downloads").and_then(Value::as_u64).unwrap_or(0),
+                        likes: m.get("likes").and_then(Value::as_u64).unwrap_or(0),
+                        updated: m
+                            .get("lastModified")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// One downloadable model: a single .gguf, or the parts of a split one.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GgufFile {
+    /// The first (or only) file; what you pass to download.
+    pub file: String,
+    pub parts: Vec<String>,
+    pub size_bytes: u64,
+    /// Quantization from the name, e.g. "Q4_K_M".
+    pub quant: Option<String>,
+}
+
+/// "model-00002-of-00003.gguf" -> Some(("model", 2, 3)).
+fn split_part(name: &str) -> Option<(&str, u32, u32)> {
+    let stem = name.strip_suffix(".gguf")?;
+    let (head, of) = stem.rsplit_once("-of-")?;
+    let (base, idx) = head.rsplit_once('-')?;
+    Some((base, idx.parse().ok()?, of.parse().ok()?))
+}
+
+pub fn quant_of(name: &str) -> Option<String> {
+    let upper = name.to_ascii_uppercase();
+    let stem = upper.trim_end_matches(".GGUF");
+    const QUANTS: &[&str] = &[
+        "IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ2_M", "IQ3_XXS", "IQ3_XS", "IQ3_S",
+        "IQ3_M", "IQ4_XS", "IQ4_NL", "Q2_K_L", "Q2_K_S", "Q2_K", "Q3_K_XL", "Q3_K_L", "Q3_K_M",
+        "Q3_K_S", "Q4_K_XL", "Q4_K_L", "Q4_K_M", "Q4_K_S", "Q4_0", "Q4_1", "Q5_K_XL", "Q5_K_L",
+        "Q5_K_M", "Q5_K_S", "Q5_0", "Q5_1", "Q6_K_XL", "Q6_K_L", "Q6_K", "Q8_K_XL", "Q8_0",
+        "MXFP4", "BF16", "F16", "F32",
+    ];
+    QUANTS
+        .iter()
+        .find(|q| stem.contains(*q))
+        .map(|q| q.to_string())
+}
+
+/// Groups a repository tree listing into downloadable models.
+pub fn group_files(tree: &[Value]) -> Vec<GgufFile> {
+    let mut singles: Vec<GgufFile> = Vec::new();
+    let mut split: std::collections::BTreeMap<String, Vec<(u32, String, u64)>> = Default::default();
+    for e in tree {
+        if e.get("type").and_then(Value::as_str) != Some("file") {
+            continue;
+        }
+        let Some(path) = e.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let lower = name.to_ascii_lowercase();
+        if !lower.ends_with(".gguf") || lower.contains("mmproj") || !valid_file(path) {
+            continue;
+        }
+        let size = e
+            .get("lfs")
+            .and_then(|l| l.get("size"))
+            .or_else(|| e.get("size"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        match split_part(path) {
+            Some((base, idx, _)) => {
+                split
+                    .entry(base.to_string())
+                    .or_default()
+                    .push((idx, path.to_string(), size))
+            }
+            None => singles.push(GgufFile {
+                file: path.to_string(),
+                parts: vec![path.to_string()],
+                size_bytes: size,
+                quant: quant_of(name),
+            }),
+        }
+    }
+    for (_, mut parts) in split {
+        parts.sort();
+        let first = parts[0].1.clone();
+        singles.push(GgufFile {
+            quant: quant_of(&first),
+            size_bytes: parts.iter().map(|p| p.2).sum(),
+            parts: parts.into_iter().map(|p| p.1).collect(),
+            file: first,
+        });
+    }
+    singles.sort_by_key(|f| f.size_bytes);
+    singles
+}
+
+pub async fn files(repo: &str) -> Result<Vec<GgufFile>> {
+    if !valid_repo(repo) {
+        bail!("not a Hugging Face repository name: {repo}");
+    }
+    let tree: Value = client()?
+        .get(format!("{HF}/api/models/{repo}/tree/main?recursive=true"))
+        .send()
+        .await
+        .context("could not reach Hugging Face")?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(group_files(
+        tree.as_array().map(Vec::as_slice).unwrap_or_default(),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadState {
+    Downloading,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Download {
+    pub id: String,
+    pub repo: String,
+    pub file: String,
+    pub dest: String,
+    pub total_bytes: u64,
+    pub done_bytes: u64,
+    pub state: DownloadState,
+    pub error: Option<String>,
+    #[serde(skip)]
+    cancel: CancellationToken,
+}
+
+/// Background downloads, newest first.
+#[derive(Default)]
+pub struct Downloads {
+    list: Mutex<Vec<Download>>,
+}
+
+impl Downloads {
+    pub fn list(&self) -> Vec<Download> {
+        self.list.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn update(&self, id: &str, f: impl FnOnce(&mut Download)) {
+        let mut l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(d) = l.iter_mut().find(|d| d.id == id) {
+            f(d);
+        }
+    }
+
+    pub fn cancel(&self, id: &str) -> bool {
+        let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        match l.iter().find(|d| d.id == id) {
+            Some(d) => {
+                d.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Starts downloading `file` (and its other parts, if split) from `repo`
+    /// into `<models_dir>/<owner>/<name>/`.
+    pub fn start(
+        self: &Arc<Self>,
+        models_dir: &Path,
+        repo: &str,
+        model: GgufFile,
+    ) -> Result<Download> {
+        let dir = repo
+            .split('/')
+            .fold(models_dir.to_path_buf(), |p, s| p.join(s));
+        let dest = model.file.split('/').fold(dir.clone(), |p, s| p.join(s));
+        {
+            let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+            if l.iter().any(|d| {
+                d.repo == repo && d.file == model.file && d.state == DownloadState::Downloading
+            }) {
+                bail!("that model is already downloading");
+            }
+        }
+        let d = Download {
+            id: uuid::Uuid::new_v4().to_string(),
+            repo: repo.to_string(),
+            file: model.file.clone(),
+            dest: dest.to_string_lossy().into_owned(),
+            total_bytes: model.size_bytes,
+            done_bytes: 0,
+            state: DownloadState::Downloading,
+            error: None,
+            cancel: CancellationToken::new(),
+        };
+        self.list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(0, d.clone());
+        let this = self.clone();
+        let (id, repo, cancel) = (d.id.clone(), repo.to_string(), d.cancel.clone());
+        tokio::spawn(async move {
+            let r = tokio::select! {
+                r = this.run(&id, &repo, &dir, &model.parts) => r,
+                _ = cancel.cancelled() => Err(anyhow!("cancelled")),
+            };
+            match r {
+                Ok(()) => this.update(&id, |d| d.state = DownloadState::Done),
+                Err(e) if cancel.is_cancelled() => {
+                    tracing::info!("download {repo} cancelled");
+                    let _ = e;
+                    remove_partials(&dir, &model.parts).await;
+                    this.update(&id, |d| d.state = DownloadState::Cancelled);
+                }
+                Err(e) => {
+                    tracing::warn!("download {repo} failed: {e:#}");
+                    remove_partials(&dir, &model.parts).await;
+                    this.update(&id, |d| {
+                        d.state = DownloadState::Failed;
+                        d.error = Some(format!("{e:#}"));
+                    });
+                }
+            }
+        });
+        Ok(d)
+    }
+
+    async fn run(&self, id: &str, repo: &str, dir: &Path, parts: &[String]) -> Result<()> {
+        let http = client()?;
+        let mut base: u64 = 0;
+        for part in parts {
+            let dest = part.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            if dest.is_file() {
+                // Already downloaded (an earlier run); never overwrite.
+                base += dest.metadata().map(|m| m.len()).unwrap_or(0);
+                continue;
+            }
+            let url = format!("{HF}/{repo}/resolve/main/{part}?download=true");
+            let mut resp = http.get(&url).send().await?.error_for_status()?;
+            let tmp = part_path(&dest);
+            let mut file = tokio::fs::File::create(&tmp).await?;
+            let mut done: u64 = 0;
+            while let Some(chunk) = tokio::time::timeout(Duration::from_secs(120), resp.chunk())
+                .await
+                .map_err(|_| anyhow!("download stalled"))??
+            {
+                file.write_all(&chunk).await?;
+                done += chunk.len() as u64;
+                let now = base + done;
+                self.update(id, |d| d.done_bytes = now);
+            }
+            file.flush().await?;
+            drop(file);
+            tokio::fs::rename(&tmp, &dest).await?;
+            base += done;
+        }
+        Ok(())
+    }
+}
+
+fn part_path(dest: &Path) -> PathBuf {
+    let mut s = dest.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+async fn remove_partials(dir: &Path, parts: &[String]) {
+    for part in parts {
+        let dest = part.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
+        let _ = tokio::fs::remove_file(part_path(&dest)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn validates_names() {
+        assert!(valid_repo("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"));
+        assert!(!valid_repo("../etc"));
+        assert!(!valid_repo("a/b/c"));
+        assert!(!valid_repo("a/.."));
+        assert!(valid_file("Q4_K_M/model-Q4_K_M-00001-of-00002.gguf"));
+        assert!(!valid_file("../x.gguf"));
+        assert!(!valid_file("/abs.gguf"));
+        assert!(!valid_file("readme.md"));
+    }
+
+    #[test]
+    fn groups_split_and_single_files() {
+        let tree = vec![
+            json!({"type": "file", "path": "README.md", "size": 10}),
+            json!({"type": "file", "path": "m-Q8_0.gguf", "size": 1, "lfs": {"size": 800}}),
+            json!({"type": "file", "path": "m-Q4_K_M.gguf", "lfs": {"size": 400}}),
+            json!({"type": "file", "path": "mmproj-F16.gguf", "lfs": {"size": 50}}),
+            json!({"type": "directory", "path": "BF16"}),
+            json!({"type": "file", "path": "BF16/m-BF16-00002-of-00002.gguf", "lfs": {"size": 700}}),
+            json!({"type": "file", "path": "BF16/m-BF16-00001-of-00002.gguf", "lfs": {"size": 900}}),
+        ];
+        let g = group_files(&tree);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].file, "m-Q4_K_M.gguf");
+        assert_eq!(g[0].quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(g[1].size_bytes, 800);
+        assert_eq!(g[2].file, "BF16/m-BF16-00001-of-00002.gguf");
+        assert_eq!(g[2].parts.len(), 2);
+        assert_eq!(g[2].size_bytes, 1600);
+        assert_eq!(g[2].quant.as_deref(), Some("BF16"));
+    }
+}

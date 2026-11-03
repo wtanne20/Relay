@@ -39,6 +39,8 @@ pub struct AppInner {
     /// authenticated request. Persisted in `<data>/phone_seen`.
     pub phone_seen: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     pub data_dir: std::path::PathBuf,
+    /// Model downloads from Hugging Face.
+    pub downloads: Arc<crate::hub::Downloads>,
 }
 
 /// Reads the persisted "phone last seen" time.
@@ -162,6 +164,10 @@ pub fn router(state: AppState) -> Router {
         .route("/model/restart", post(model_restart))
         .route("/models", get(list_models))
         .route("/models/tags", axum::routing::put(set_model_tags))
+        .route("/hub/search", get(hub_search))
+        .route("/hub/files", get(hub_files))
+        .route("/hub/downloads", get(hub_downloads).post(hub_download))
+        .route("/hub/downloads/{id}", axum::routing::delete(hub_cancel))
         .route("/settings", get(get_settings).patch(patch_settings))
         .route(
             "/system-prompt",
@@ -623,6 +629,89 @@ async fn set_model_tags(
         }
     })?;
     Ok(Json(json!({ "tags": shown })))
+}
+
+// ---------- model downloads (Hugging Face) ----------
+
+#[derive(Deserialize)]
+struct HubSearch {
+    #[serde(default)]
+    q: String,
+}
+
+async fn hub_search(Query(q): Query<HubSearch>) -> ApiResult<Json<Value>> {
+    let query: String = q.q.trim().chars().take(100).collect();
+    let hits = crate::hub::search(&query)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok(Json(json!({ "results": hits })))
+}
+
+#[derive(Deserialize)]
+struct HubFiles {
+    repo: String,
+}
+
+async fn hub_files(State(s): State<AppState>, Query(q): Query<HubFiles>) -> ApiResult<Json<Value>> {
+    if !crate::hub::valid_repo(&q.repo) {
+        return Err(ApiError::BadRequest(
+            "not a Hugging Face repository name".into(),
+        ));
+    }
+    let files = crate::hub::files(&q.repo)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok(Json(json!({
+        "repo": q.repo,
+        "files": files,
+        "vram_mb": s.hardware.total_vram_mb(),
+    })))
+}
+
+async fn hub_downloads(State(s): State<AppState>) -> Json<Value> {
+    Json(json!({ "downloads": s.downloads.list() }))
+}
+
+#[derive(Deserialize)]
+struct HubDownload {
+    repo: String,
+    file: String,
+}
+
+async fn hub_download(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<HubDownload>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    if !crate::hub::valid_repo(&body.repo) || !crate::hub::valid_file(&body.file) {
+        return Err(ApiError::BadRequest(
+            "invalid repository or file name".into(),
+        ));
+    }
+    // Look the file up so only real GGUF files from the repository are fetched.
+    let files = crate::hub::files(&body.repo)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    let model = files
+        .into_iter()
+        .find(|f| f.file == body.file)
+        .ok_or(ApiError::NotFound("model file"))?;
+    let models_dir = s.data_dir.join("models");
+    let d = s
+        .downloads
+        .start(&models_dir, &body.repo, model)
+        .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
+}
+
+async fn hub_cancel(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    if s.downloads.cancel(&id) {
+        Ok(Json(json!({ "ok": true })))
+    } else {
+        Err(ApiError::NotFound("download"))
+    }
 }
 
 async fn model_status(State(s): State<AppState>) -> Json<Value> {

@@ -1,5 +1,8 @@
 import type { Credentials } from './storage';
 import type {
+  HubDownload,
+  HubFile,
+  HubRepo,
   ApprovalDecision,
   DeepPartial,
   Message,
@@ -134,6 +137,26 @@ export class RelayClient {
   }
   patchSettings(patch: DeepPartial<Settings>) {
     return this.request<{ settings: Settings; model_restarting: boolean }>('PATCH', '/settings', patch);
+  }
+  hubSearch(q: string) {
+    return this.request<{ results: HubRepo[] }>('GET', `/hub/search?q=${encodeURIComponent(q)}`, undefined, 30000);
+  }
+  hubFiles(repo: string) {
+    return this.request<{ repo: string; files: HubFile[]; vram_mb: number }>(
+      'GET',
+      `/hub/files?repo=${encodeURIComponent(repo)}`,
+      undefined,
+      30000,
+    );
+  }
+  hubDownloads() {
+    return this.request<{ downloads: HubDownload[] }>('GET', '/hub/downloads');
+  }
+  hubDownload(repo: string, file: string) {
+    return this.request<{ download: HubDownload }>('POST', '/hub/downloads', { repo, file }, 30000);
+  }
+  hubCancel(id: string) {
+    return this.request<{ ok: boolean }>('DELETE', `/hub/downloads/${encodeURIComponent(id)}`);
   }
   /** Sets a model's tags; null goes back to the tags guessed from its name. */
   setModelTags(name: string, tags: string[] | null) {

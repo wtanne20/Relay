@@ -4,7 +4,7 @@ import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Tex
 
 import { m3, radius, space, type } from '../components/theme';
 import { TagChips, TagsSheet } from '../components/ModelTags';
-import { Banner, EmptyState, Icon, IconButton } from '../components/ui';
+import { Banner, Button, EmptyState, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
 import { usePageStyle } from '../lib/layout';
 import { useConnection } from '../lib/connection';
@@ -79,9 +79,15 @@ export default function ModelsScreen() {
           <>
             {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
             <Text style={[type.bodyMedium, styles.intro]}>
-              Picking a model reloads llama-server on the PC. Download more models in LM Studio, or copy .gguf files
-              into Relay&apos;s models folder.
+              Picking a model reloads llama-server on the PC. Tap the tag icon to note what a model is good at.
             </Text>
+            <Button
+              title="Download more models"
+              icon="download"
+              variant="tonal"
+              onPress={() => router.push('/hub')}
+              style={styles.hubButton}
+            />
             {!data && !error ? <ActivityIndicator color={m3.primary} /> : null}
           </>
         }
@@ -162,7 +168,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 48 },
-  intro: { marginBottom: space.lg, marginHorizontal: space.xs },
+  intro: { marginBottom: space.md, marginHorizontal: space.xs },
+  hubButton: { alignSelf: 'flex-start', marginBottom: space.lg },
   itemOuter: {
     flexDirection: 'row',
     alignItems: 'center',

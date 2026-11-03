@@ -209,3 +209,28 @@ export interface SkillInfo {
   path: string;
   enabled: boolean;
 }
+
+export interface HubRepo {
+  id: string;
+  downloads: number;
+  likes: number;
+  updated?: string | null;
+}
+
+export interface HubFile {
+  file: string;
+  parts: string[];
+  size_bytes: number;
+  quant?: string | null;
+}
+
+export interface HubDownload {
+  id: string;
+  repo: string;
+  file: string;
+  dest: string;
+  total_bytes: number;
+  done_bytes: number;
+  state: 'downloading' | 'done' | 'failed' | 'cancelled';
+  error?: string | null;
+}

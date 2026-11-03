@@ -145,6 +145,7 @@ export default function RootLayout() {
               <Stack.Screen name="pair" options={{ title: '' }} />
               <Stack.Screen name="agent" options={{ title: 'Agent settings' }} />
               <Stack.Screen name="models" options={{ title: 'Choose model' }} />
+              <Stack.Screen name="hub" options={{ title: 'Download models' }} />
               <Stack.Screen name="system-prompt" options={{ title: 'System prompt' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
             </Stack>

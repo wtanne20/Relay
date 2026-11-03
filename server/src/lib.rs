@@ -4,6 +4,7 @@ pub mod agent;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod hub;
 pub mod migrate;
 pub mod model_manager;
 pub mod process_guard;
@@ -64,6 +65,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         shutdown: CancellationToken::new(),
         started_at: chrono::Utc::now(),
         phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
+        downloads: Default::default(),
         data_dir,
     });
     Ok((api::router(state.clone()), state))
