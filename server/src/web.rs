@@ -14,9 +14,10 @@ use serde_json::Value;
 pub const MAX_PAGE_CHARS: usize = 12_000;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
-/// Pause between DuckDuckGo searches, and before the retry after a captcha.
+/// Pause between searches.
 const DDG_GAP: Duration = Duration::from_millis(1500);
-const DDG_RETRY_WAIT: Duration = Duration::from_secs(5);
+/// After a DuckDuckGo captcha, go straight to the browser for a while.
+const DDG_COOL_OFF: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 Relay";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,37 +61,218 @@ pub async fn search(query: &str, max: usize, brave_key: &str) -> Result<Vec<Hit>
         return Ok(parse_brave(&v, max));
     }
     // DuckDuckGo shows a captcha when searches come in quick bursts (the
-    // model often asks for several at once), so they go one at a time, a
-    // little apart, with one retry after a pause.
-    static DDG: tokio::sync::Mutex<Option<tokio::time::Instant>> =
+    // model often asks for several at once), so searches go one at a time,
+    // a little apart. When it blocks us, the search runs in a real browser
+    // (Edge or Chrome, headless) instead, which bot checks rarely stop.
+    static LAST: tokio::sync::Mutex<Option<tokio::time::Instant>> =
         tokio::sync::Mutex::const_new(None);
-    let mut last = DDG.lock().await;
-    for attempt in 0..2 {
-        if let Some(t) = *last {
-            let gap = if attempt == 0 {
-                DDG_GAP
-            } else {
-                DDG_RETRY_WAIT
-            };
-            tokio::time::sleep_until(t + gap).await;
-        }
-        let html = http
-            .get("https://html.duckduckgo.com/html/")
-            .query(&[("q", query)])
-            .send()
-            .await
-            .context("could not reach DuckDuckGo");
+    static DDG_BLOCKED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().await;
+    if let Some(t) = *last {
+        tokio::time::sleep_until(t + DDG_GAP).await;
+    }
+    let blocked = DDG_BLOCKED
+        .lock()
+        .ok()
+        .and_then(|b| *b)
+        .is_some_and(|t| t.elapsed() < DDG_COOL_OFF);
+    let mut why = String::new();
+    if !blocked {
+        let r = ddg_direct(&http, query, max).await;
         *last = Some(tokio::time::Instant::now());
-        let html = html?.error_for_status()?.text().await?;
-        let hits = parse_ddg(&html, max);
-        if hits.is_empty() && html.contains("anomaly") {
-            continue;
+        match r {
+            Ok(Some(hits)) => return Ok(hits),
+            Ok(None) => {
+                if let Ok(mut b) = DDG_BLOCKED.lock() {
+                    *b = Some(std::time::Instant::now());
+                }
+                why = "DuckDuckGo asked for a captcha".into();
+            }
+            Err(e) => why = format!("{e:#}"),
         }
+    }
+    let r = browser_search(query, max).await;
+    *last = Some(tokio::time::Instant::now());
+    match r {
+        Ok(hits) => Ok(hits),
+        Err(e) => {
+            let lead = if why.is_empty() {
+                "DuckDuckGo is blocking searches for a few minutes".to_string()
+            } else {
+                why
+            };
+            bail!(
+                "{lead}, and the browser search failed too ({e:#}). Try again in a few minutes, or add a Brave Search API key in Agent settings for reliable searches"
+            )
+        }
+    }
+}
+
+/// DuckDuckGo's HTML page over plain HTTP. `None` means it showed a captcha.
+async fn ddg_direct(http: &reqwest::Client, query: &str, max: usize) -> Result<Option<Vec<Hit>>> {
+    let resp = http
+        .get("https://html.duckduckgo.com/html/")
+        .query(&[("q", query)])
+        .send()
+        .await
+        .context("could not reach DuckDuckGo")?;
+    let captcha = resp.status() == reqwest::StatusCode::ACCEPTED;
+    let html = resp.error_for_status()?.text().await?;
+    let hits = parse_ddg(&html, max);
+    if hits.is_empty() && (captcha || html.contains("anomaly")) {
+        return Ok(None);
+    }
+    Ok(Some(hits))
+}
+
+/// Loads a search page in headless Edge or Chrome and returns its HTML.
+async fn browser_page(url: &str) -> Result<String> {
+    let Some(browser) = crate::mockup::find_browser() else {
+        bail!("no Edge or Chrome found");
+    };
+    // A profile of its own that persists, so cookies build up like a
+    // normal browser's. Never the user's own profile.
+    let profile = std::env::temp_dir().join("relay-search-browser");
+    let mut cmd = tokio::process::Command::new(&browser);
+    cmd.arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-extensions")
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg("--virtual-time-budget=4000")
+        .arg("--dump-dom")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(not(windows))]
+    cmd.arg("--no-sandbox");
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("the browser took too long"))?
+        .with_context(|| format!("starting {}", browser.display()))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Searches Bing, then DuckDuckGo, in a headless browser.
+async fn browser_search(query: &str, max: usize) -> Result<Vec<Hit>> {
+    let q = percent_encode(query);
+    let html = browser_page(&format!("https://www.bing.com/search?q={q}&setlang=en")).await?;
+    let hits = parse_bing(&html, max);
+    if !hits.is_empty() {
         return Ok(hits);
     }
-    bail!(
-        "DuckDuckGo asked for a captcha. Try again in a minute, or add a Brave Search API key in Agent settings"
-    )
+    let html = browser_page(&format!("https://html.duckduckgo.com/html/?q={q}")).await?;
+    let hits = parse_ddg(&html, max);
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    bail!("no results came back")
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Reads results from Bing's results page (`<li class="b_algo">`).
+pub fn parse_bing(html: &str, max: usize) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let blocks: Vec<&str> = html.split("class=\"b_algo").skip(1).collect();
+    for block in blocks {
+        if hits.len() >= max {
+            break;
+        }
+        let block = block.split("</li>").next().unwrap_or(block);
+        let Some(h2) = block.find("<h2") else {
+            continue;
+        };
+        let rest = &block[h2..];
+        let Some(a) = rest.find("<a ") else { continue };
+        let rest = &rest[a..];
+        let tag_end = rest.find('>').unwrap_or(rest.len());
+        let Some(href) = attr(&rest[..tag_end], "href") else {
+            continue;
+        };
+        let close = rest.find("</a>").unwrap_or(rest.len());
+        let title = html_to_text(rest.get(tag_end + 1..close).unwrap_or(""));
+        let url = bing_target(&decode_entities(&href));
+        if !url.starts_with("http") || url.contains("bing.com/") {
+            continue;
+        }
+        // The snippet is the first paragraph after the title.
+        let after = &rest[close..];
+        let snippet = after
+            .find("<p")
+            .and_then(|p| {
+                let from = p + after[p..].find('>')? + 1;
+                let to = from + after[from..].find("</p>")?;
+                Some(html_to_text(&after[from..to]))
+            })
+            .unwrap_or_default();
+        hits.push(Hit {
+            title,
+            url,
+            snippet,
+        });
+    }
+    hits
+}
+
+/// Bing sometimes wraps links: `https://www.bing.com/ck/a?...&u=a1<base64url>`.
+fn bing_target(href: &str) -> String {
+    if !href.contains("bing.com/ck/") {
+        return href.to_string();
+    }
+    let Some(u) = href
+        .split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("u="))
+        .and_then(|v| v.strip_prefix("a1"))
+    else {
+        return href.to_string();
+    };
+    base64_url_decode(u)
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_else(|| href.to_string())
+}
+
+fn base64_url_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut out = Vec::new();
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in s.bytes().take_while(|c| *c != b'=') {
+        acc = (acc << 6) | val(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 pub fn parse_brave(v: &Value, max: usize) -> Vec<Hit> {
@@ -544,6 +726,22 @@ mod tests {
         );
         assert_eq!(hits[1].url, "https://github.com/tokio-rs/axum");
         assert_eq!(parse_ddg(html, 1).len(), 1);
+    }
+
+    #[test]
+    fn reads_bing_results() {
+        let html = r#"<ol id="b_results"><li class="b_algo" data-id=""><div class="b_tpcn"><a class="tilk" href="https://www.ulta.com/x"><div>Ulta</div></a></div>
+<h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly93d3cudWx0YS5jb20vcC9zaGFtcG9v&amp;ntb=1" h="ID=SERP">Best <strong>Shampoo</strong> for Thick Hair</a></h2>
+<div class="b_caption"><p class="b_lineclamp2">Our picks for thick, coarse hair &amp; more.</p></div></li>
+<li class="b_algo"><h2><a href="https://www.allure.com/story/thick-hair">Allure guide</a></h2><p>Ten tested products.</p></li>
+<li class="b_ad"><h2><a href="https://ad.example">Ad</a></h2></li></ol>"#;
+        let hits = parse_bing(html, 5);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert_eq!(hits[0].url, "https://www.ulta.com/p/shampoo");
+        assert_eq!(hits[0].title, "Best Shampoo for Thick Hair");
+        assert_eq!(hits[0].snippet, "Our picks for thick, coarse hair & more.");
+        assert_eq!(hits[1].url, "https://www.allure.com/story/thick-hair");
+        assert_eq!(percent_encode("thick hair & frizz"), "thick+hair+%26+frizz");
     }
 
     #[test]

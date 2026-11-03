@@ -29,6 +29,11 @@ enum Command {
     Pair,
     /// Import projects, skills, system prompt and model from LM Studio Bionic.
     Migrate(MigrateArgs),
+    /// Run a web search the way the agent does, to check it works.
+    Search {
+        /// What to search for.
+        query: String,
+    },
 }
 
 #[tokio::main]
@@ -61,6 +66,14 @@ async fn main() -> Result<()> {
         Command::Pair => {
             let cfg = LoadedConfig::load(&config_path)?;
             relay::pair(cfg).await
+        }
+        Command::Search { query } => {
+            let key = LoadedConfig::load(&config_path)
+                .map(|c| c.config.agent.search_api_key.clone())
+                .unwrap_or_default();
+            let hits = relay::web::search(&query, 8, &key).await?;
+            println!("{}", relay::web::format_hits(&query, &hits));
+            Ok(())
         }
         Command::Migrate(args) => {
             let path = config_path;
