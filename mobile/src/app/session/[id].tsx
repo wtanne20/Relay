@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AssistantBlock, DraftBlock, UserBubble } from '../../components/ChatItems';
+import { AssistantTurn, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
@@ -24,8 +24,7 @@ import { useSessionStream } from '../../lib/useSessionStream';
 
 type Item =
   | { key: string; kind: 'user'; message: Message }
-  | { key: string; kind: 'assistant'; message: Message }
-  | { key: string; kind: 'draft'; content: string; reasoning: string };
+  | { key: string; kind: 'turn'; messages: Message[]; latest: boolean };
 
 export default function ChatScreen() {
   const client = useClient();
@@ -64,24 +63,21 @@ export default function ChatScreen() {
 
   // Inverted list: newest first.
   const items = useMemo(() => {
+    // Consecutive assistant messages (one agent reply) become one turn.
     const out: Item[] = [];
     for (const m of stream.messages) {
       if (m.role === 'user') out.push({ key: `m${m.id}`, kind: 'user', message: m });
-      else if (m.role === 'assistant') out.push({ key: `m${m.id}`, kind: 'assistant', message: m });
+      else if (m.role === 'assistant') {
+        const prev = out[out.length - 1];
+        if (prev?.kind === 'turn') prev.messages.push(m);
+        else out.push({ key: `t${m.id}`, kind: 'turn', messages: [m], latest: false });
+      }
     }
-    if (running && stream.draft) {
-      out.push({ key: 'draft', kind: 'draft', content: stream.draft.content, reasoning: stream.draft.reasoning });
-    }
+    const tail = out[out.length - 1];
+    if (tail?.kind === 'turn') tail.latest = true;
+    else if (running) out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
     return out.reverse();
-  }, [stream.messages, stream.draft, running]);
-
-  // Only the newest assistant message can have tool calls still running.
-  const lastAssistantId = useMemo(() => {
-    for (let i = stream.messages.length - 1; i >= 0; i--) {
-      if (stream.messages[i].role === 'assistant') return stream.messages[i].id;
-    }
-    return -1;
-  }, [stream.messages]);
+  }, [stream.messages, running]);
 
   if (!client) return null;
 
@@ -171,6 +167,7 @@ export default function ChatScreen() {
           <FlatList
             inverted
             data={items}
+            extraData={[stream.draft, results, running]}
             keyExtractor={(it) => it.key}
             contentContainerStyle={[styles.list, page]}
             keyboardDismissMode="interactive"
@@ -184,12 +181,12 @@ export default function ChatScreen() {
             }
             renderItem={({ item }) => {
               if (item.kind === 'user') return <UserBubble message={item.message} />;
-              if (item.kind === 'draft') return <DraftBlock content={item.content} reasoning={item.reasoning} />;
               return (
-                <AssistantBlock
-                  message={item.message}
+                <AssistantTurn
+                  messages={item.messages}
                   results={results}
-                  running={running && item.message.id === lastAssistantId}
+                  running={running && item.latest}
+                  draft={item.latest ? stream.draft : null}
                 />
               );
             }}

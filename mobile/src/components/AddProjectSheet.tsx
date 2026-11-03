@@ -4,6 +4,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
+import { useWide } from '../lib/layout';
 import { Sheet } from './Sheet';
 import { m3, space, type } from './theme';
 import { Banner, Button, Field } from './ui';
@@ -60,9 +61,12 @@ export function AddProjectSheet({
     }
   };
 
+  const wide = useWide();
   const openSettings = () => {
     onClose();
-    router.replace('/settings');
+    // Desktop swaps the main pane; on the phone it's a normal screen you go back from.
+    if (wide) router.replace('/settings');
+    else router.push('/settings');
   };
 
   return (
