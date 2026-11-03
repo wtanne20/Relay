@@ -13,7 +13,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-use crate::config::LlamaConfig;
+use crate::config::{LlamaConfig, SharedConfig};
+use crate::setup::{self, Hardware};
 
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
@@ -38,6 +39,8 @@ pub struct ModelStatus {
     /// Unexpected exits in the last 5 minutes.
     pub recent_restarts: usize,
     pub since: String,
+    /// 0..1 while downloading llama.cpp during first-run setup.
+    pub progress: Option<f32>,
 }
 
 enum Cmd {
@@ -49,12 +52,13 @@ enum Cmd {
 pub struct ModelManager {
     status: Arc<RwLock<ModelStatus>>,
     tx: mpsc::Sender<Cmd>,
-    port: u16,
 }
 
 impl ModelManager {
     /// Starts the supervisor task and returns immediately.
-    pub fn start(cfg: LlamaConfig, logs_dir: PathBuf) -> Self {
+    pub fn start(shared: Arc<SharedConfig>, hardware: Hardware) -> Self {
+        let cfg = shared.get().llama;
+        let (data_dir, logs_dir) = shared.read(|l| (l.data_dir.clone(), l.logs_dir()));
         let status = Arc::new(RwLock::new(ModelStatus {
             state: ModelState::Starting,
             message: None,
@@ -64,18 +68,21 @@ impl ModelManager {
             model_path: cfg.model_path.clone(),
             recent_restarts: 0,
             since: crate::db::now(),
+            progress: None,
         }));
         let (tx, rx) = mpsc::channel(8);
-        let port = cfg.port;
         let sup = Supervisor {
             cfg,
+            shared,
+            hardware,
+            data_dir,
             logs_dir,
             status: status.clone(),
             rx,
             http: reqwest::Client::new(),
         };
         tokio::spawn(sup.run());
-        Self { status, tx, port }
+        Self { status, tx }
     }
 
     pub fn status(&self) -> ModelStatus {
@@ -90,7 +97,8 @@ impl ModelManager {
     }
 
     pub fn base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        let port = self.status.read().unwrap_or_else(|e| e.into_inner()).port;
+        format!("http://127.0.0.1:{port}")
     }
 
     pub async fn restart(&self) {
@@ -107,7 +115,11 @@ impl ModelManager {
 }
 
 struct Supervisor {
+    /// Snapshot taken at the start of each lifecycle.
     cfg: LlamaConfig,
+    shared: Arc<SharedConfig>,
+    hardware: Hardware,
+    data_dir: PathBuf,
     logs_dir: PathBuf,
     status: Arc<RwLock<ModelStatus>>,
     rx: mpsc::Receiver<Cmd>,
@@ -131,6 +143,7 @@ impl Supervisor {
         s.message = message;
         s.pid = pid;
         s.external = external;
+        s.progress = None;
         match state {
             ModelState::Error => {
                 tracing::error!("model: {}", s.message.clone().unwrap_or_default())
@@ -232,6 +245,12 @@ impl Supervisor {
     /// One lifecycle: use an existing server or launch one, wait until ready,
     /// then supervise until it exits or a command arrives.
     async fn run_once(&mut self) -> Outcome {
+        self.cfg = self.shared.get().llama;
+        {
+            let mut st = self.status.write().unwrap_or_else(|e| e.into_inner());
+            st.port = self.cfg.port;
+            st.model_path = self.cfg.model_path.clone();
+        }
         self.set(ModelState::Starting, None, None, false);
 
         if self.health_ok().await {
@@ -243,6 +262,16 @@ impl Supervisor {
             );
             return self.watch_external().await;
         }
+
+        if let Err(e) = self.ensure_setup().await {
+            self.set(ModelState::Error, Some(format!("{e:#}")), None, false);
+            return match self.rx.recv().await {
+                Some(Cmd::Restart) => Outcome::Restart,
+                Some(Cmd::Shutdown(ack)) => Outcome::Shutdown(ack),
+                None => Outcome::Shutdown(oneshot::channel().0),
+            };
+        }
+        self.status.write().unwrap_or_else(|e| e.into_inner()).model_path = self.cfg.model_path.clone();
 
         let mut child = match self.spawn().await {
             Ok(c) => c,
@@ -325,16 +354,73 @@ impl Supervisor {
         }
     }
 
+    /// First-run setup: find or download llama-server and pick a model when
+    /// they aren't configured (only if `auto_setup` is on). Saves the result
+    /// to config.toml.
+    async fn ensure_setup(&mut self) -> Result<()> {
+        if !self.cfg.auto_setup {
+            return Ok(());
+        }
+        let exe_ok = !self.cfg.llama_server_path.trim().is_empty() && self.cfg.executable().is_file();
+        if !exe_ok {
+            let found = match setup::find_llama_server(&self.data_dir) {
+                Some(p) => p,
+                None => {
+                    let status = self.status.clone();
+                    let progress = move |msg: String, frac: Option<f32>| {
+                        let mut s = status.write().unwrap_or_else(|e| e.into_inner());
+                        s.message = Some(match frac {
+                            Some(f) if f < 1.0 => format!("{msg} ({:.0}%)", f * 100.0),
+                            _ => msg,
+                        });
+                        s.progress = frac;
+                    };
+                    self.set(ModelState::Starting, Some("Setting up llama.cpp".into()), None, false);
+                    tracing::info!("llama-server not found; downloading llama.cpp");
+                    setup::download_llama_server(&self.data_dir, &self.hardware, &progress)
+                        .await
+                        .map_err(|e| anyhow!("could not download llama.cpp automatically ({e:#}). Install it and set llama_server_path in config.toml"))?
+                }
+            };
+            let path = found.to_string_lossy().into_owned();
+            tracing::info!("using llama-server at {path}");
+            self.cfg = self
+                .shared
+                .update(|c| c.llama.llama_server_path = path.clone())
+                .map_err(|e| anyhow!("{e}"))?
+                .llama;
+        }
+        let model_ok = !self.cfg.model_path.trim().is_empty() && PathBuf::from(&self.cfg.model_path).is_file();
+        if !model_ok {
+            let dirs = self.shared.read(|l| l.model_dirs());
+            let models = tokio::task::spawn_blocking(move || setup::discover_models(&dirs)).await?;
+            let Some(pick) = setup::pick_model(&models, self.hardware.total_vram_mb()) else {
+                let data = self.data_dir.join("models");
+                bail!(
+                    "no GGUF model found. Download one in LM Studio, or copy a .gguf file into {}, then tap Restart model",
+                    data.display()
+                );
+            };
+            tracing::info!("selected model {}", pick.path);
+            self.cfg = self
+                .shared
+                .update(|c| c.llama.model_path = pick.path.clone())
+                .map_err(|e| anyhow!("{e}"))?
+                .llama;
+        }
+        Ok(())
+    }
+
     async fn spawn(&self) -> Result<Child> {
         let exe = self.cfg.executable();
         if self.cfg.llama_server_path.trim().is_empty() {
-            bail!("llama.llama_server_path is not set in config.toml");
+            bail!("llama-server is not set up: set llama_server_path in config.toml, or turn auto_setup on");
         }
         if !exe.is_file() {
             bail!("llama-server not found at {}", exe.display());
         }
         if self.cfg.model_path.trim().is_empty() {
-            bail!("llama.model_path is not set in config.toml (run `relay migrate` to pick one)");
+            bail!("no model selected: choose one in the app (Settings → Model)");
         }
         if !PathBuf::from(&self.cfg.model_path).is_file() {
             bail!("model file not found at {}", self.cfg.model_path);
@@ -346,7 +432,7 @@ impl Supervisor {
             "--port".into(),
             self.cfg.port.to_string(),
         ];
-        args.extend(sanitize_args(&self.cfg.args));
+        args.extend(sanitize_args(&self.cfg.server_args()));
 
         tokio::fs::create_dir_all(&self.logs_dir).await?;
         let log_path = self.logs_dir.join("llama-server.log");

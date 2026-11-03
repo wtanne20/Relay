@@ -11,10 +11,10 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{DEFAULT_SYSTEM_PROMPT, LoadedConfig};
+use crate::config::{ApprovalMode, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig};
 use crate::db::{self, Db, Message, NewMessage, Project, Session};
 use crate::model_manager::{ModelManager, ModelState};
 use crate::push::Pusher;
@@ -59,6 +59,36 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// The agent is waiting for the user to allow a tool call.
+    ApprovalRequest {
+        approval: PendingApproval,
+    },
+    ApprovalResolved {
+        tool_call_id: String,
+        approved: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingApproval {
+    pub tool_call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub requested_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    Approve,
+    /// Approve this and every later tool call in the current task.
+    ApproveAll,
+    Deny,
+}
+
+struct ApprovalSlot {
+    info: PendingApproval,
+    tx: oneshot::Sender<(Decision, Option<String>)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -70,6 +100,15 @@ pub struct Draft {
 struct RunningTask {
     cancel: CancellationToken,
     draft: Arc<Mutex<Draft>>,
+    approval: Arc<Mutex<Option<ApprovalSlot>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApprovalError {
+    #[error("nothing is waiting for approval in this session")]
+    NothingPending,
+    #[error("that tool call is not the one waiting for approval")]
+    WrongCall,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +126,7 @@ pub enum StartError {
 pub struct AgentManager {
     db: Db,
     model: ModelManager,
-    cfg: Arc<LoadedConfig>,
+    cfg: Arc<SharedConfig>,
     http: reqwest::Client,
     pusher: Pusher,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
@@ -104,7 +143,7 @@ enum LoopEnd {
 }
 
 impl AgentManager {
-    pub fn new(db: Db, model: ModelManager, cfg: Arc<LoadedConfig>, pusher: Pusher) -> Arc<Self> {
+    pub fn new(db: Db, model: ModelManager, cfg: Arc<SharedConfig>, pusher: Pusher) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
@@ -134,12 +173,46 @@ impl AgentManager {
 
     /// Subscribe to a session's events. Also returns the in-progress draft if
     /// a task is running, so a reconnecting client can show partial output.
-    pub fn subscribe(&self, session_id: &str) -> (broadcast::Receiver<Event>, Option<Draft>) {
+    pub fn subscribe(
+        &self,
+        session_id: &str,
+    ) -> (broadcast::Receiver<Event>, Option<Draft>, Option<PendingApproval>) {
         let rx = self.sender(session_id).subscribe();
-        let draft = lock(&self.running)
-            .get(session_id)
-            .map(|t| lock(&t.draft).clone());
-        (rx, draft)
+        let running = lock(&self.running);
+        let task = running.get(session_id);
+        let draft = task.map(|t| lock(&t.draft).clone());
+        let pending = task.and_then(|t| lock(&t.approval).as_ref().map(|a| a.info.clone()));
+        (rx, draft, pending)
+    }
+
+    /// The tool call currently waiting for approval, if any.
+    pub fn pending_approval(&self, session_id: &str) -> Option<PendingApproval> {
+        lock(&self.running).get(session_id).and_then(|t| lock(&t.approval).as_ref().map(|a| a.info.clone()))
+    }
+
+    /// Answers a pending approval request.
+    pub fn resolve_approval(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        decision: Decision,
+        note: Option<String>,
+    ) -> Result<(), ApprovalError> {
+        let slot = {
+            let running = lock(&self.running);
+            let task = running.get(session_id).ok_or(ApprovalError::NothingPending)?;
+            let mut guard = lock(&task.approval);
+            match guard.as_ref() {
+                None => return Err(ApprovalError::NothingPending),
+                Some(a) if a.info.tool_call_id != tool_call_id => return Err(ApprovalError::WrongCall),
+                Some(_) => {}
+            }
+            guard.take()
+        };
+        if let Some(slot) = slot {
+            let _ = slot.tx.send((decision, note));
+        }
+        Ok(())
     }
 
     pub fn is_running(&self, session_id: &str) -> bool {
@@ -177,6 +250,7 @@ impl AgentManager {
 
         let cancel = CancellationToken::new();
         let draft = Arc::new(Mutex::new(Draft::default()));
+        let approval = Arc::new(Mutex::new(None));
         {
             let mut running = lock(&self.running);
             if running.contains_key(session_id) {
@@ -187,6 +261,7 @@ impl AgentManager {
                 RunningTask {
                     cancel: cancel.clone(),
                     draft: draft.clone(),
+                    approval: approval.clone(),
                 },
             );
         }
@@ -230,7 +305,7 @@ impl AgentManager {
         );
 
         let this = self.clone();
-        tokio::spawn(async move { this.run_task(session, project, cancel, draft).await });
+        tokio::spawn(async move { this.run_task(session, project, cancel, draft, approval).await });
         Ok(user_msg)
     }
 
@@ -265,9 +340,10 @@ impl AgentManager {
         project: Project,
         cancel: CancellationToken,
         draft: Arc<Mutex<Draft>>,
+        approval: Arc<Mutex<Option<ApprovalSlot>>>,
     ) {
         tracing::info!(session = %session.id, project = %project.name, "task started");
-        let result = self.agent_loop(&session, &project, &cancel, &draft).await;
+        let result = self.agent_loop(&session, &project, &cancel, &draft, &approval).await;
         let (status, error) = match result {
             Ok(LoopEnd::Done) => ("done", None),
             Ok(LoopEnd::Stopped) => ("stopped", None),
@@ -311,25 +387,28 @@ impl AgentManager {
         project: &Project,
         cancel: &CancellationToken,
         draft: &Arc<Mutex<Draft>>,
+        approval: &Arc<Mutex<Option<ApprovalSlot>>>,
     ) -> Result<LoopEnd> {
-        let found_skills = skills::discover(&self.cfg.skill_roots());
+        // Settings are read once per task; changes apply to the next prompt.
+        let conf: Config = self.cfg.get();
+        let (skill_roots, prompt_path) = self.cfg.read(|l| (l.skill_roots(), l.system_prompt_path()));
+        let found_skills: Vec<skills::Skill> = skills::discover(&skill_roots)
+            .into_iter()
+            .filter(|s| !conf.disabled_skills.iter().any(|d| d.eq_ignore_ascii_case(&s.name)))
+            .collect();
         let skill_dirs: Vec<PathBuf> = found_skills.iter().map(|s| s.dir.clone()).collect();
         let sandbox = Sandbox::new(Path::new(&project.path), &skill_dirs)?;
         let ctx = ToolContext {
             sandbox,
-            shell: self.cfg.config.shell.clone(),
+            shell: conf.shell.clone(),
+            default_timeout: conf.agent.command_timeout_seconds,
         };
-        let system = build_system_prompt(
-            &self.cfg.system_prompt_path(),
-            project,
-            &ctx.sandbox.root,
-            &found_skills,
-        )
-        .await;
+        let system = build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await;
         let url = format!("{}/v1/chat/completions", self.model.base_url());
-        let tool_defs = tools::definitions();
+        let tool_defs = tools::definitions(&conf.agent.tools);
+        let mut approval_mode = conf.agent.approval;
 
-        for _step in 0..self.cfg.config.max_steps {
+        for _step in 0..conf.agent.max_steps {
             if cancel.is_cancelled() {
                 return Ok(LoopEnd::Stopped);
             }
@@ -339,12 +418,7 @@ impl AgentManager {
 
             let sid = session.id.clone();
             let history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
-            let body = json!({
-                "model": self.cfg.config.llama.model_name,
-                "messages": to_openai_messages(&system, &history),
-                "tools": tool_defs,
-                "stream": true,
-            });
+            let body = request_body(&conf, &system, &history, &tool_defs);
 
             *lock(draft) = Draft::default();
             let sid = session.id.clone();
@@ -411,7 +485,34 @@ impl AgentManager {
                             arguments: call.arguments.clone(),
                         },
                     );
-                    tools::execute(&ctx, &call.name, &call.arguments, cancel).await
+                    if !conf.agent.tools.enabled(&call.name) {
+                        tools::ToolOutput {
+                            content: format!("error: the {} tool is turned off in Relay's settings", call.name),
+                            is_error: true,
+                        }
+                    } else if needs_approval(approval_mode, &call.name) {
+                        match self.ask_approval(session, project, call, approval, cancel).await {
+                            Some((Decision::Deny, note)) => tools::ToolOutput {
+                                content: match note {
+                                    Some(n) if !n.trim().is_empty() => format!("the user denied this tool call: {n}"),
+                                    _ => "the user denied this tool call. Do not retry it; ask or try another approach.".into(),
+                                },
+                                is_error: true,
+                            },
+                            Some((d, _)) => {
+                                if d == Decision::ApproveAll {
+                                    approval_mode = ApprovalMode::Never;
+                                }
+                                tools::execute(&ctx, &call.name, &call.arguments, cancel).await
+                            }
+                            None => tools::ToolOutput {
+                                content: "cancelled by user before running".into(),
+                                is_error: true,
+                            },
+                        }
+                    } else {
+                        tools::execute(&ctx, &call.name, &call.arguments, cancel).await
+                    }
                 };
                 let truncated = output.content.chars().count() > EVENT_RESULT_CHARS;
                 self.emit(
@@ -444,10 +545,50 @@ impl AgentManager {
                 self.emit(&session.id, Event::Message { message: saved });
             }
         }
-        bail!(
-            "stopped after reaching the limit of {} steps",
-            self.cfg.config.max_steps
-        )
+        bail!("stopped after reaching the limit of {} steps", conf.agent.max_steps)
+    }
+
+    /// Publishes an approval request, notifies the phone, and waits for the
+    /// answer. None if the task is stopped while waiting.
+    async fn ask_approval(
+        &self,
+        session: &Session,
+        project: &Project,
+        call: &db::ToolCall,
+        slot: &Arc<Mutex<Option<ApprovalSlot>>>,
+        cancel: &CancellationToken,
+    ) -> Option<(Decision, Option<String>)> {
+        let info = PendingApproval {
+            tool_call_id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            requested_at: db::now(),
+        };
+        let (tx, rx) = oneshot::channel();
+        *lock(slot) = Some(ApprovalSlot { info: info.clone(), tx });
+        self.emit(&session.id, Event::ApprovalRequest { approval: info });
+        let sid = session.id.clone();
+        let title = self
+            .db
+            .call(move |c| Ok(db::get_session(c, &sid)?.map(|s| s.title)))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| session.title.clone());
+        self.pusher.notify(project, &session.id, &title, "approval");
+        let answer = tokio::select! {
+            r = rx => r.ok(),
+            _ = cancel.cancelled() => None,
+        };
+        lock(slot).take();
+        self.emit(
+            &session.id,
+            Event::ApprovalResolved {
+                tool_call_id: call.id.clone(),
+                approved: matches!(answer, Some((Decision::Approve | Decision::ApproveAll, _))),
+            },
+        );
+        answer
     }
 
     async fn save(&self, session_id: &str, m: NewMessage) -> Result<Message> {
@@ -481,6 +622,39 @@ impl AgentManager {
     }
 }
 
+pub fn needs_approval(mode: ApprovalMode, tool: &str) -> bool {
+    match mode {
+        ApprovalMode::Never => false,
+        ApprovalMode::Commands => tool == "run_command",
+        ApprovalMode::AllChanges => matches!(tool, "run_command" | "write_file" | "edit_file"),
+    }
+}
+
+/// The chat completion request: history, tools and the current sampling
+/// settings (applied per request, so changes need no restart).
+pub fn request_body(conf: &Config, system: &str, history: &[Message], tool_defs: &Value) -> Value {
+    let s = &conf.sampling;
+    let mut body = json!({
+        "model": conf.llama.model_name,
+        "messages": to_openai_messages(system, history),
+        "stream": true,
+        "temperature": s.temperature,
+        "top_p": s.top_p,
+        "top_k": s.top_k,
+        "min_p": s.min_p,
+        "repeat_penalty": s.repeat_penalty,
+        "presence_penalty": s.presence_penalty,
+        "chat_template_kwargs": { "enable_thinking": conf.agent.thinking },
+    });
+    if tool_defs.as_array().is_some_and(|a| !a.is_empty()) {
+        body["tools"] = tool_defs.clone();
+    }
+    if s.max_tokens > 0 {
+        body["max_tokens"] = json!(s.max_tokens);
+    }
+    body
+}
+
 pub async fn build_system_prompt(
     prompt_path: &Path,
     project: &Project,
@@ -509,6 +683,11 @@ pub async fn build_system_prompt(
             s.push('\n');
             break;
         }
+    }
+    if !project.instructions.trim().is_empty() {
+        s.push_str("\n# Notes for this project (from the Relay app)\n");
+        s.push_str(project.instructions.trim());
+        s.push('\n');
     }
     if let Some(section) = skills::prompt_section(found) {
         s.push('\n');
@@ -585,6 +764,29 @@ mod tests {
             is_error: false,
             created_at: String::new(),
         }
+    }
+
+    #[test]
+    fn request_uses_current_settings() {
+        let mut conf = Config::default();
+        conf.sampling.temperature = 0.1;
+        conf.sampling.max_tokens = 512;
+        conf.agent.thinking = false;
+        let body = request_body(&conf, "sys", &[], &json!([]));
+        assert_eq!(body["temperature"], 0.1);
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(body.get("tools").is_none());
+        assert_eq!(body["messages"][0]["role"], "system");
+    }
+
+    #[test]
+    fn approval_modes() {
+        assert!(!needs_approval(ApprovalMode::Never, "run_command"));
+        assert!(needs_approval(ApprovalMode::Commands, "run_command"));
+        assert!(!needs_approval(ApprovalMode::Commands, "write_file"));
+        assert!(needs_approval(ApprovalMode::AllChanges, "edit_file"));
+        assert!(!needs_approval(ApprovalMode::AllChanges, "read_file"));
     }
 
     #[test]

@@ -13,14 +13,19 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{AgentManager, StartError};
-use crate::config::{LoadedConfig, constant_time_eq};
+use crate::agent::{AgentManager, ApprovalError, Decision, StartError};
+use crate::config::{CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, UpdateError, constant_time_eq};
 use crate::db::{self, Db};
 use crate::model_manager::ModelManager;
 use crate::push::Pusher;
+use crate::setup::{Hardware, Tailscale};
 
 pub struct AppInner {
-    pub cfg: Arc<LoadedConfig>,
+    pub cfg: Arc<SharedConfig>,
+    /// GPUs found at startup.
+    pub hardware: Hardware,
+    /// This PC's Tailscale identity, if Tailscale is running.
+    pub tailscale: Option<Tailscale>,
     pub db: Db,
     pub model: ModelManager,
     pub agent: Arc<AgentManager>,
@@ -66,6 +71,21 @@ impl From<StartError> for ApiError {
     }
 }
 
+impl From<UpdateError> for ApiError {
+    fn from(e: UpdateError) -> Self {
+        match e {
+            UpdateError::Invalid(m) => ApiError::BadRequest(m),
+            UpdateError::Save(e) => e.into(),
+        }
+    }
+}
+
+impl From<ApprovalError> for ApiError {
+    fn from(e: ApprovalError) -> Self {
+        ApiError::Conflict(e.to_string())
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
@@ -106,6 +126,10 @@ pub fn router(state: AppState) -> Router {
         .route("/info", get(info))
         .route("/model", get(model_status))
         .route("/model/restart", post(model_restart))
+        .route("/models", get(list_models))
+        .route("/settings", get(get_settings).patch(patch_settings))
+        .route("/system-prompt", get(get_system_prompt).put(put_system_prompt))
+        .route("/skills", get(list_skills))
         .route("/projects", get(list_projects).post(create_project))
         .route(
             "/projects/{id}",
@@ -126,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/messages", get(list_messages))
         .route("/sessions/{id}/prompt", post(send_prompt))
         .route("/sessions/{id}/stop", post(stop_task))
+        .route("/sessions/{id}/approval", post(answer_approval))
         .route("/sessions/{id}/ws", get(ws_upgrade))
         .route(
             "/push-tokens",
@@ -140,7 +165,8 @@ pub fn router(state: AppState) -> Router {
 /// Requires `Authorization: Bearer <token>` on every request. WebSocket
 /// upgrades may instead pass `?token=` for clients that cannot set headers.
 async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let expected = state.cfg.config.token.as_bytes();
+    let expected_token = state.cfg.read(|l| l.config.token.clone());
+    let expected = expected_token.as_bytes();
     let header_token = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -183,8 +209,204 @@ async fn info(State(s): State<AppState>) -> ApiResult<Json<Value>> {
         "uptime_seconds": (chrono::Utc::now() - s.started_at).num_seconds(),
         "projects": projects,
         "push_enabled": s.pusher.enabled(),
-        "max_steps": s.cfg.config.max_steps,
+        "max_steps": s.cfg.read(|l| l.config.agent.max_steps),
         "model": s.model.status(),
+        "gpus": s.hardware.gpus,
+        "tailscale": s.tailscale,
+    })))
+}
+
+// ---------- settings ----------
+
+/// Top-level config sections the app may change. The token, bind address
+/// and shell stay config.toml-only.
+const EDITABLE_SECTIONS: &[&str] = &["agent", "sampling", "llama", "push", "disabled_skills"];
+
+fn settings_view(c: &Config) -> Value {
+    json!({
+        "agent": c.agent,
+        "sampling": c.sampling,
+        "llama": c.llama,
+        "push": c.push,
+        "disabled_skills": c.disabled_skills,
+    })
+}
+
+async fn get_settings(State(s): State<AppState>) -> Json<Value> {
+    let c = s.cfg.get();
+    let tools: Vec<Value> = crate::tools::catalog()
+        .into_iter()
+        .map(|(name, description)| json!({ "name": name, "description": description }))
+        .collect();
+    Json(json!({
+        "settings": settings_view(&c),
+        "defaults": settings_view(&Config::default()),
+        "tools": tools,
+        "cache_types": CACHE_TYPES,
+        "gpus": s.hardware.gpus,
+    }))
+}
+
+/// Recursively merges `patch` into `base` (JSON merge patch, except that
+/// null is not allowed as a value).
+fn merge(base: &mut Value, patch: &Value, path: &str) -> ApiResult<()> {
+    match (base, patch) {
+        (Value::Object(b), Value::Object(p)) => {
+            for (k, v) in p {
+                let child = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                match b.get_mut(k) {
+                    Some(slot) => merge(slot, v, &child)?,
+                    None => return Err(ApiError::BadRequest(format!("unknown setting '{child}'"))),
+                }
+            }
+            Ok(())
+        }
+        (_, Value::Null) => Err(ApiError::BadRequest(format!("'{path}' may not be null"))),
+        (Value::Object(_), _) => Err(ApiError::BadRequest(format!("'{path}' must be an object"))),
+        (slot, v) => {
+            *slot = v.clone();
+            Ok(())
+        }
+    }
+}
+
+/// Applies a partial settings update, e.g. `{"sampling": {"temperature": 0.2}}`.
+/// Changes to the `llama` section restart llama-server; everything else
+/// applies from the next prompt.
+async fn patch_settings(
+    State(s): State<AppState>,
+    JsonBody(patch): JsonBody<Value>,
+) -> ApiResult<Json<Value>> {
+    let Value::Object(obj) = &patch else {
+        return Err(ApiError::BadRequest("expected a JSON object".into()));
+    };
+    if let Some(k) = obj.keys().find(|k| !EDITABLE_SECTIONS.contains(&k.as_str())) {
+        return Err(ApiError::BadRequest(format!("'{k}' cannot be changed from the app")));
+    }
+    let current = s.cfg.get();
+    let mut view = settings_view(&current);
+    merge(&mut view, &patch, "")?;
+    #[derive(Deserialize)]
+    struct Sections {
+        agent: crate::config::AgentConfig,
+        sampling: crate::config::SamplingConfig,
+        llama: crate::config::LlamaConfig,
+        push: crate::config::PushConfig,
+        disabled_skills: Vec<String>,
+    }
+    let next: Sections = serde_json::from_value(view)
+        .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
+    if next.llama.model_path != current.llama.model_path && !next.llama.model_path.trim().is_empty() {
+        let p = Path::new(next.llama.model_path.trim());
+        let is_gguf = p
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+        if !is_gguf || !p.is_file() {
+            return Err(ApiError::BadRequest(format!(
+                "model must be an existing .gguf file on the PC: {}",
+                p.display()
+            )));
+        }
+    }
+    if next.llama.llama_server_path != current.llama.llama_server_path
+        && !next.llama.llama_server_path.trim().is_empty()
+    {
+        let mut l = next.llama.clone();
+        l.llama_server_path = l.llama_server_path.trim().to_string();
+        if !l.executable().is_file() {
+            return Err(ApiError::BadRequest(format!(
+                "llama-server not found at {}",
+                l.executable().display()
+            )));
+        }
+    }
+    let restart = next.llama != current.llama;
+    let updated = s.cfg.update(move |c| {
+        c.agent = next.agent;
+        c.sampling = next.sampling;
+        c.llama = next.llama;
+        c.push = next.push;
+        c.disabled_skills = next.disabled_skills;
+    })?;
+    if restart {
+        s.model.restart().await;
+    }
+    Ok(Json(json!({
+        "settings": settings_view(&updated),
+        "model_restarting": restart,
+    })))
+}
+
+async fn get_system_prompt(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let path = s.cfg.read(|l| l.system_prompt_path());
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_SYSTEM_PROMPT.to_string(),
+        Err(e) => return Err(anyhow::anyhow!("reading {}: {e}", path.display()).into()),
+    };
+    Ok(Json(json!({
+        "content": content,
+        "default": DEFAULT_SYSTEM_PROMPT,
+        "path": path.to_string_lossy(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct SystemPrompt {
+    content: String,
+}
+
+/// Replaces system_prompt.md. An empty body restores the default.
+async fn put_system_prompt(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<SystemPrompt>,
+) -> ApiResult<Json<Value>> {
+    if body.content.len() > 200_000 {
+        return Err(ApiError::BadRequest("system prompt is too long (max 200,000 bytes)".into()));
+    }
+    let content = if body.content.trim().is_empty() {
+        DEFAULT_SYSTEM_PROMPT.to_string()
+    } else {
+        body.content
+    };
+    let path = s.cfg.read(|l| l.system_prompt_path());
+    tokio::fs::write(&path, &content)
+        .await
+        .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+    Ok(Json(json!({ "content": content })))
+}
+
+async fn list_skills(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let (roots, disabled) = s.cfg.read(|l| (l.skill_roots(), l.config.disabled_skills.clone()));
+    let roots_out: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+    let found = tokio::task::spawn_blocking(move || crate::skills::discover(&roots))
+        .await
+        .map_err(|e| anyhow::anyhow!("skill scan failed: {e}"))?;
+    let skills: Vec<Value> = found
+        .iter()
+        .map(|k| {
+            json!({
+                "name": k.name,
+                "description": k.description,
+                "path": k.path.to_string_lossy(),
+                "enabled": !disabled.contains(&k.name),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "skills": skills, "roots": roots_out })))
+}
+
+async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let (dirs, current) = s.cfg.read(|l| (l.model_dirs(), l.config.llama.model_path.clone()));
+    let dirs_out: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+    let models = tokio::task::spawn_blocking(move || crate::setup::discover_models(&dirs))
+        .await
+        .map_err(|e| anyhow::anyhow!("model scan failed: {e}"))?;
+    Ok(Json(json!({
+        "models": models,
+        "current": current,
+        "dirs": dirs_out,
+        "vram_mb": s.hardware.total_vram_mb(),
     })))
 }
 
@@ -209,6 +431,7 @@ struct CreateProject {
 struct UpdateProject {
     name: Option<String>,
     path: Option<String>,
+    instructions: Option<String>,
 }
 
 /// Validates and canonicalizes a project folder path.
@@ -285,8 +508,14 @@ async fn update_project(
         other => other.map(str::to_string),
     };
     let path = body.path.as_deref().map(validate_folder).transpose()?;
+    let instructions = body.instructions;
+    if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
+        return Err(ApiError::BadRequest("instructions are too long (max 50,000 bytes)".into()));
+    }
     let project =
-        s.db.call(move |c| db::update_project(c, &id, name.as_deref(), path.as_deref()))
+        s.db.call(move |c| {
+            db::update_project(c, &id, name.as_deref(), path.as_deref(), instructions.as_deref())
+        })
             .await?
             .ok_or(ApiError::NotFound("project"))?;
     Ok(Json(json!({ "project": project })))
@@ -473,6 +702,24 @@ async fn stop_task(
     }
     let stopping = s.agent.stop(&id);
     Ok(Json(json!({ "stopping": stopping })))
+}
+
+#[derive(Deserialize)]
+struct ApprovalAnswer {
+    tool_call_id: String,
+    decision: Decision,
+    /// Optional reason passed to the model when denying.
+    note: Option<String>,
+}
+
+async fn answer_approval(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    JsonBody(body): JsonBody<ApprovalAnswer>,
+) -> ApiResult<Json<Value>> {
+    let note = body.note.map(|n| n.chars().take(2000).collect::<String>());
+    s.agent.resolve_approval(&id, &body.tool_call_id, body.decision, note)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn ws_upgrade(

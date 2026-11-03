@@ -4,8 +4,21 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use relay::config::LlamaConfig;
+use relay::config::{Config, LlamaConfig, LoadedConfig, SharedConfig};
 use relay::model_manager::{ModelManager, ModelState};
+use relay::setup::Hardware;
+
+/// Starts a manager whose data folder (config.toml, logs/) is `dir`.
+fn start(llama: LlamaConfig, dir: &std::path::Path) -> (ModelManager, std::sync::Arc<SharedConfig>) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    let shared = SharedConfig::new(LoadedConfig {
+        config: Config { llama, token: "t".into(), ..Default::default() },
+        path: dir.join("config.toml"),
+        data_dir: dir.to_path_buf(),
+        token_generated: false,
+    });
+    (ModelManager::start(shared.clone(), Hardware::default()), shared)
+}
 
 /// Path to the mock_llama example binary, building it if needed.
 fn mock_exe() -> Option<PathBuf> {
@@ -48,7 +61,7 @@ fn setup(extra: &[&str]) -> Option<(LlamaConfig, PathBuf)> {
         health_timeout_seconds: 20,
         ..Default::default()
     };
-    cfg.args.extend(extra.iter().map(|s| s.to_string()));
+    cfg.extra_args.extend(extra.iter().map(|s| s.to_string()));
     Some((cfg, dir))
 }
 
@@ -72,7 +85,7 @@ async fn launches_waits_for_health_logs_and_shuts_down() {
         return;
     };
     let port = cfg.port;
-    let m = ModelManager::start(cfg, dir.join("logs"));
+    let (m, _shared) = start(cfg, &dir);
     assert_eq!(m.status().state, ModelState::Starting);
     assert!(
         wait_for(&m, ModelState::Ready, 20).await,
@@ -96,7 +109,7 @@ async fn gives_up_after_three_restarts_then_restart_recovers() {
     let Some((cfg, dir)) = setup(&["--exit-after-ms", "300"]) else {
         return;
     };
-    let m = ModelManager::start(cfg, dir.join("logs"));
+    let (m, _shared) = start(cfg, &dir);
     assert!(
         wait_for(&m, ModelState::Error, 30).await,
         "status: {:?}",
@@ -136,7 +149,7 @@ async fn uses_existing_server_on_port() {
         )
         .into_future(),
     );
-    let m = ModelManager::start(cfg, dir.join("logs"));
+    let (m, _shared) = start(cfg, &dir);
     assert!(
         wait_for(&m, ModelState::Ready, 10).await,
         "{:?}",
@@ -152,16 +165,36 @@ async fn clear_error_when_not_configured() {
     let dir = std::env::temp_dir().join(format!("relay-sup-{}", uuid::Uuid::new_v4()));
     let cfg = LlamaConfig {
         port: free_port(),
+        auto_setup: false,
         ..Default::default()
     };
-    let m = ModelManager::start(cfg, dir.join("logs"));
+    let (m, _shared) = start(cfg, &dir);
     assert!(wait_for(&m, ModelState::Error, 10).await);
     assert!(
         m.status()
             .message
             .unwrap_or_default()
-            .contains("llama_server_path is not set")
+            .contains("llama-server is not set up")
     );
+    m.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn first_run_picks_a_model_and_saves_it() {
+    let Some((mut cfg, dir)) = setup(&[]) else {
+        return;
+    };
+    // No model configured: one is waiting in <data>/models.
+    cfg.model_path = String::new();
+    std::fs::create_dir_all(dir.join("models/pub/Some-GGUF")).expect("mkdir");
+    let model = dir.join("models/pub/Some-GGUF/some-Q4_K_M.gguf");
+    std::fs::write(&model, b"GGUF").expect("write");
+    let (m, shared) = start(cfg, &dir);
+    assert!(wait_for(&m, ModelState::Ready, 20).await, "{:?}", m.status());
+    assert_eq!(shared.get().llama.model_path, model.to_string_lossy());
+    let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config saved");
+    assert!(saved.contains("some-Q4_K_M.gguf"));
     m.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }

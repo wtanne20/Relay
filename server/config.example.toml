@@ -1,39 +1,79 @@
-# Relay configuration. Copy to config.toml, or just run `relay` once and it
-# creates config.toml with a fresh token. Edit while Relay is stopped.
+# Relay configuration. You normally never edit this file: Relay creates it on
+# first start (%LOCALAPPDATA%\Relay\config.toml) and every agent setting can
+# be changed from the phone app (Settings -> Agent). If you do edit it, do so
+# while Relay is stopped.
 
-# Bearer token for the API. Leave empty to generate one on next start.
+# Bearer token for the API. Leave empty to generate a new one on next start
+# (you will then need to pair the phone again).
 token = ""
 # Listen on all interfaces so Tailscale can reach it. Do NOT port-forward this.
+# The installer only opens the port to Tailscale addresses (100.64.0.0/10).
 bind = "0.0.0.0:8765"
 system_prompt_path = "system_prompt.md"
 # Extra skill folders (a skill folder or a folder of skill folders).
+# skills\ next to this file and %USERPROFILE%\.lmstudio\skills are always used.
 skills_paths = []
-max_steps = 50
+# Skills turned off in the app.
+disabled_skills = []
 # Shell for run_command: "powershell.exe" (Windows PowerShell 5.1) or "pwsh" (PowerShell 7).
 shell = "powershell.exe"
 
+[agent]
+# Model round-trips per prompt before the agent stops.
+max_steps = 50
+# run_command timeout when the model doesn't pick one.
+command_timeout_seconds = 120
+# "never" (fully autonomous), "commands" (ask before run_command) or
+# "all_changes" (ask before run_command, write_file and edit_file).
+approval = "never"
+# Let reasoning models think before answering (Qwen3 enable_thinking).
+thinking = true
+
+[agent.tools]
+list_dir = true
+read_file = true
+write_file = true
+edit_file = true
+run_command = true
+
+# Sent with every request; changes apply to the next prompt.
+[sampling]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+repeat_penalty = 1.0
+presence_penalty = 0.0
+# 0 = no limit.
+max_tokens = 0
+
 [llama]
-# llama-server.exe, or the llama.cpp folder that contains it.
-llama_server_path = 'C:\llama.cpp'
-model_path = 'C:\Users\me\.lmstudio\models\lmstudio-community\Qwen-GGUF\model-Q6_K.gguf'
+# llama-server.exe, or the llama.cpp folder that contains it. Empty = use one
+# found on this PC, or download the right llama.cpp build for your GPU.
+llama_server_path = ""
+# GGUF model. Empty = pick the largest model that fits in VRAM from LM Studio's
+# models folder or the models\ folder next to this file.
+model_path = ""
+# Extra folders to search for .gguf models.
+models_dirs = []
+# llama-server always binds to 127.0.0.1 on this port.
 port = 8080
-# Relay adds -m <model_path> and --port <port>, and always forces --host 127.0.0.1.
-args = [
-    "--jinja",
-    "-ngl", "99",
-    "-c", "65536",
-    "--flash-attn", "on",
-    "--cache-type-k", "q8_0",
-    "--cache-type-v", "q8_0",
-    "--temp", "0.6",
-    "--top-k", "20",
-    "--top-p", "0.95",
-    "--host", "127.0.0.1",
-]
+# Launched as: -m <model_path> --port <port> --jinja -ngl <gpu_layers>
+#   -c <context_size> --flash-attn <flash_attn> --cache-type-k <k>
+#   --cache-type-v <v> <extra_args...> --host 127.0.0.1
+context_size = 65536
+gpu_layers = 99
+flash_attn = "on"
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+extra_args = []
 # Seconds to wait for /health after launching (large models load slowly).
 health_timeout_seconds = 600
 model_name = "local"
+# Find/download llama.cpp and pick a model automatically when not set.
+auto_setup = true
 
 [push]
-# Expo push notifications when a task finishes, errors or is stopped.
+# Expo push notifications when a task finishes, fails, is stopped or needs
+# approval. Only the project name, session title and status are sent.
 enabled = true

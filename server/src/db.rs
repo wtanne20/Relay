@@ -18,6 +18,9 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    /// Extra instructions added to the system prompt for this project.
+    #[serde(default)]
+    pub instructions: String,
     pub created_at: String,
 }
 
@@ -81,7 +84,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     path TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -143,10 +147,24 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
+    upgrade(&conn)?;
     Ok(conn)
 }
 
+/// Adds columns introduced after the first release to older databases.
+fn upgrade(conn: &Connection) -> Result<()> {
+    let has_instructions = conn
+        .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'instructions'")?
+        .exists([])?;
+    if !has_instructions {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN instructions TEXT NOT NULL DEFAULT ''")?;
+    }
+    Ok(())
+}
+
 // ---------- projects ----------
+
+const PROJECT_COLS: &str = "id, name, path, created_at, instructions";
 
 fn project_row(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -154,12 +172,13 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         name: r.get(1)?,
         path: r.get(2)?,
         created_at: r.get(3)?,
+        instructions: r.get(4)?,
     })
 }
 
 pub fn list_projects(c: &Connection) -> Result<Vec<Project>> {
     let mut st =
-        c.prepare("SELECT id, name, path, created_at FROM projects ORDER BY name COLLATE NOCASE")?;
+        c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects ORDER BY name COLLATE NOCASE"))?;
     let rows = st
         .query_map([], project_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -168,7 +187,7 @@ pub fn list_projects(c: &Connection) -> Result<Vec<Project>> {
 
 pub fn get_project(c: &Connection, id: &str) -> Result<Option<Project>> {
     Ok(c.query_row(
-        "SELECT id, name, path, created_at FROM projects WHERE id = ?1",
+        &format!("SELECT {PROJECT_COLS} FROM projects WHERE id = ?1"),
         [id],
         project_row,
     )
@@ -177,7 +196,7 @@ pub fn get_project(c: &Connection, id: &str) -> Result<Option<Project>> {
 
 pub fn find_project_by_path(c: &Connection, path: &str) -> Result<Option<Project>> {
     Ok(c.query_row(
-        "SELECT id, name, path, created_at FROM projects WHERE path = ?1 COLLATE NOCASE",
+        &format!("SELECT {PROJECT_COLS} FROM projects WHERE path = ?1 COLLATE NOCASE"),
         [path],
         project_row,
     )
@@ -189,6 +208,7 @@ pub fn create_project(c: &Connection, name: &str, path: &str) -> Result<Project>
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
         path: path.to_string(),
+        instructions: String::new(),
         created_at: now(),
     };
     c.execute(
@@ -203,7 +223,14 @@ pub fn update_project(
     id: &str,
     name: Option<&str>,
     path: Option<&str>,
+    instructions: Option<&str>,
 ) -> Result<Option<Project>> {
+    if let Some(i) = instructions {
+        c.execute(
+            "UPDATE projects SET instructions = ?1 WHERE id = ?2",
+            params![i, id],
+        )?;
+    }
     if let Some(n) = name {
         c.execute(
             "UPDATE projects SET name = ?1 WHERE id = ?2",

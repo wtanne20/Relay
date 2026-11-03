@@ -2,10 +2,12 @@
 //! title and status (plus ids for navigation), never code, file contents or
 //! prompt text.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::config::SharedConfig;
 use crate::db::{self, Db, Project};
 
 const EXPO_PUSH_URL: &str = "https://exp.host/--/api/v2/push/send";
@@ -14,25 +16,27 @@ const EXPO_PUSH_URL: &str = "https://exp.host/--/api/v2/push/send";
 pub struct Pusher {
     db: Db,
     http: reqwest::Client,
-    enabled: bool,
+    cfg: Arc<SharedConfig>,
 }
 
 impl Pusher {
-    pub fn new(db: Db, enabled: bool) -> Self {
+    pub fn new(db: Db, cfg: Arc<SharedConfig>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap_or_default();
-        Self { db, http, enabled }
+        Self { db, http, cfg }
     }
 
+    /// The `[push] enabled` setting (changeable from the app).
     pub fn enabled(&self) -> bool {
-        self.enabled
+        self.cfg.read(|l| l.config.push.enabled)
     }
 
-    /// Fire-and-forget notification for a finished task.
+    /// Fire-and-forget notification for a finished task or a pending
+    /// approval.
     pub fn notify(&self, project: &Project, session_id: &str, session_title: &str, status: &str) {
-        if !self.enabled {
+        if !self.enabled() {
             return;
         }
         let this = self.clone();
@@ -92,6 +96,7 @@ impl Notification {
             "done" => "finished",
             "error" => "failed",
             "stopped" => "was stopped",
+            "approval" => "needs your approval",
             other => other,
         };
         json!({
@@ -131,5 +136,17 @@ mod tests {
             .map(|o| o.keys().collect())
             .unwrap_or_default();
         assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn approval_label() {
+        let n = Notification {
+            project_id: "p".into(),
+            project_name: "Relay".into(),
+            session_id: "s".into(),
+            session_title: "Fix build".into(),
+            status: "approval".into(),
+        };
+        assert_eq!(n.to_expo("t")["body"], "Fix build needs your approval");
     }
 }

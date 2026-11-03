@@ -449,6 +449,7 @@ async fn system_prompt_includes_agents_md_and_skills() {
         id: "p".into(),
         name: "proj".into(),
         path: dir.join("proj").to_string_lossy().into_owned(),
+        instructions: "Prefer small commits.".into(),
         created_at: String::new(),
     };
     let skills = relay::skills::discover(&[dir.join("skills")]);
@@ -462,5 +463,168 @@ async fn system_prompt_includes_agents_md_and_skills() {
     assert!(s.starts_with("You are a test agent."));
     assert!(s.contains("Run tests with cargo test."));
     assert!(s.contains("- pdf: Read PDFs (path: "));
+    assert!(s.contains("Prefer small commits."));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn settings_skills_and_approvals() {
+    let h = Harness::start().await;
+    let patch = |body: Value| h.req(reqwest::Method::PATCH, "/settings", Some(body));
+
+    // --- settings ---
+    let s = h.get("/settings").await;
+    assert_eq!(s["settings"]["agent"]["max_steps"], 50);
+    assert_eq!(s["settings"]["sampling"]["temperature"], 0.6);
+    assert_eq!(s["tools"].as_array().map(Vec::len), Some(5));
+    assert!(s["settings"].get("token").is_none(), "token must not be exposed");
+
+    let (st, v) = patch(json!({"sampling": {"temperature": 0.2}, "agent": {"max_steps": 12}})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["settings"]["sampling"]["temperature"], 0.2);
+    assert_eq!(v["model_restarting"], false);
+    let saved = std::fs::read_to_string(h.dir.join("data/config.toml")).expect("config");
+    assert!(saved.contains("temperature = 0.2"), "{saved}");
+    assert!(saved.contains("max_steps = 12"));
+    assert_eq!(h.get("/info").await["max_steps"], 12);
+
+    for bad in [
+        json!({"sampling": {"temperature": 9}}),
+        json!({"token": "x"}),
+        json!({"bind": "0.0.0.0:1"}),
+        json!({"agent": {"bogus": 1}}),
+        json!({"agent": {"max_steps": null}}),
+        json!({"llama": {"extra_args": ["--host", "0.0.0.0"]}}),
+        json!({"llama": {"model_path": "/definitely/not/here.gguf"}}),
+        json!({"agent": {"approval": "sometimes"}}),
+    ] {
+        let (st, v) = patch(bad.clone()).await;
+        assert_eq!(st, 400, "{bad} -> {v}");
+    }
+    assert_eq!(h.get("/settings").await["settings"]["sampling"]["temperature"], 0.2);
+
+    // Changing a llama-server setting restarts the model.
+    let (st, v) = patch(json!({"llama": {"context_size": 32768}})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["model_restarting"], true);
+    for _ in 0..100 {
+        if h.get("/model").await["state"] == "ready" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // --- system prompt ---
+    let p = h.get("/system-prompt").await;
+    assert!(p["content"].as_str().unwrap_or("").contains("You are Relay"));
+    let (st, _) = h
+        .req(reqwest::Method::PUT, "/system-prompt", Some(json!({"content": "Be terse."})))
+        .await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("/system-prompt").await["content"], "Be terse.");
+    let (_, v) = h
+        .req(reqwest::Method::PUT, "/system-prompt", Some(json!({"content": "  "})))
+        .await;
+    assert!(v["content"].as_str().unwrap_or("").contains("You are Relay"), "reset to default");
+
+    // --- skills ---
+    let sk = h.get("/skills").await;
+    assert_eq!(sk["skills"][0]["name"], "greeting");
+    assert_eq!(sk["skills"][0]["enabled"], true);
+    let (st, _) = patch(json!({"disabled_skills": ["greeting"]})).await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("/skills").await["skills"][0]["enabled"], false);
+
+    // --- models ---
+    let m = h.get("/models").await;
+    assert!(m["models"].is_array());
+    assert!(m["dirs"].as_array().is_some_and(|d| !d.is_empty()));
+
+    // --- project instructions ---
+    let proj_dir = h.dir.join("approvals");
+    std::fs::create_dir_all(&proj_dir).expect("mkdir");
+    let (_, v) = h.post("/projects", json!({"path": proj_dir.to_string_lossy()})).await;
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+    assert_eq!(v["project"]["instructions"], "");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/projects/{pid}"),
+            Some(json!({"instructions": "Use 4 spaces."})),
+        )
+        .await;
+    assert_eq!((st, v["project"]["instructions"].as_str()), (200, Some("Use 4 spaces.")));
+
+    // --- approvals ---
+    let (st, _) = patch(json!({"agent": {"approval": "commands"}})).await;
+    assert_eq!(st, 200);
+    let (_, v) = h.post(&format!("/projects/{pid}/sessions"), json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    assert_eq!(ws.next().await["type"], "hello");
+
+    // Deny: the command never runs.
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo denied > marker.txt"}))
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    assert_eq!(req["approval"]["name"], "run_command");
+
+    // A client connecting now sees the pending request in hello.
+    let mut ws2 = h.ws(&sid).await;
+    let hello = ws2.next().await;
+    assert_eq!(hello["pending_approval"]["tool_call_id"], call_id.as_str());
+
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": "nope", "decision": "approve"}))
+        .await;
+    assert_eq!(st, 409);
+    let (st, v) = h
+        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "deny"}))
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let resolved = ws.until_type("approval_resolved").await;
+    assert_eq!(resolved["approved"], false);
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["is_error"], true);
+    assert!(result["content"].as_str().unwrap_or("").contains("denied"));
+    let ev = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(ev.last().map(|e| e["status"].clone()), Some(json!("done")));
+    assert!(!proj_dir.join("marker.txt").exists());
+
+    // Approve: it runs.
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo approved"}))
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "approve"}))
+        .await;
+    assert_eq!(st, 200);
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["is_error"], false, "{result}");
+    assert!(result["content"].as_str().unwrap_or("").contains("approved"));
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // Nothing pending any more.
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/approval"), json!({"tool_call_id": call_id, "decision": "approve"}))
+        .await;
+    assert_eq!(st, 409);
+
+    // Stopping while waiting for approval ends the task.
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "run: echo never"}))
+        .await;
+    assert_eq!(st, 202);
+    ws.until_type("approval_request").await;
+    let (st, _) = h.post(&format!("/sessions/{sid}/stop"), json!({})).await;
+    assert_eq!(st, 200);
+    let ev = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(ev.last().map(|e| e["status"].clone()), Some(json!("stopped")));
+    let _ = std::fs::remove_dir_all(&h.dir);
 }

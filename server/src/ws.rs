@@ -1,7 +1,8 @@
 //! Per-session WebSocket: forwards agent events to the client.
 //!
 //! Protocol: on connect the server sends a `hello` event with the current
-//! status and any in-progress draft, then streams events. Clients reconcile
+//! status, any in-progress draft and any tool call waiting for approval,
+//! then streams events. Clients reconcile
 //! history by fetching `GET /sessions/{id}/messages?after=<last id>` and
 //! upsert `message` events by id. A `resync` event means events were dropped
 //! (slow client) and history should be refetched.
@@ -17,7 +18,7 @@ use crate::db;
 
 pub async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
     // Subscribe before reading state so no event falls in the gap.
-    let (mut rx, draft) = state.agent.subscribe(&session_id);
+    let (mut rx, draft, pending) = state.agent.subscribe(&session_id);
     let sid = session_id.clone();
     let snapshot = state
         .db
@@ -55,6 +56,7 @@ pub async fn handle(mut socket: WebSocket, state: AppState, session_id: String) 
         "running": running,
         "last_message_id": last_id,
         "draft": draft,
+        "pending_approval": pending,
     });
     if send_json(&mut socket, &hello).await.is_err() {
         return;

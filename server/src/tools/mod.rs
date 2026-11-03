@@ -24,6 +24,8 @@ pub struct ToolContext {
     pub sandbox: Sandbox,
     /// Shell used by run_command, e.g. "powershell.exe", "pwsh" or "sh".
     pub shell: String,
+    /// run_command timeout when the model doesn't give one.
+    pub default_timeout: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -47,8 +49,38 @@ impl ToolOutput {
     }
 }
 
-/// OpenAI-style tool definitions sent with every completion request.
-pub fn definitions() -> Value {
+/// OpenAI-style definitions of the enabled tools, sent with every
+/// completion request.
+pub fn definitions(toggles: &crate::config::ToolToggles) -> Value {
+    let all = all_definitions();
+    let enabled: Vec<Value> = all
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|d| {
+                    d.pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| toggles.enabled(n))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Value::Array(enabled)
+}
+
+/// Every tool Relay offers, as (name, short description) for the app.
+pub fn catalog() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("list_dir", "List folders and files"),
+        ("read_file", "Read files"),
+        ("write_file", "Create or overwrite files"),
+        ("edit_file", "Edit parts of files"),
+        ("run_command", "Run PowerShell commands"),
+    ]
+}
+
+fn all_definitions() -> Value {
     json!([
         {
             "type": "function",
@@ -120,7 +152,7 @@ pub fn definitions() -> Value {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string", "description": "The PowerShell command line to run."},
-                        "timeout_seconds": {"type": "integer", "description": "Kill the command after this many seconds (default 120)."}
+                        "timeout_seconds": {"type": "integer", "description": "Kill the command after this many seconds (default set in Relay settings)."}
                     },
                     "required": ["command"]
                 }
@@ -299,7 +331,7 @@ async fn run_command(ctx: &ToolContext, args: &Value, cancel: &CancellationToken
     let timeout = args
         .get("timeout_seconds")
         .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_COMMAND_TIMEOUT)
+        .unwrap_or(ctx.default_timeout)
         .clamp(1, MAX_COMMAND_TIMEOUT);
     if let Some(reason) = guard::check_command(command, &ctx.sandbox) {
         return ToolOutput::err(reason);
@@ -529,9 +561,25 @@ mod tests {
             ToolContext {
                 sandbox: Sandbox::new(&proj, &[]).unwrap(),
                 shell: shell.into(),
+                default_timeout: DEFAULT_COMMAND_TIMEOUT,
             },
             base,
         )
+    }
+
+    #[test]
+    fn definitions_follow_toggles() {
+        let mut t = crate::config::ToolToggles::default();
+        assert_eq!(definitions(&t).as_array().map(Vec::len), Some(5));
+        t.run_command = false;
+        t.write_file = false;
+        let names: Vec<String> = definitions(&t)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["list_dir", "read_file", "edit_file"]);
     }
 
     async fn call(ctx: &ToolContext, name: &str, args: Value) -> ToolOutput {

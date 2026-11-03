@@ -7,6 +7,7 @@ pub mod db;
 pub mod migrate;
 pub mod model_manager;
 pub mod push;
+pub mod setup;
 pub mod skills;
 pub mod tools;
 pub mod ws;
@@ -17,17 +18,18 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 
 use crate::api::{AppInner, AppState};
-use crate::config::{DEFAULT_SYSTEM_PROMPT, LoadedConfig};
+use crate::config::{DEFAULT_SYSTEM_PROMPT, LoadedConfig, SharedConfig};
 use crate::db::Db;
 use crate::model_manager::ModelManager;
 use crate::push::Pusher;
 
-/// Opens the database, prepares the data directory, starts the model
-/// supervisor and returns the router plus shared state.
+/// Opens the database, prepares the data directory, detects the GPU and
+/// Tailscale, starts the model supervisor and returns the router plus shared
+/// state.
 pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
-    let cfg = Arc::new(cfg);
     std::fs::create_dir_all(cfg.logs_dir()).context("creating logs folder")?;
     std::fs::create_dir_all(cfg.data_dir.join("skills")).context("creating skills folder")?;
+    std::fs::create_dir_all(cfg.data_dir.join("models")).context("creating models folder")?;
     let prompt = cfg.system_prompt_path();
     if !prompt.exists() {
         std::fs::write(&prompt, DEFAULT_SYSTEM_PROMPT)
@@ -41,11 +43,18 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         tracing::warn!("marked {stale} interrupted session(s) as stopped");
     }
 
-    let model = ModelManager::start(cfg.config.llama.clone(), cfg.logs_dir());
-    let pusher = Pusher::new(db.clone(), cfg.config.push.enabled);
-    let agent = agent::AgentManager::new(db.clone(), model.clone(), cfg.clone(), pusher.clone());
+    let (hardware, tailscale) = tokio::join!(setup::detect_hardware(), setup::detect_tailscale());
+    for g in &hardware.gpus {
+        tracing::info!("GPU: {} ({} MB)", g.name, g.vram_mb);
+    }
+    let shared = SharedConfig::new(cfg);
+    let model = ModelManager::start(shared.clone(), hardware.clone());
+    let pusher = Pusher::new(db.clone(), shared.clone());
+    let agent = agent::AgentManager::new(db.clone(), model.clone(), shared.clone(), pusher.clone());
     let state: AppState = Arc::new(AppInner {
-        cfg,
+        cfg: shared,
+        hardware,
+        tailscale,
         db,
         model,
         agent,
@@ -56,31 +65,65 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     Ok((api::router(state.clone()), state))
 }
 
-/// `relay serve`: runs until Ctrl+C, then stops tasks and llama-server.
+/// `relay serve`: runs until Ctrl+C (or the window is closed), then stops
+/// tasks and llama-server.
 pub async fn serve(cfg: LoadedConfig) -> Result<()> {
     let bind = cfg.config.bind.clone();
     let token = cfg.config.token.clone();
-    let generated = cfg.token_generated;
     let cfg_path = cfg.path.clone();
+    let data_dir = cfg.data_dir.clone();
+    let first_run = !data_dir.join("pairing.html").exists();
 
+    let listener = match tokio::net::TcpListener::bind(&bind).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            println!();
+            println!("  Relay is already running on this PC (port {} is in use).", port_of(&bind));
+            println!("  Opening the pairing page instead...");
+            let ts = setup::detect_tailscale().await;
+            let url = setup::pairing_url(ts.as_ref(), port_of(&bind));
+            if let Ok(page) = setup::write_pairing_page(&data_dir, &url, &setup::pairing_payload(&url, &token), ts.is_some()) {
+                setup::open_in_browser(&page);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            return Ok(());
+        }
+        Err(e) => return Err(e).with_context(|| format!("binding {bind}")),
+    };
     let (app, state) = build_app(cfg).await?;
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .with_context(|| format!("binding {bind} (is another Relay already running?)"))?;
+
+    let url = setup::pairing_url(state.tailscale.as_ref(), port_of(&bind));
+    let payload = setup::pairing_payload(&url, &token);
+    let page = setup::write_pairing_page(&data_dir, &url, &payload, state.tailscale.is_some());
 
     println!();
-    println!("  Relay {} listening on {bind}", env!("CARGO_PKG_VERSION"));
-    println!("  Config: {}", cfg_path.display());
-    if generated {
-        println!("  A new API token was generated and saved to config.toml.");
-    }
-    println!("  API token: {token}");
-    println!(
-        "  Connect from your phone over Tailscale: http://<this PC's Tailscale name or IP>:{}",
-        port_of(&bind)
-    );
-    println!("  Press Ctrl+C to stop.");
+    println!("  Relay {} is running. Keep this window open (you can minimize it).", env!("CARGO_PKG_VERSION"));
+    println!("  Settings and data: {}", cfg_path.parent().unwrap_or(&data_dir).display());
     println!();
+    match setup::qr_console(&payload) {
+        Ok(qr) => {
+            println!("  Scan this with the Relay phone app to connect:");
+            println!("{qr}");
+        }
+        Err(e) => tracing::warn!("could not draw QR code: {e}"),
+    }
+    println!("  Or enter it by hand:");
+    println!("    Address: {url}");
+    println!("    Token:   {token}");
+    if state.tailscale.is_none() {
+        println!();
+        println!("  Tailscale was not found on this PC. Install it from https://tailscale.com and");
+        println!("  sign in with the same account as your phone, then restart Relay.");
+    }
+    println!();
+    println!("  Press Ctrl+C or close this window to stop Relay.");
+    println!();
+
+    match page {
+        Ok(p) if first_run => setup::open_in_browser(&p),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("could not write pairing page: {e:#}"),
+    }
 
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
@@ -105,6 +148,23 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
     tracing::info!("stopping llama-server");
     state.model.shutdown().await;
     tracing::info!("bye");
+    Ok(())
+}
+
+/// `relay pair`: shows the QR code (console and browser) without starting
+/// the server.
+pub async fn pair(cfg: LoadedConfig) -> Result<()> {
+    let ts = setup::detect_tailscale().await;
+    let url = setup::pairing_url(ts.as_ref(), port_of(&cfg.config.bind));
+    let payload = setup::pairing_payload(&url, &cfg.config.token);
+    let page = setup::write_pairing_page(&cfg.data_dir, &url, &payload, ts.is_some())?;
+    println!("{}", setup::qr_console(&payload)?);
+    println!("  Address: {url}");
+    println!("  Token:   {}", cfg.config.token);
+    if ts.is_none() {
+        println!("  Tailscale was not found on this PC; install it from https://tailscale.com");
+    }
+    setup::open_in_browser(&page);
     Ok(())
 }
 
