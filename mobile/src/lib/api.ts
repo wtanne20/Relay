@@ -135,6 +135,10 @@ export class RelayClient {
   patchSettings(patch: DeepPartial<Settings>) {
     return this.request<{ settings: Settings; model_restarting: boolean }>('PATCH', '/settings', patch);
   }
+  /** Sets a model's tags; null goes back to the tags guessed from its name. */
+  setModelTags(name: string, tags: string[] | null) {
+    return this.request<{ tags: string[] }>('PUT', '/models/tags', { name, tags });
+  }
   models() {
     return this.request<{ models: ModelFile[]; current: string; dirs: string[]; vram_mb: number }>(
       'GET',

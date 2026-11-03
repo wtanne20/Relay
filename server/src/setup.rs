@@ -494,6 +494,36 @@ pub struct ModelFile {
     pub size_bytes: u64,
 }
 
+/// Tags guessed from a model's file name, used until the user sets their own.
+pub fn guess_model_tags(name: &str) -> Vec<String> {
+    let n = name.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    let mut tags = Vec::new();
+    if has(&[
+        "coder",
+        "code",
+        "devstral",
+        "codestral",
+        "starcoder",
+        "deepseek-v",
+        "swe",
+    ]) {
+        tags.push("code");
+    }
+    if has(&[
+        "-vl", "_vl", "vision", "llava", "pixtral", "gemma-3", "gemma3",
+    ]) {
+        tags.push("vision");
+    }
+    if has(&["r1", "qwq", "thinking", "reason", "magistral"]) {
+        tags.push("reasoning");
+    }
+    if tags.is_empty() {
+        tags.push("general");
+    }
+    tags.into_iter().map(str::to_string).collect()
+}
+
 /// All GGUF files under the given folders (vision projectors excluded).
 /// Multi-part models are listed once, by their first part.
 pub fn discover_models(dirs: &[PathBuf]) -> Vec<ModelFile> {
@@ -761,6 +791,16 @@ mod tests {
         std::fs::write(dir.join("cudart64_13.dll"), pe(0xAA64)).unwrap();
         assert_eq!(has_foreign_dlls(&dir), cfg!(target_arch = "x86_64"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn guesses_tags_from_names() {
+        assert_eq!(
+            guess_model_tags("Qwen3-Coder-30B-A3B-Q4_K_M.gguf"),
+            ["code"]
+        );
+        assert_eq!(guess_model_tags("Qwen2.5-VL-7B.gguf"), ["vision"]);
+        assert_eq!(guess_model_tags("Qwen3.8-27B-Q4_K_M.gguf"), ["general"]);
     }
 
     #[test]

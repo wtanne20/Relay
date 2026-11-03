@@ -197,6 +197,10 @@ export interface ModelFile {
   path: string;
   name: string;
   size_bytes: number;
+  /** What the model is good at, e.g. "code", "UI". */
+  tags?: string[];
+  /** False when the tags were guessed from the file name. */
+  custom_tags?: boolean;
 }
 
 export interface SkillInfo {

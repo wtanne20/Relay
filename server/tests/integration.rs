@@ -562,9 +562,29 @@ async fn settings_skills_and_approvals() {
     assert_eq!(h.get("/skills").await["skills"][0]["enabled"], false);
 
     // --- models ---
+    std::fs::write(h.dir.join("data/models/Tiny-Coder-Q4.gguf"), "GGUF").expect("model");
     let m = h.get("/models").await;
     assert!(m["models"].is_array());
     assert!(m["dirs"].as_array().is_some_and(|d| !d.is_empty()));
+    let tiny = m["models"]
+        .as_array()
+        .and_then(|a| a.iter().position(|x| x["name"] == "Tiny-Coder-Q4.gguf"))
+        .expect("tiny model listed");
+    let current = "Tiny-Coder-Q4.gguf".to_string();
+    assert_eq!(m["models"][tiny]["custom_tags"], false);
+    assert_eq!(m["models"][tiny]["tags"], json!(["code"]));
+    let put = |body: Value| h.req(reqwest::Method::PUT, "/models/tags", Some(body));
+    let (st, v) = put(json!({"name": current, "tags": [" code ", "UI", "code", ""]})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tags"], json!(["code", "UI"]));
+    let m = h.get("/models").await;
+    assert_eq!(m["models"][tiny]["tags"], json!(["code", "UI"]));
+    assert_eq!(m["models"][tiny]["custom_tags"], true);
+    let (st, _) = put(json!({"name": "../x", "tags": []})).await;
+    assert_eq!(st, 400);
+    let (st, _) = put(json!({"name": current, "tags": null})).await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("/models").await["models"][tiny]["custom_tags"], false);
 
     // --- project instructions ---
     let proj_dir = h.dir.join("approvals");

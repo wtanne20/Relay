@@ -161,6 +161,7 @@ pub fn router(state: AppState) -> Router {
         .route("/model", get(model_status))
         .route("/model/restart", post(model_restart))
         .route("/models", get(list_models))
+        .route("/models/tags", axum::routing::put(set_model_tags))
         .route("/settings", get(get_settings).patch(patch_settings))
         .route(
             "/system-prompt",
@@ -556,12 +557,72 @@ async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     })
     .await
     .map_err(|e| anyhow::anyhow!("model scan failed: {e}"))?;
+    let tags = s.cfg.read(|l| l.config.model_tags.clone());
+    let models: Vec<Value> = models
+        .into_iter()
+        .map(|m| {
+            let (t, custom) = match tags.get(&m.name) {
+                Some(t) => (t.clone(), true),
+                None => (setup::guess_model_tags(&m.name), false),
+            };
+            json!({
+                "path": m.path,
+                "name": m.name,
+                "size_bytes": m.size_bytes,
+                "tags": t,
+                "custom_tags": custom,
+            })
+        })
+        .collect();
     Ok(Json(json!({
         "models": models,
         "current": current,
         "dirs": dirs_out,
         "vram_mb": s.hardware.total_vram_mb(),
     })))
+}
+
+#[derive(Deserialize)]
+struct ModelTags {
+    /// The model's file name, as listed by GET /models.
+    name: String,
+    /// Replaces the model's tags. `null` goes back to the guessed tags.
+    tags: Option<Vec<String>>,
+}
+
+async fn set_model_tags(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ModelTags>,
+) -> ApiResult<Json<Value>> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return Err(ApiError::BadRequest(
+            "name must be a model file name".into(),
+        ));
+    }
+    let tags = body.tags.map(|t| {
+        let mut out: Vec<String> = Vec::new();
+        for tag in t {
+            let tag: String = tag.trim().chars().take(24).collect();
+            if !tag.is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&tag)) {
+                out.push(tag);
+            }
+        }
+        out.truncate(8);
+        out
+    });
+    let shown = tags
+        .clone()
+        .unwrap_or_else(|| setup::guess_model_tags(&name));
+    s.cfg.update(move |c| match tags {
+        Some(t) => {
+            c.model_tags.insert(name, t);
+        }
+        None => {
+            c.model_tags.remove(&name);
+        }
+    })?;
+    Ok(Json(json!({ "tags": shown })))
 }
 
 async fn model_status(State(s): State<AppState>) -> Json<Value> {

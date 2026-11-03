@@ -25,6 +25,9 @@ pub struct Config {
     /// Folder new projects are created in. When set, adding a project with
     /// just a name creates `<projects_folder>/<name>`. Empty = not set.
     pub projects_folder: String,
+    /// Tags shown next to each model (e.g. "code", "UI"), keyed by the model's
+    /// file name. A model without an entry gets tags guessed from its name.
+    pub model_tags: std::collections::BTreeMap<String, Vec<String>>,
     /// Shell used by run_command ("powershell.exe" or "pwsh" on Windows).
     pub shell: String,
     pub agent: AgentConfig,
@@ -183,6 +186,7 @@ impl Default for Config {
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
             projects_folder: String::new(),
+            model_tags: Default::default(),
             shell: if cfg!(windows) {
                 "powershell.exe".into()
             } else {
