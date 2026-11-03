@@ -9,7 +9,7 @@ export default function SystemPromptScreen() {
   if (!client) return null;
   return (
     <TextEditor
-      intro="Instructions the agent gets at the start of every session, in every project. Project details, AGENTS.md and skills are added after this automatically."
+      intro="Instructions the agent gets at the start of every chat, in every project. Project details, AGENTS.md and skills are added after this automatically."
       load={async () => {
         const r = await client.systemPrompt();
         setDefaultText(r.default);

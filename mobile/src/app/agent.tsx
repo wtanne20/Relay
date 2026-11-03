@@ -13,8 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Group, NavRow, NumberRow, SectionTitle, Segmented, TextRow, ToggleRow } from '../components/SettingsControls';
-import { colors, space } from '../components/theme';
-import { Banner, Button } from '../components/ui';
+import { m3, radius, space, type } from '../components/theme';
+import { Banner, Button, Icon, type IconName } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { basename } from '../lib/format';
@@ -33,6 +33,14 @@ const APPROVAL_HINT: Record<ApprovalMode, string> = {
 };
 
 const COMMON_CACHE = ['f16', 'q8_0', 'q4_0'];
+
+const TOOL_ICONS: Record<string, IconName> = {
+  list_dir: 'folder-outline',
+  read_file: 'file-document-outline',
+  write_file: 'file-plus-outline',
+  edit_file: 'file-edit-outline',
+  run_command: 'console',
+};
 
 function same(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -88,7 +96,7 @@ export default function AgentSettingsScreen() {
         {error ? (
           <Banner message={error} actionLabel="Retry" onAction={load} />
         ) : (
-          <ActivityIndicator color={colors.accent} />
+          <ActivityIndicator color={m3.primary} />
         )}
       </View>
     );
@@ -149,11 +157,13 @@ export default function AgentSettingsScreen() {
         <Group>
           <NavRow
             label="Model"
+            icon="chip"
             value={l.model_path ? basename(l.model_path) : 'Pick automatically'}
             onPress={() => router.push('/models')}
           />
           <View style={styles.note}>
-            <Text style={styles.noteText}>{gpuText}</Text>
+            <Icon name="expansion-card" size={18} color={m3.outline} />
+            <Text style={[type.bodyMedium, styles.grow]}>{gpuText}</Text>
           </View>
         </Group>
 
@@ -161,6 +171,7 @@ export default function AgentSettingsScreen() {
         <Group>
           <Segmented
             label="Ask before acting"
+            icon="hand-back-right-outline"
             hint={APPROVAL_HINT[a.approval]}
             value={a.approval}
             options={APPROVAL_OPTIONS}
@@ -168,12 +179,14 @@ export default function AgentSettingsScreen() {
           />
           <ToggleRow
             label="Thinking"
+            icon="head-lightbulb-outline"
             hint="Let reasoning models think before they answer. Slower, usually smarter."
             value={a.thinking}
             onChange={(v) => set('agent', { thinking: v })}
           />
           <NumberRow
             label="Max steps per prompt"
+            icon="stairs"
             hint="Model turns before the agent stops."
             value={a.max_steps}
             min={1}
@@ -184,6 +197,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Command timeout (s)"
+            icon="timer-outline"
             hint="Default limit for each command."
             value={a.command_timeout_seconds}
             min={1}
@@ -201,6 +215,7 @@ export default function AgentSettingsScreen() {
               key={t.name}
               label={t.description}
               hint={t.name}
+              icon={TOOL_ICONS[t.name]}
               value={a.tools[t.name]}
               onChange={(v) => set('agent', { tools: { ...a.tools, [t.name]: v } })}
             />
@@ -218,6 +233,7 @@ export default function AgentSettingsScreen() {
         <Group>
           <NumberRow
             label="Temperature"
+            icon="thermometer"
             hint="Higher is more creative."
             value={s.temperature}
             min={0}
@@ -227,6 +243,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Top P"
+            icon="chart-bell-curve"
             value={s.top_p}
             min={0}
             max={1}
@@ -235,6 +252,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Top K"
+            icon="format-list-numbered"
             value={s.top_k}
             min={0}
             max={1000}
@@ -244,6 +262,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Min P"
+            icon="filter-outline"
             value={s.min_p}
             min={0}
             max={1}
@@ -252,6 +271,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Repeat penalty"
+            icon="repeat"
             value={s.repeat_penalty}
             min={0.5}
             max={2}
@@ -260,6 +280,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Presence penalty"
+            icon="account-voice"
             value={s.presence_penalty}
             min={-2}
             max={2}
@@ -268,6 +289,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="Max reply tokens"
+            icon="text-long"
             hint="0 means no limit."
             value={s.max_tokens}
             min={0}
@@ -303,6 +325,7 @@ export default function AgentSettingsScreen() {
         <Group>
           <NumberRow
             label="Context length"
+            icon="book-open-page-variant-outline"
             hint="Tokens the model can see at once. More uses more VRAM."
             value={l.context_size}
             min={512}
@@ -313,6 +336,7 @@ export default function AgentSettingsScreen() {
           />
           <NumberRow
             label="GPU layers"
+            icon="expansion-card-variant"
             hint={vram ? '99 puts the whole model on the GPU.' : 'No GPU found: 0 runs on the CPU.'}
             value={l.gpu_layers}
             min={0}
@@ -323,6 +347,7 @@ export default function AgentSettingsScreen() {
           />
           <Segmented
             label="Flash attention"
+            icon="flash-outline"
             value={l.flash_attn}
             options={[
               { value: 'on', label: 'On' },
@@ -333,6 +358,7 @@ export default function AgentSettingsScreen() {
           />
           <Segmented
             label="KV cache (K)"
+            icon="memory"
             hint="q8_0 halves cache memory with little quality loss."
             value={l.cache_type_k}
             options={cacheOptions(l.cache_type_k)}
@@ -340,12 +366,14 @@ export default function AgentSettingsScreen() {
           />
           <Segmented
             label="KV cache (V)"
+            icon="memory"
             value={l.cache_type_v}
             options={cacheOptions(l.cache_type_v)}
             onChange={(v) => set('llama', { cache_type_v: v })}
           />
           <TextRow
             label="Extra llama-server arguments"
+            icon="code-braces"
             hint="Advanced, e.g. --threads 8 --mlock"
             value={extraArgs}
             placeholder="none"
@@ -358,10 +386,10 @@ export default function AgentSettingsScreen() {
 
         <SectionTitle title="Prompt and skills" />
         <Group>
-          <NavRow label="System prompt" onPress={() => router.push('/system-prompt')} />
+          <NavRow label="System prompt" icon="text-box-outline" onPress={() => router.push('/system-prompt')} />
           {skills && skills.length === 0 ? (
             <View style={styles.note}>
-              <Text style={styles.noteText}>
+              <Text style={[type.bodyMedium, styles.grow]}>
                 No skills found. Add SKILL.md folders to the skills folder next to config.toml, or to LM Studio's skills
                 folder.
               </Text>
@@ -372,6 +400,7 @@ export default function AgentSettingsScreen() {
               key={k.path}
               label={k.name}
               hint={k.description}
+              icon="puzzle-outline"
               value={!disabled.has(k.name)}
               onChange={(on) => {
                 const next = new Set(disabled);
@@ -387,7 +416,8 @@ export default function AgentSettingsScreen() {
         <Group>
           <ToggleRow
             label="Send push notifications"
-            hint="When a task ends or needs approval. Only project name, session title and status are sent."
+            icon="bell-outline"
+            hint="When a task ends or needs approval. Only the project name, chat title and status are sent."
             value={draft.push.enabled}
             onChange={(v) => set('push', { enabled: v })}
           />
@@ -397,10 +427,22 @@ export default function AgentSettingsScreen() {
 
       {dirty ? (
         <View style={[styles.saveBar, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
-          {llamaChanged ? <Text style={styles.saveNote}>Saving reloads the model.</Text> : null}
+          {llamaChanged ? (
+            <View style={styles.saveNoteRow}>
+              <Icon name="restart" size={16} color={m3.warning} />
+              <Text style={[type.bodyMedium, { color: m3.warning }]}>Saving reloads the model.</Text>
+            </View>
+          ) : null}
           <View style={styles.saveRow}>
-            <Button title="Discard" variant="secondary" onPress={discard} style={styles.grow} />
-            <Button title="Save changes" onPress={save} loading={saving} disabled={hasInvalid} style={styles.grow} />
+            <Button title="Discard" variant="outlined" onPress={discard} style={styles.grow} />
+            <Button
+              title="Save changes"
+              icon="content-save-outline"
+              onPress={save}
+              loading={saving}
+              disabled={hasInvalid}
+              style={styles.grow}
+            />
           </View>
         </View>
       ) : null}
@@ -409,24 +451,33 @@ export default function AgentSettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
-  grow: { flex: 1 },
-  center: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center', padding: space.lg },
-  content: { padding: space.lg },
-  note: { paddingHorizontal: space.lg, paddingVertical: space.md },
-  noteText: { color: colors.textMuted, fontSize: 13, lineHeight: 18 },
+  flex: { flex: 1, backgroundColor: m3.surface },
+  grow: { flex: 1, minWidth: 0 },
+  center: { flex: 1, backgroundColor: m3.surface, justifyContent: 'center', padding: space.lg },
+  content: { paddingHorizontal: space.md, paddingBottom: space.lg },
+  note: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+  },
   saveBar: {
     position: 'absolute',
-    left: 0,
-    right: 0,
+    left: space.md,
+    right: space.md,
     bottom: 0,
-    backgroundColor: colors.surface,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    backgroundColor: m3.surfaceContainerHigh,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     paddingHorizontal: space.lg,
-    paddingTop: space.md,
-    gap: space.sm,
+    paddingTop: space.lg,
+    gap: space.md,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  saveNote: { color: colors.warning, fontSize: 13 },
+  saveNoteRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   saveRow: { flexDirection: 'row', gap: space.md },
 });

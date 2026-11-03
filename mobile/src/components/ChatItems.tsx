@@ -1,13 +1,21 @@
 import { memo, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { toolDetails, toolSummary } from '../lib/format';
 import type { Message, ToolCall } from '../lib/types';
 import { Markdown } from './Markdown';
-import { colors, radius, space } from './theme';
+import { m3, mono as monoFont, radius, space, type } from './theme';
+import { Icon, type IconName } from './ui';
 
 const MAX_RESULT_CHARS = 6000;
-const monoFont = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
+
+const TOOL_ICON: Record<string, IconName> = {
+  run_command: 'console',
+  read_file: 'file-document-outline',
+  write_file: 'file-plus-outline',
+  edit_file: 'file-edit-outline',
+  list_dir: 'folder-outline',
+};
 
 export function UserBubble({ message }: { message: Message }) {
   return (
@@ -33,9 +41,9 @@ function Reasoning({ text, live }: { text: string; live?: boolean }) {
         accessibilityState={{ expanded: open }}
         hitSlop={6}
       >
-        <Text style={styles.reasoningLabel}>
-          {open ? '▾' : '▸'} {live ? 'Thinking…' : 'Thought process'}
-        </Text>
+        <Icon name="lightbulb-outline" size={16} color={m3.onSurfaceVariant} />
+        <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]}>{live ? 'Thinking…' : 'Thought process'}</Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
       </Pressable>
       {open ? (
         <Text selectable style={styles.reasoningText}>
@@ -59,7 +67,7 @@ export const ToolActivityRow = memo(function ToolActivityRow({
   const pending = !result;
   const failed = result?.is_error === true;
   const summary = toolSummary(call, result, running);
-  const iconColor = pending ? colors.accent : failed ? colors.danger : colors.success;
+  const iconColor = pending ? m3.primary : failed ? m3.error : m3.success;
   const content = result?.content ?? '';
   const shown = content.length > MAX_RESULT_CHARS ? `${content.slice(0, MAX_RESULT_CHARS)}\n… (truncated)` : content;
   return (
@@ -71,15 +79,25 @@ export const ToolActivityRow = memo(function ToolActivityRow({
         accessibilityLabel={summary}
         accessibilityState={{ expanded: open }}
       >
+        <View style={styles.toolIconWrap}>
+          <Icon name={TOOL_ICON[call.name] ?? 'wrench-outline'} size={18} color={m3.onSecondaryContainer} />
+        </View>
+        <Text
+          style={[type.bodyMedium, styles.toolSummary, failed && { color: m3.error }]}
+          numberOfLines={open ? undefined : 1}
+        >
+          {summary}
+        </Text>
         {pending && running ? (
           <ActivityIndicator size="small" color={iconColor} />
         ) : (
-          <Text style={[styles.toolIcon, { color: iconColor }]}>{failed ? '✕' : pending ? '•' : '✓'}</Text>
+          <Icon
+            name={failed ? 'close-circle-outline' : pending ? 'circle-outline' : 'check-circle-outline'}
+            size={18}
+            color={iconColor}
+          />
         )}
-        <Text style={[styles.toolSummary, failed && { color: colors.danger }]} numberOfLines={open ? undefined : 1}>
-          {summary}
-        </Text>
-        <Text style={styles.toolChevron}>{open ? '▾' : '▸'}</Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
       </Pressable>
       {open ? (
         <View style={styles.toolBody}>
@@ -134,8 +152,8 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
         <Markdown text={content} />
       ) : (
         <View style={styles.typing}>
-          <ActivityIndicator size="small" color={colors.textMuted} />
-          <Text style={styles.typingText}>{reasoning ? 'Thinking…' : 'Working…'}</Text>
+          <ActivityIndicator size="small" color={m3.primary} />
+          <Text style={[type.bodyMedium, { color: m3.onSurfaceVariant }]}>{reasoning ? 'Thinking…' : 'Working…'}</Text>
         </View>
       )}
     </View>
@@ -143,49 +161,63 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
 }
 
 const styles = StyleSheet.create({
-  userRow: { alignItems: 'flex-end', marginVertical: space.sm, paddingLeft: 48 },
+  userRow: { alignItems: 'flex-end', marginVertical: space.md, paddingLeft: 56 },
   userBubble: {
-    backgroundColor: colors.userBubble,
-    borderRadius: radius.lg,
-    borderBottomRightRadius: radius.sm,
+    backgroundColor: m3.surfaceContainerHighest,
+    borderRadius: 22,
+    borderBottomRightRadius: 6,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+  },
+  userText: { ...type.bodyLarge, color: m3.onSurface },
+  assistant: { marginVertical: space.md, gap: space.sm },
+  reasoning: {},
+  reasoningHeader: {
+    alignSelf: 'flex-start',
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     paddingHorizontal: space.md,
-    paddingVertical: space.sm + 2,
+    borderRadius: radius.sm,
+    backgroundColor: m3.surfaceContainerLow,
   },
-  userText: { color: colors.text, fontSize: 16, lineHeight: 22 },
-  assistant: { marginVertical: space.sm, paddingRight: space.sm },
-  reasoning: { marginBottom: space.xs },
-  reasoningHeader: { minHeight: 32, justifyContent: 'center' },
-  reasoningLabel: { color: colors.textFaint, fontSize: 14 },
   reasoningText: {
-    color: colors.textMuted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontStyle: 'italic',
+    ...type.bodyMedium,
+    color: m3.onSurfaceVariant,
     borderLeftWidth: 2,
-    borderLeftColor: colors.border,
-    paddingLeft: space.sm,
-    marginBottom: space.sm,
+    borderLeftColor: m3.outlineVariant,
+    paddingLeft: space.md,
+    marginTop: space.sm,
   },
-  tool: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    marginVertical: 3,
-    overflow: 'hidden',
+  tool: { backgroundColor: m3.surfaceContainerLow, borderRadius: radius.lg, overflow: 'hidden' },
+  toolHeader: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: space.sm,
+    paddingRight: space.md,
+    gap: space.sm,
   },
-  toolHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, gap: space.sm },
-  toolIcon: { fontSize: 14, fontWeight: '700', width: 20, textAlign: 'center' },
-  toolSummary: { flex: 1, color: colors.text, fontSize: 14, fontFamily: monoFont },
-  toolChevron: { color: colors.textFaint, fontSize: 14 },
-  toolBody: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    padding: space.md,
-    backgroundColor: colors.code,
+  toolIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: m3.secondaryContainer,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  toolSection: { color: colors.textFaint, fontSize: 11, textTransform: 'uppercase', marginBottom: 4, marginTop: 4 },
-  toolMono: { color: colors.text, fontFamily: monoFont, fontSize: 12, lineHeight: 17 },
+  toolSummary: { flex: 1, minWidth: 0, color: m3.onSurface },
+  toolBody: { padding: space.md, paddingTop: 0, gap: 4 },
+  toolSection: { ...type.labelMedium, color: m3.outline, textTransform: 'uppercase', marginTop: space.sm },
+  toolMono: {
+    color: m3.onSurface,
+    fontFamily: monoFont,
+    fontSize: 12,
+    lineHeight: 18,
+    backgroundColor: m3.code,
+    borderRadius: radius.sm,
+    padding: space.sm,
+  },
   typing: { flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: 32 },
-  typingText: { color: colors.textMuted, fontSize: 14 },
 });

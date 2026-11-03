@@ -1,12 +1,12 @@
 import Constants from 'expo-constants';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
-import { Group, NavRow } from '../components/SettingsControls';
-import { colors, space, touch } from '../components/theme';
-import { Banner, Button, Card } from '../components/ui';
+import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
+import { m3, space, type } from '../components/theme';
+import { Banner, Button, Icon, type IconName } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { formatDuration } from '../lib/format';
@@ -14,13 +14,18 @@ import { disablePush, enablePush } from '../lib/push';
 import { loadPushPrefs } from '../lib/storage';
 import type { ServerInfo } from '../lib/types';
 
-function Row({ label, value }: { label: string; value: string }) {
+function InfoRow({ icon, label, value }: { icon: IconName; label: string; value: string }) {
   return (
     <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue} selectable numberOfLines={2} ellipsizeMode="middle">
-        {value}
-      </Text>
+      <View style={styles.leading}>
+        <Icon name={icon} size={22} />
+      </View>
+      <View style={styles.grow}>
+        <Text style={type.bodyLarge}>{label}</Text>
+        <Text style={type.bodyMedium} selectable numberOfLines={2} ellipsizeMode="middle">
+          {value}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -123,7 +128,11 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const maskedToken = `${creds.token.slice(0, 4)}…${creds.token.slice(-4)}`;
+  const maskedToken = `${creds.token.slice(0, 4)}••••${creds.token.slice(-4)}`;
+  const gpu =
+    info?.gpus && info.gpus.length
+      ? info.gpus.map((g) => `${g.name} · ${Math.round(g.vram_mb / 1024)} GB`).join(', ')
+      : 'None detected';
 
   return (
     <ScrollView
@@ -137,132 +146,129 @@ export default function SettingsScreen() {
             await load();
             setRefreshing(false);
           }}
-          tintColor={colors.textMuted}
+          tintColor={m3.onSurfaceVariant}
         />
       }
     >
-      <Text style={styles.section}>Agent</Text>
+      <ModelStatusBar client={client} active={focused} />
+
+      <SectionTitle title="Agent" />
       <Group>
         <NavRow
+          icon="robot-outline"
           label="Agent settings"
           value="Model, sampling, tools, approvals"
           onPress={() => router.push('/agent')}
         />
-        <NavRow label="System prompt" onPress={() => router.push('/system-prompt')} />
+        <NavRow
+          icon="text-box-outline"
+          label="System prompt"
+          value="Instructions the agent always follows"
+          onPress={() => router.push('/system-prompt')}
+        />
+        <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
       </Group>
 
-      <Text style={styles.section}>Server</Text>
-      <Card>
-        <Row label="Address" value={creds.url} />
-        <Row label="Token" value={maskedToken} />
-        <Button
-          title="Pair again (scan QR code)"
-          variant="secondary"
-          onPress={() => router.push('/scan')}
-          style={styles.cardButton}
+      <SectionTitle title="Notifications" />
+      <Group>
+        <ToggleRow
+          icon="bell-outline"
+          label="Notifications on this phone"
+          hint="When a task ends or needs your approval. Only the project name, chat title and status are sent."
+          value={push}
+          onChange={togglePush}
+          disabled={pushBusy}
         />
-        <Button
-          title="Edit address or token"
-          variant="secondary"
-          onPress={() => router.push({ pathname: '/connect', params: { edit: '1' } })}
-          style={styles.cardButton}
-        />
-      </Card>
-
-      <Text style={styles.section}>Model</Text>
-      <View style={styles.modelBar}>
-        <ModelStatusBar client={client} active={focused} />
-      </View>
-      <Button title="Restart model" variant="danger" onPress={restartModel} loading={restarting} />
-
-      <Text style={styles.section}>Notifications</Text>
-      <Card>
-        <View style={styles.switchRow}>
-          <View style={styles.grow}>
-            <Text style={styles.switchLabel}>Notifications on this phone</Text>
-            <Text style={styles.switchHint}>
-              When a task ends or needs your approval. Only the project name, session title and status are sent.
+        {info && !info.push_enabled ? (
+          <View style={styles.note}>
+            <Icon name="alert-outline" size={18} color={m3.warning} />
+            <Text style={[type.bodyMedium, styles.grow]}>
+              Push is turned off on the PC. Turn it on in Agent settings, under Notifications.
             </Text>
           </View>
-          {pushBusy ? (
-            <ActivityIndicator color={colors.accent} />
-          ) : (
-            <Switch
-              value={push}
-              onValueChange={togglePush}
-              trackColor={{ true: colors.accent, false: colors.border }}
-              accessibilityLabel="Push notifications"
-            />
-          )}
-        </View>
-        {info && !info.push_enabled ? (
-          <Text style={styles.warn}>Push is turned off on the PC. Turn it on in Agent settings → Notifications.</Text>
         ) : null}
-      </Card>
+      </Group>
       {pushError ? <Banner message={pushError} /> : null}
 
-      <Text style={styles.section}>Server info</Text>
+      <SectionTitle title="Connection" />
+      <Group>
+        <InfoRow icon="lan-connect" label="Address" value={creds.url} />
+        <InfoRow icon="key-outline" label="Token" value={maskedToken} />
+        <NavRow
+          icon="qrcode-scan"
+          label="Pair again"
+          value="Scan the QR code on your PC"
+          onPress={() => router.push('/scan')}
+        />
+        <NavRow
+          icon="pencil-outline"
+          label="Edit address or token"
+          onPress={() => router.push({ pathname: '/connect', params: { edit: '1' } })}
+        />
+      </Group>
+
+      <SectionTitle title="Your PC" />
       {infoError ? <Banner message={infoError} actionLabel="Retry" onAction={load} /> : null}
-      <Card>
+      <Group>
         {info ? (
           <>
-            <Row label="Relay" value={`v${info.version}`} />
-            {info.hostname ? <Row label="PC" value={info.hostname} /> : null}
-            <Row label="OS" value={info.os} />
-            <Row label="Uptime" value={formatDuration(info.uptime_seconds)} />
-            <Row label="Projects" value={String(info.projects)} />
-            <Row
-              label="GPU"
-              value={
-                info.gpus && info.gpus.length
-                  ? info.gpus.map((g) => `${g.name} · ${Math.round(g.vram_mb / 1024)} GB`).join(', ')
-                  : 'None detected'
-              }
+            <InfoRow
+              icon="monitor"
+              label={info.hostname ?? 'PC'}
+              value={`${info.os} · up ${formatDuration(info.uptime_seconds)}`}
             />
-            <Row
+            <InfoRow icon="expansion-card-variant" label="GPU" value={gpu} />
+            <InfoRow
+              icon="shield-lock-outline"
               label="Tailscale"
-              value={info.tailscale ? (info.tailscale.dns_name ?? info.tailscale.ip ?? 'on') : 'Not detected on the PC'}
+              value={info.tailscale ? (info.tailscale.dns_name ?? info.tailscale.ip ?? 'On') : 'Not detected on the PC'}
             />
-            <Row label="Model file" value={info.model.model_path || '(not set)'} />
-            <Row
+            <InfoRow icon="cube-outline" label="Model file" value={info.model.model_path || 'Not set'} />
+            <InfoRow
+              icon="server-network"
               label="llama-server"
               value={`127.0.0.1:${info.model.port}${info.model.external ? ' (external)' : ''}`}
             />
+            <InfoRow
+              icon="information-outline"
+              label="Relay"
+              value={`v${info.version} · ${info.projects} project${info.projects === 1 ? '' : 's'}`}
+            />
           </>
         ) : infoError ? (
-          <Text style={styles.switchHint}>Unavailable</Text>
+          <Text style={[type.bodyMedium, styles.pad]}>Unavailable</Text>
         ) : (
-          <ActivityIndicator color={colors.accent} />
+          <ActivityIndicator style={styles.pad} color={m3.primary} />
         )}
-      </Card>
+      </Group>
 
-      <Button title="Disconnect" variant="ghost" onPress={onDisconnect} style={styles.disconnect} />
-      <Text style={styles.footer}>Relay mobile {Constants.expoConfig?.version ?? ''}</Text>
+      <Button
+        title="Disconnect this phone"
+        icon="logout"
+        variant="outlined"
+        onPress={onDisconnect}
+        style={styles.disconnect}
+      />
+      <Text style={[type.bodySmall, styles.footer]}>Relay for phone {Constants.expoConfig?.version ?? ''}</Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
-  grow: { flex: 1 },
+  flex: { flex: 1, backgroundColor: m3.surface },
+  grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 64 },
-  section: {
-    color: colors.textMuted,
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    marginTop: space.xl,
-    marginBottom: space.sm,
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.lg,
+    minHeight: 64,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
   },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: space.sm, gap: space.md },
-  rowLabel: { color: colors.textMuted, fontSize: 15 },
-  rowValue: { color: colors.text, fontSize: 15, flexShrink: 1, textAlign: 'right' },
-  cardButton: { marginTop: space.md },
-  modelBar: { marginHorizontal: -space.lg, marginTop: -space.md, marginBottom: space.sm },
-  switchRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: touch },
-  switchLabel: { color: colors.text, fontSize: 16, fontWeight: '500' },
-  switchHint: { color: colors.textMuted, fontSize: 13, marginTop: 2 },
-  warn: { color: colors.warning, fontSize: 13, marginTop: space.sm },
-  disconnect: { marginTop: space.xl },
-  footer: { color: colors.textFaint, textAlign: 'center', marginTop: space.md, fontSize: 12 },
+  leading: { width: 24, alignItems: 'center' },
+  note: { flexDirection: 'row', gap: space.md, paddingHorizontal: space.lg, paddingBottom: space.md, paddingLeft: 56 },
+  pad: { padding: space.lg },
+  disconnect: { marginTop: space.xxl },
+  footer: { textAlign: 'center', marginTop: space.lg },
 });

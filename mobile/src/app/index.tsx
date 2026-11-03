@@ -1,26 +1,23 @@
 import { Redirect, Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
-import { colors, radius, space, touch } from '../components/theme';
-import { Banner, Button, EmptyState, Field } from '../components/ui';
+import { m3, radius, space, type } from '../components/theme';
+import { Sheet } from '../components/Sheet';
+import { Avatar, Banner, Button, EmptyState, Fab, Field, IconButton, ListItem } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import type { Project } from '../lib/types';
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 5) return 'Up late?';
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
 
 export default function ProjectsScreen() {
   const { loading, client } = useConnection();
@@ -52,7 +49,7 @@ export default function ProjectsScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color={colors.accent} />
+        <ActivityIndicator color={m3.primary} />
       </View>
     );
   }
@@ -67,7 +64,7 @@ export default function ProjectsScreen() {
   const confirmDelete = (p: Project) => {
     Alert.alert(
       `Remove “${p.name}”?`,
-      'This removes the project and its sessions from Relay. The folder on your PC is not touched.',
+      'This removes the project and its chats from Relay. The folder on your PC is not touched.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -86,71 +83,75 @@ export default function ProjectsScreen() {
     );
   };
 
-  return (
-    <View style={styles.flex}>
-      <Stack.Screen
-        options={{
-          headerRight: () => (
-            <Pressable
-              onPress={() => router.push('/settings')}
-              hitSlop={12}
-              style={styles.headerBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Settings"
-            >
-              <Text style={styles.headerBtnText}>⚙︎</Text>
-            </Pressable>
-          ),
-        }}
-      />
+  const header = (
+    <View>
+      <Text style={[type.displaySmall, styles.greeting]}>{greeting()}</Text>
+      <Text style={[type.bodyLarge, styles.sub]}>Pick a project to chat with your agent.</Text>
       <ModelStatusBar client={client} active={focused} onPress={() => router.push('/settings')} />
       {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
+      {projects && projects.length > 0 ? <Text style={[type.titleSmall, styles.section]}>Projects</Text> : null}
+    </View>
+  );
+
+  return (
+    <View style={[styles.flex, { paddingTop: insets.top }]}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={styles.appBar}>
+        <View style={styles.brand}>
+          <Avatar icon="console-line" size={32} />
+          <Text style={type.titleLarge}>Relay</Text>
+        </View>
+        <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
+      </View>
       <FlatList
         data={projects ?? []}
         keyExtractor={(p) => p.id}
-        contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}
+        ListHeaderComponent={header}
+        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 112 }]}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={m3.onSurfaceVariant} />
+        }
         ListEmptyComponent={
           projects === null ? (
             error ? undefined : (
-              <ActivityIndicator style={{ marginTop: space.xl }} color={colors.accent} />
+              <ActivityIndicator style={{ marginTop: space.xl }} color={m3.primary} />
             )
           ) : (
-            <EmptyState title="No projects yet" body="Add a folder on your PC to start a coding session in it." />
+            <EmptyState
+              icon="folder-plus-outline"
+              title="No projects yet"
+              body="Add a folder on your PC and the agent will work inside it."
+            />
           )
         }
-        renderItem={({ item }) => (
-          <Pressable
-            onPress={() => router.push({ pathname: '/project/[id]', params: { id: item.id, name: item.name } })}
-            onLongPress={() => confirmDelete(item)}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            accessibilityRole="button"
-            accessibilityHint="Opens sessions. Long press to remove."
-          >
-            <View style={styles.rowText}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {item.name}
-              </Text>
-              <Text style={styles.rowSub} numberOfLines={1} ellipsizeMode="middle">
-                {item.path}
-              </Text>
+        renderItem={({ item, index }) => {
+          const first = index === 0;
+          const last = index === (projects?.length ?? 0) - 1;
+          return (
+            <View style={[styles.itemWrap, first && styles.itemFirst, last && styles.itemLast]}>
+              <ListItem
+                title={item.name}
+                subtitle={item.path}
+                leading={<Avatar label={item.name} />}
+                trailing={
+                  <IconButton icon="dots-vertical" label={`Remove ${item.name}`} onPress={() => confirmDelete(item)} />
+                }
+                onPress={() => router.push({ pathname: '/project/[id]', params: { id: item.id, name: item.name } })}
+                onLongPress={() => confirmDelete(item)}
+                accessibilityHint="Opens chats. Long press to remove."
+              />
+              {!last ? <View style={styles.divider} /> : null}
             </View>
-            <Pressable
-              onPress={() => confirmDelete(item)}
-              hitSlop={10}
-              style={styles.trash}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${item.name}`}
-            >
-              <Text style={styles.trashText}>✕</Text>
-            </Pressable>
-          </Pressable>
-        )}
+          );
+        }}
       />
-      <View style={[styles.bottom, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
-        <Button title="＋  Add project" onPress={() => setAdding(true)} />
-      </View>
-      <AddProjectModal
+      <Fab
+        icon="plus"
+        label="New project"
+        onPress={() => setAdding(true)}
+        style={[styles.fab, { bottom: insets.bottom + space.lg }]}
+      />
+      <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
         onCreate={async (name, path) => {
@@ -163,7 +164,7 @@ export default function ProjectsScreen() {
   );
 }
 
-function AddProjectModal({
+function AddProjectSheet({
   visible,
   onClose,
   onCreate,
@@ -176,7 +177,6 @@ function AddProjectModal({
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const insets = useSafeAreaInsets();
 
   const submit = async () => {
     setBusy(true);
@@ -193,69 +193,52 @@ function AddProjectModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.modalWrap} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.lg) }]}>
-          <Text style={styles.sheetTitle}>Add project</Text>
-          <Field
-            label="Folder on your PC"
-            placeholder="C:\Users\me\code\my-app"
-            value={path}
-            onChangeText={setPath}
-            hint="Absolute path. Relay only works inside this folder."
-            autoFocus
-          />
-          <Field label="Name (optional)" placeholder="Defaults to the folder name" value={name} onChangeText={setName} />
-          {error ? <Banner message={error} /> : null}
-          <View style={styles.sheetActions}>
-            <Button title="Cancel" variant="secondary" onPress={onClose} style={styles.flex} />
-            <Button title="Add" onPress={submit} loading={busy} disabled={!path.trim()} style={styles.flex} />
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    <Sheet visible={visible} onClose={onClose} title="New project">
+      <Field
+        label="Folder on your PC"
+        icon="folder-outline"
+        placeholder="C:\Users\me\code\my-app"
+        value={path}
+        onChangeText={setPath}
+        hint="The agent can only read and change files inside this folder."
+        autoFocus
+      />
+      <Field
+        label="Name (optional)"
+        icon="tag-outline"
+        placeholder="Defaults to the folder name"
+        value={name}
+        onChangeText={setName}
+      />
+      {error ? <Banner message={error} /> : null}
+      <View style={styles.sheetActions}>
+        <Button title="Cancel" variant="text" onPress={onClose} />
+        <Button title="Add project" icon="check" onPress={submit} loading={busy} disabled={!path.trim()} />
+      </View>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  list: { paddingHorizontal: space.lg, paddingBottom: space.lg },
-  row: {
-    minHeight: touch + 20,
+  flex: { flex: 1, backgroundColor: m3.surface },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: m3.surface },
+  appBar: {
+    height: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    justifyContent: 'space-between',
     paddingLeft: space.lg,
-    marginTop: space.sm,
+    paddingRight: space.xs,
   },
-  rowPressed: { backgroundColor: colors.surfaceRaised },
-  rowText: { flex: 1, paddingVertical: space.md },
-  rowTitle: { color: colors.text, fontSize: 17, fontWeight: '600' },
-  rowSub: { color: colors.textMuted, fontSize: 13, marginTop: 2 },
-  trash: { width: touch, height: touch + 20, alignItems: 'center', justifyContent: 'center' },
-  trashText: { color: colors.textFaint, fontSize: 16 },
-  bottom: {
-    paddingHorizontal: space.lg,
-    paddingTop: space.sm,
-    backgroundColor: colors.bg,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-  },
-  headerBtn: { minWidth: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  headerBtnText: { color: colors.text, fontSize: 22 },
-  modalWrap: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.55)' },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-    padding: space.lg,
-  },
-  sheetTitle: { color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: space.lg },
-  sheetActions: { flexDirection: 'row', gap: space.md },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  greeting: { marginTop: space.md, marginHorizontal: space.xs },
+  sub: { color: m3.onSurfaceVariant, marginTop: space.xs, marginBottom: space.lg, marginHorizontal: space.xs },
+  section: { color: m3.onSurfaceVariant, marginTop: space.xl, marginBottom: space.sm, marginLeft: space.xs },
+  list: { paddingHorizontal: space.lg },
+  itemWrap: { backgroundColor: m3.surfaceContainerLow, overflow: 'hidden' },
+  itemFirst: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, paddingTop: space.xs },
+  itemLast: { borderBottomLeftRadius: radius.xl, borderBottomRightRadius: radius.xl, paddingBottom: space.xs },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: 72 },
+  fab: { position: 'absolute', right: space.lg },
+  sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
 });

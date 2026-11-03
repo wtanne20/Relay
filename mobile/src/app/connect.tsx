@@ -1,9 +1,20 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { colors, space } from '../components/theme';
-import { Banner, Button, Card, Field } from '../components/ui';
+import { m3, radius, space, type } from '../components/theme';
+import { Banner, Button, Field, Icon, IconButton, type IconName } from '../components/ui';
+
+function Step({ icon, text }: { icon: IconName; text: string }) {
+  return (
+    <View style={styles.step}>
+      <View style={styles.stepIcon}>
+        <Icon name={icon} size={20} color={m3.onSecondaryContainer} />
+      </View>
+      <Text style={[type.bodyLarge, styles.grow]}>{text}</Text>
+    </View>
+  );
+}
 import { DEFAULT_PORT, RelayClient, describeError, normalizeServerUrl } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import type { ServerInfo } from '../lib/types';
@@ -73,29 +84,47 @@ export default function ConnectScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!edit ? (
           <View style={styles.hero}>
-            <Text style={styles.heroTitle}>Pair with your PC</Text>
-            <Text style={styles.intro}>
-              Install and open Relay on your PC. It shows a QR code (or open Start menu → Relay → Pair phone). Make sure
-              Tailscale is on, on both devices.
+            <View style={styles.logo}>
+              <Icon name="console-line" size={36} color={m3.onPrimaryContainer} />
+            </View>
+            <Text style={[type.displaySmall, styles.center]}>Pair with your PC</Text>
+            <Text style={[type.bodyLarge, styles.lead]}>
+              Chat with the coding agent on your PC from anywhere, privately over Tailscale.
             </Text>
+            <View style={styles.steps}>
+              <Step icon="download-outline" text="Install and open Relay on your PC." />
+              <Step icon="shield-lock-outline" text="Turn on Tailscale on the PC and this phone." />
+              <Step icon="qrcode" text="Scan the QR code Relay shows (Start menu, Relay, Pair phone)." />
+            </View>
             {Platform.OS !== 'web' ? (
               <Button
                 title="Scan QR code"
+                icon="qrcode-scan"
                 onPress={() => router.push('/scan')}
                 accessibilityLabel="Scan pairing QR code"
+                style={styles.wide}
               />
             ) : null}
-            {!manual ? <Button title="Enter address manually" variant="ghost" onPress={() => setManual(true)} /> : null}
+            {!manual ? (
+              <Button
+                title="Enter address manually"
+                variant="text"
+                onPress={() => setManual(true)}
+                style={styles.wide}
+              />
+            ) : null}
           </View>
         ) : null}
         {manual ? (
-          <>
-            <Text style={styles.intro}>
-              Use the PC's Tailscale IP (100.x.y.z) or MagicDNS name. Port {DEFAULT_PORT} is added if you leave it out.
-              The token is shown in the Relay window on the PC.
+          <View style={styles.form}>
+            {!edit ? <Text style={[type.titleMedium, styles.formTitle]}>Connect manually</Text> : null}
+            <Text style={[type.bodyMedium, styles.formIntro]}>
+              Use the PC&apos;s Tailscale IP (100.x.y.z) or MagicDNS name. Port {DEFAULT_PORT} is added if you leave it
+              out. The token is shown in the Relay window on the PC.
             </Text>
             <Field
               label="Server address"
+              icon="lan-connect"
               placeholder={`my-pc.tail1234.ts.net:${DEFAULT_PORT}`}
               value={address}
               onChangeText={(t) => {
@@ -110,6 +139,7 @@ export default function ConnectScreen() {
             <View>
               <Field
                 label="API token"
+                icon="key-outline"
                 placeholder="Shown in the Relay window on the PC"
                 value={token}
                 onChangeText={(t) => {
@@ -120,39 +150,51 @@ export default function ConnectScreen() {
                 textContentType="password"
                 returnKeyType="done"
                 onSubmitEditing={test}
+                style={styles.tokenInput}
               />
-              <Pressable
-                onPress={() => setShowToken((s) => !s)}
-                style={styles.toggle}
-                hitSlop={8}
-                accessibilityRole="button"
-              >
-                <Text style={styles.toggleText}>{showToken ? 'Hide' : 'Show'}</Text>
-              </Pressable>
+              <View style={styles.toggle}>
+                <IconButton
+                  icon={showToken ? 'eye-off-outline' : 'eye-outline'}
+                  label={showToken ? 'Hide token' : 'Show token'}
+                  onPress={() => setShowToken((v) => !v)}
+                />
+              </View>
             </View>
 
             {error ? <Banner message={error} actionLabel="Retry" onAction={test} /> : null}
             {info ? (
-              <Card style={styles.ok}>
-                <Text style={styles.okTitle}>✓ Connected to Relay {info.version}</Text>
-                <Text style={styles.okBody}>
-                  {info.hostname ? `${info.hostname} · ` : ''}
-                  {info.projects} project{info.projects === 1 ? '' : 's'} · model {info.model.state}
-                </Text>
-              </Card>
+              <View style={styles.ok}>
+                <Icon name="check-circle" size={24} color={m3.success} />
+                <View style={styles.grow}>
+                  <Text style={[type.titleMedium, { color: m3.success }]}>Connected to Relay {info.version}</Text>
+                  <Text style={type.bodyMedium}>
+                    {info.hostname ? `${info.hostname} · ` : ''}
+                    {info.projects} project{info.projects === 1 ? '' : 's'} · model {info.model.state}
+                  </Text>
+                </View>
+              </View>
             ) : null}
 
             <View style={styles.actions}>
               <Button
-                title="Test connection"
-                variant="secondary"
+                title="Test"
+                variant="outlined"
+                icon="lan-pending"
                 onPress={test}
                 loading={testing}
                 disabled={!canSubmit}
+                style={styles.grow}
               />
-              <Button title="Save" onPress={onSave} loading={saving} disabled={!canSubmit || testing} />
+              <Button
+                title="Connect"
+                icon="check"
+                onPress={onSave}
+                loading={saving}
+                disabled={!canSubmit || testing}
+                style={styles.grow}
+              />
             </View>
-          </>
+          </View>
         ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -160,15 +202,52 @@ export default function ConnectScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.lg, paddingBottom: 48 },
-  intro: { color: colors.textMuted, fontSize: 15, lineHeight: 21, marginBottom: space.lg },
-  hero: { gap: space.md, marginBottom: space.xl },
-  heroTitle: { color: colors.text, fontSize: 24, fontWeight: '700' },
-  toggle: { position: 'absolute', right: space.md, top: 34, height: 32, justifyContent: 'center' },
-  toggleText: { color: colors.accent, fontWeight: '600' },
-  ok: { marginVertical: space.sm, borderColor: colors.success },
-  okTitle: { color: colors.success, fontSize: 16, fontWeight: '600' },
-  okBody: { color: colors.textMuted, marginTop: space.xs },
-  actions: { gap: space.md, marginTop: space.lg },
+  flex: { flex: 1, backgroundColor: m3.surface },
+  grow: { flex: 1, minWidth: 0 },
+  center: { textAlign: 'center' },
+  content: { padding: space.xl, paddingBottom: 48 },
+  hero: { alignItems: 'center', gap: space.md, marginBottom: space.xl },
+  logo: {
+    width: 72,
+    height: 72,
+    borderRadius: 24,
+    backgroundColor: m3.primaryContainer,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.sm,
+  },
+  lead: { color: m3.onSurfaceVariant, textAlign: 'center', maxWidth: 360 },
+  steps: {
+    alignSelf: 'stretch',
+    backgroundColor: m3.surfaceContainerLow,
+    borderRadius: radius.xl,
+    padding: space.lg,
+    gap: space.lg,
+    marginVertical: space.lg,
+  },
+  step: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
+  stepIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: m3.secondaryContainer,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wide: { alignSelf: 'stretch' },
+  form: { gap: space.xs },
+  formTitle: { marginBottom: space.xs },
+  formIntro: { marginBottom: space.lg },
+  tokenInput: { paddingRight: 44 },
+  toggle: { position: 'absolute', right: space.xs, top: 26 },
+  ok: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    backgroundColor: m3.successContainer,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    marginVertical: space.sm,
+  },
+  actions: { flexDirection: 'row', gap: space.md, marginTop: space.lg },
 });

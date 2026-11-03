@@ -103,7 +103,8 @@ export function parseBlocks(src: string): Block[] {
   return blocks;
 }
 
-const INLINE = /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*(?!\s)([^*\n]+?)\*|\b_(?!\s)([^_\n]+?)_\b|\[([^\]]+)\]\(([^)\s]+)\)/g;
+const INLINE =
+  /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*(?!\s)([^*\n]+?)\*|\b_(?!\s)([^_\n]+?)_\b|\[([^\]]+)\]\(([^)\s]+)\)/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -221,7 +222,7 @@ export const Markdown = memo(MarkdownImpl);
 const monoFont = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
 const styles = StyleSheet.create({
-  para: { fontSize: 16, lineHeight: 23, marginVertical: 3 },
+  para: { fontSize: 16, lineHeight: 25, marginVertical: 4, letterSpacing: 0.15 },
   heading: { fontWeight: '700', marginTop: space.sm, marginBottom: space.xs },
   bold: { fontWeight: '700' },
   italic: { fontStyle: 'italic' },
@@ -230,13 +231,12 @@ const styles = StyleSheet.create({
     fontFamily: monoFont,
     fontSize: 14,
     backgroundColor: colors.surfaceRaised,
-    color: '#ffa657',
+    color: colors.accent,
+    borderRadius: 4,
   },
   codeBlock: {
     backgroundColor: colors.code,
-    borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderRadius: radius.md,
     padding: space.md,
     marginVertical: space.sm,
   },

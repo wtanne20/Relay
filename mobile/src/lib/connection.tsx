@@ -41,7 +41,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const client = useMemo(() => (creds ? new RelayClient(creds) : null), [creds]);
-  const value = useMemo(() => ({ loading, creds, client, save, disconnect }), [loading, creds, client, save, disconnect]);
+  const value = useMemo(
+    () => ({ loading, creds, client, save, disconnect }),
+    [loading, creds, client, save, disconnect],
+  );
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 

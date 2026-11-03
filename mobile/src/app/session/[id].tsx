@@ -13,9 +13,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssistantBlock, DraftBlock, UserBubble } from '../../components/ChatItems';
-import { colors, radius, space, touch } from '../../components/theme';
 import { ApprovalCard } from '../../components/ApprovalCard';
-import { Banner, EmptyState, StatusBadge } from '../../components/ui';
+import { m3, radius, space, type } from '../../components/theme';
+import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
 import type { Message } from '../../lib/types';
@@ -117,29 +117,30 @@ export default function ChatScreen() {
 
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
+  const canSend = !!input.trim() && !sending;
+
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable
+        <IconButton
+          icon="arrow-left"
+          label="Back"
+          color={m3.onSurface}
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
-          style={styles.back}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-        >
-          <Text style={styles.backText}>‹</Text>
-        </Pressable>
+        />
         <View style={styles.headerText}>
-          <Text style={styles.title} numberOfLines={1}>
+          <Text style={type.titleMedium} numberOfLines={1}>
             {title}
           </Text>
           {linkLabel ? (
-            <Pressable onPress={stream.reconnect} hitSlop={6} accessibilityRole="button">
-              <Text style={styles.link}>{linkLabel}</Text>
+            <Pressable onPress={stream.reconnect} hitSlop={6} accessibilityRole="button" style={styles.linkRow}>
+              <Icon name="wifi-off" size={14} color={m3.warning} />
+              <Text style={[type.bodySmall, { color: m3.warning }]}>{linkLabel}</Text>
             </Pressable>
           ) : null}
         </View>
-        <StatusBadge status={stream.status} />
+        {stream.status !== 'idle' ? <StatusBadge status={stream.status} /> : null}
+        <View style={{ width: space.sm }} />
       </View>
 
       <KeyboardAvoidingView style={styles.flex} behavior="padding">
@@ -147,23 +148,29 @@ export default function ChatScreen() {
           inverted
           data={items}
           keyExtractor={(it) => it.key}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           onEndReached={stream.loadOlder}
           onEndReachedThreshold={0.3}
           ListFooterComponent={
             stream.loadingOlder ? (
-              <ActivityIndicator style={{ margin: space.md }} color={colors.textMuted} />
+              <ActivityIndicator style={{ margin: space.md }} color={m3.onSurfaceVariant} />
             ) : undefined
           }
           ListEmptyComponent={
             stream.initialLoaded ? (
               <View style={styles.emptyWrap}>
-                <EmptyState title="Ask the agent something" body="It works inside this project's folder on your PC." />
+                <View style={styles.spark}>
+                  <Icon name="creation" size={28} color={m3.primary} />
+                </View>
+                <Text style={[type.headlineMedium, styles.emptyTitle]}>What should we work on?</Text>
+                <Text style={[type.bodyLarge, styles.emptyBody]}>
+                  The agent reads, edits and runs code inside this project's folder on your PC.
+                </Text>
               </View>
             ) : (
-              <ActivityIndicator style={{ margin: space.xl }} color={colors.accent} />
+              <ActivityIndicator style={{ margin: space.xl }} color={m3.primary} />
             )
           }
           renderItem={({ item }) => {
@@ -202,45 +209,64 @@ export default function ChatScreen() {
           />
         ) : null}
 
-        <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
-          <TextInput
-            style={styles.input}
-            value={input}
-            onChangeText={setInput}
-            placeholder={
-              stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
-            }
-            placeholderTextColor={colors.textFaint}
-            multiline
-            autoCapitalize="sentences"
-            accessibilityLabel="Prompt"
-          />
-          {running ? (
-            <Pressable
-              onPress={stop}
-              disabled={stopping}
-              style={({ pressed }) => [styles.action, styles.stop, (pressed || stopping) && { opacity: 0.6 }]}
-              accessibilityRole="button"
-              accessibilityLabel="Stop the agent"
-            >
-              {stopping ? <ActivityIndicator color={colors.danger} /> : <Text style={styles.stopText}>■</Text>}
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={send}
-              disabled={!input.trim() || sending}
-              style={({ pressed }) => [
-                styles.action,
-                styles.send,
-                (!input.trim() || sending) && { opacity: 0.4 },
-                pressed && { backgroundColor: colors.accentPressed },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-            >
-              {sending ? <ActivityIndicator color={colors.onAccent} /> : <Text style={styles.sendText}>↑</Text>}
-            </Pressable>
-          )}
+        <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
+          <View style={styles.composer}>
+            <TextInput
+              style={styles.input}
+              value={input}
+              onChangeText={setInput}
+              placeholder={
+                stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
+              }
+              placeholderTextColor={m3.outline}
+              selectionColor={m3.primary}
+              cursorColor={m3.primary}
+              multiline
+              autoCapitalize="sentences"
+              accessibilityLabel="Prompt"
+            />
+            <View style={styles.composerRow}>
+              <View style={styles.composerHint}>
+                <Icon name="folder-outline" size={16} color={m3.outline} />
+                <Text style={[type.bodySmall, { color: m3.outline }]} numberOfLines={1}>
+                  {running ? 'Working in your project…' : 'Runs on your PC'}
+                </Text>
+              </View>
+              {running ? (
+                <Pressable
+                  onPress={stop}
+                  disabled={stopping}
+                  style={({ pressed }) => [styles.action, styles.stop, (pressed || stopping) && { opacity: 0.7 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stop the agent"
+                >
+                  {stopping ? (
+                    <ActivityIndicator color={m3.onErrorContainer} />
+                  ) : (
+                    <Icon name="stop" size={22} color={m3.onErrorContainer} />
+                  )}
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={send}
+                  disabled={!canSend}
+                  style={({ pressed }) => [
+                    styles.action,
+                    canSend ? styles.send : styles.sendOff,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send"
+                >
+                  {sending ? (
+                    <ActivityIndicator color={m3.onPrimary} />
+                  ) : (
+                    <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
+                  )}
+                </Pressable>
+              )}
+            </View>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </View>
@@ -248,51 +274,51 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
+  flex: { flex: 1, backgroundColor: m3.surface },
   header: {
-    minHeight: 56,
+    height: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingRight: space.lg,
-    backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    gap: space.sm,
+    paddingHorizontal: space.xs,
+    gap: space.xs,
   },
-  back: { width: touch, height: touch, alignItems: 'center', justifyContent: 'center' },
-  backText: { color: colors.text, fontSize: 34, lineHeight: 36 },
-  headerText: { flex: 1 },
-  title: { color: colors.text, fontSize: 17, fontWeight: '600' },
-  link: { color: colors.warning, fontSize: 12, marginTop: 1 },
+  headerText: { flex: 1, minWidth: 0, paddingHorizontal: space.xs },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   list: { paddingHorizontal: space.lg, paddingVertical: space.md },
-  emptyWrap: { transform: [{ scaleY: -1 }] },
+  listEmpty: { flexGrow: 1, justifyContent: 'center' },
+  emptyWrap: { transform: [{ scaleY: -1 }], alignItems: 'center', paddingHorizontal: space.xl, gap: space.md },
+  spark: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: m3.primaryContainer,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyTitle: { textAlign: 'center' },
+  emptyBody: { textAlign: 'center', color: m3.onSurfaceVariant },
+  composerWrap: { paddingHorizontal: space.md, paddingTop: space.xs },
   composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: space.sm,
-    paddingHorizontal: space.md,
+    backgroundColor: m3.surfaceContainerHigh,
+    borderRadius: radius.xl,
     paddingTop: space.sm,
-    backgroundColor: colors.surface,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    paddingBottom: space.sm,
+    paddingHorizontal: space.sm,
   },
   input: {
-    flex: 1,
-    minHeight: touch,
-    maxHeight: 160,
-    backgroundColor: colors.bg,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    color: colors.text,
+    minHeight: 44,
+    maxHeight: 180,
+    color: m3.onSurface,
     fontSize: 16,
+    lineHeight: 22,
     paddingHorizontal: space.md,
-    paddingTop: 13,
-    paddingBottom: 13,
+    paddingTop: space.sm,
+    paddingBottom: space.xs,
   },
-  action: { width: touch, height: touch, borderRadius: touch / 2, alignItems: 'center', justifyContent: 'center' },
-  send: { backgroundColor: colors.accent },
-  sendText: { color: colors.onAccent, fontSize: 22, fontWeight: '800' },
-  stop: { backgroundColor: colors.dangerBg, borderWidth: 1, borderColor: colors.danger },
-  stopText: { color: colors.danger, fontSize: 18 },
+  composerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
+  composerHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: space.md, flex: 1, minWidth: 0 },
+  action: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  send: { backgroundColor: m3.primary },
+  sendOff: { backgroundColor: m3.surfaceContainerHighest },
+  stop: { backgroundColor: m3.errorContainer, borderRadius: 14 },
 });

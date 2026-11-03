@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, mono, radius, space } from './theme';
+import { m3, mono, radius, space, type } from './theme';
 import { Banner, Button } from './ui';
 
 /** A full-screen plain-text editor with Save (and optional Reset). */
@@ -64,7 +64,7 @@ export function TextEditor({
         {error ? (
           <Banner message={error} actionLabel="Retry" onAction={reload} />
         ) : (
-          <ActivityIndicator color={colors.accent} />
+          <ActivityIndicator color={m3.primary} />
         )}
       </View>
     );
@@ -78,14 +78,16 @@ export function TextEditor({
       keyboardVerticalOffset={90}
     >
       <View style={[styles.flex, styles.content, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
-        <Text style={styles.intro}>{intro}</Text>
+        <Text style={type.bodyMedium}>{intro}</Text>
         {error ? <Banner message={error} /> : null}
         <TextInput
           value={text}
           onChangeText={setText}
           multiline
           placeholder={placeholder}
-          placeholderTextColor={colors.textFaint}
+          placeholderTextColor={m3.outline}
+          selectionColor={m3.primary}
+          cursorColor={m3.primary}
           autoCapitalize="sentences"
           textAlignVertical="top"
           style={styles.editor}
@@ -95,13 +97,15 @@ export function TextEditor({
           {defaultText !== undefined && text !== defaultText ? (
             <Button
               title="Reset to default"
-              variant="secondary"
+              icon="restore"
+              variant="outlined"
               onPress={() => setText(defaultText)}
               style={styles.grow}
             />
           ) : null}
           <Button
-            title={dirty ? 'Save' : savedOnce ? 'Saved ✓' : 'Save'}
+            title={dirty ? 'Save' : savedOnce ? 'Saved' : 'Save'}
+            icon={!dirty && savedOnce ? 'check' : 'content-save-outline'}
             onPress={onSave}
             loading={saving}
             disabled={!dirty}
@@ -114,23 +118,20 @@ export function TextEditor({
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
+  flex: { flex: 1, backgroundColor: m3.surface },
   grow: { flex: 1 },
-  center: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center', padding: space.lg },
+  center: { flex: 1, backgroundColor: m3.surface, justifyContent: 'center', padding: space.lg },
   content: { padding: space.lg, gap: space.md },
-  intro: { color: colors.textMuted, fontSize: 14, lineHeight: 20 },
   editor: {
     flex: 1,
     minHeight: 200,
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    color: colors.text,
-    fontFamily: Platform.OS === 'ios' ? mono : 'monospace',
+    backgroundColor: m3.surfaceContainerLow,
+    borderRadius: radius.lg,
+    color: m3.onSurface,
+    fontFamily: mono,
     fontSize: 14,
-    lineHeight: 20,
-    padding: space.md,
+    lineHeight: 21,
+    padding: space.lg,
   },
   row: { flexDirection: 'row', gap: space.md },
 });

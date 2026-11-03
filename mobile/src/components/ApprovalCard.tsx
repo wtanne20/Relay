@@ -3,8 +3,8 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { parseArgs, toolDetails } from '../lib/format';
 import type { ApprovalDecision, PendingApproval } from '../lib/types';
-import { colors, mono, radius, space } from './theme';
-import { Button } from './ui';
+import { m3, mono, radius, space, type } from './theme';
+import { Button, Icon } from './ui';
 
 const QUESTION: Record<string, string> = {
   run_command: 'Run this command?',
@@ -36,8 +36,23 @@ export function ApprovalCard({
 
   return (
     <View style={styles.card} accessibilityRole="alert">
-      <Text style={styles.title}>{QUESTION[approval.name] ?? `Allow ${approval.name}?`}</Text>
-      {typeof path === 'string' && approval.name !== 'run_command' ? <Text style={styles.path}>{path}</Text> : null}
+      <View style={styles.head}>
+        <View style={styles.icon}>
+          <Icon name="shield-alert-outline" size={22} color={m3.warningContainer} />
+        </View>
+        <View style={styles.grow}>
+          <Text style={[type.titleMedium, { color: m3.onWarningContainer }]}>
+            {QUESTION[approval.name] ?? `Allow ${approval.name}?`}
+          </Text>
+          {typeof path === 'string' && approval.name !== 'run_command' ? (
+            <Text style={[type.bodyMedium, styles.path]} numberOfLines={1} ellipsizeMode="middle">
+              {path}
+            </Text>
+          ) : (
+            <Text style={[type.bodyMedium, styles.path]}>The agent is waiting for you</Text>
+          )}
+        </View>
+      </View>
       <ScrollView style={styles.details} nestedScrollEnabled>
         <Text selectable style={styles.code}>
           {approval.name === 'run_command' ? details : details.split('\n').slice(1).join('\n')}
@@ -46,7 +61,8 @@ export function ApprovalCard({
       <View style={styles.row}>
         <Button
           title="Deny"
-          variant="danger"
+          icon="close"
+          variant="outlined"
           onPress={() => decide('deny')}
           loading={busy === 'deny'}
           disabled={busy !== null}
@@ -54,6 +70,7 @@ export function ApprovalCard({
         />
         <Button
           title="Allow"
+          icon="check"
           onPress={() => decide('approve')}
           loading={busy === 'approve'}
           disabled={busy !== null}
@@ -62,7 +79,7 @@ export function ApprovalCard({
       </View>
       <Button
         title="Allow everything for this task"
-        variant="ghost"
+        variant="text"
         onPress={() => decide('approve_all')}
         loading={busy === 'approve_all'}
         disabled={busy !== null}
@@ -75,17 +92,24 @@ const styles = StyleSheet.create({
   card: {
     margin: space.md,
     marginBottom: 0,
-    padding: space.md,
-    gap: space.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.warningBg,
-    borderWidth: 1,
-    borderColor: colors.warning,
+    padding: space.lg,
+    paddingBottom: space.sm,
+    gap: space.md,
+    borderRadius: radius.xl,
+    backgroundColor: m3.warningContainer,
   },
-  title: { color: colors.warning, fontSize: 16, fontWeight: '700' },
-  path: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  details: { maxHeight: 160, backgroundColor: colors.code, borderRadius: radius.sm, padding: space.sm },
-  code: { color: colors.text, fontFamily: mono, fontSize: 13, lineHeight: 18 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  icon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: m3.warning,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  path: { color: m3.onWarningContainer, opacity: 0.8 },
+  details: { maxHeight: 160, backgroundColor: m3.code, borderRadius: radius.md, padding: space.md },
+  code: { color: m3.onSurface, fontFamily: mono, fontSize: 13, lineHeight: 19 },
   row: { flexDirection: 'row', gap: space.md },
-  grow: { flex: 1 },
+  grow: { flex: 1, minWidth: 0 },
 });

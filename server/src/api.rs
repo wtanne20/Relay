@@ -605,7 +605,7 @@ async fn create_session(
         .title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| format!("Session {}", chrono::Local::now().format("%b %-d, %H:%M")));
+        .unwrap_or_else(|| format!("Chat {}", chrono::Local::now().format("%b %-d, %H:%M")));
     let session =
         s.db.call(move |c| {
             if db::get_project(c, &id)?.is_none() {

@@ -1,22 +1,11 @@
 import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, radius, space, touch } from '../../components/theme';
-import { Banner, Button, EmptyState, Field, StatusBadge } from '../../components/ui';
+import { Sheet } from '../../components/Sheet';
+import { m3, radius, space, type } from '../../components/theme';
+import { Banner, Button, EmptyState, Fab, Field, IconButton, StatusBadge } from '../../components/ui';
 import { describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
 import { relativeTime } from '../../lib/format';
@@ -75,7 +64,7 @@ export default function SessionsScreen() {
       const s = await client.createSession(id);
       router.push({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
     } catch (e) {
-      Alert.alert('Could not create a session', describeError(e));
+      Alert.alert('Could not start a chat', describeError(e));
     } finally {
       setCreating(false);
     }
@@ -88,25 +77,21 @@ export default function SessionsScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: () =>
-          Alert.alert(
-            'Delete this session?',
-            'Its messages are removed from Relay. Files on your PC are not touched.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: async () => {
-                  try {
-                    await client.deleteSession(s.id);
-                    setSessions((list) => list?.filter((x) => x.id !== s.id) ?? null);
-                  } catch (e) {
-                    Alert.alert('Could not delete', describeError(e));
-                  }
-                },
+          Alert.alert('Delete this chat?', 'Its messages are removed from Relay. Files on your PC are not touched.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Delete',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  await client.deleteSession(s.id);
+                  setSessions((list) => list?.filter((x) => x.id !== s.id) ?? null);
+                } catch (e) {
+                  Alert.alert('Could not delete', describeError(e));
+                }
               },
-            ],
-          ),
+            },
+          ]),
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -116,17 +101,13 @@ export default function SessionsScreen() {
     <View style={styles.flex}>
       <Stack.Screen
         options={{
-          title: name ?? 'Sessions',
+          title: name ?? 'Chats',
           headerRight: () => (
-            <Pressable
+            <IconButton
+              icon="text-box-edit-outline"
+              label="Project instructions"
               onPress={() => router.push({ pathname: '/project/instructions', params: { id } })}
-              hitSlop={12}
-              style={styles.headerBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Project instructions"
-            >
-              <Text style={styles.headerBtnText}>Instructions</Text>
-            </Pressable>
+            />
           ),
         }}
       />
@@ -134,7 +115,7 @@ export default function SessionsScreen() {
       <FlatList
         data={sessions ?? []}
         keyExtractor={(s) => s.id}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 112 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -143,53 +124,68 @@ export default function SessionsScreen() {
               await load();
               setRefreshing(false);
             }}
-            tintColor={colors.textMuted}
+            tintColor={m3.onSurfaceVariant}
           />
+        }
+        ListHeaderComponent={
+          sessions && sessions.length > 0 ? (
+            <Text style={[type.titleSmall, styles.section]}>Recent chats</Text>
+          ) : undefined
         }
         ListEmptyComponent={
           sessions === null ? (
             error ? undefined : (
-              <ActivityIndicator style={{ marginTop: space.xl }} color={colors.accent} />
+              <ActivityIndicator style={{ marginTop: space.xl }} color={m3.primary} />
             )
           ) : (
-            <EmptyState title="No sessions yet" body="Start a new session and send the agent a prompt." />
+            <EmptyState
+              icon="chat-plus-outline"
+              title="Start a chat"
+              body="Ask the agent to fix a bug, add a feature or explain the code in this project."
+            />
           )
         }
-        renderItem={({ item }) => (
-          <Pressable
-            onPress={() => router.push({ pathname: '/session/[id]', params: { id: item.id, title: item.title } })}
-            onLongPress={() => actions(item)}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            accessibilityRole="button"
-            accessibilityHint="Opens the chat. Long press to rename or delete."
-          >
-            <View style={styles.rowTop}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {item.title}
-              </Text>
-              <StatusBadge status={item.status} />
-            </View>
-            <View style={styles.rowBottom}>
-              <Text style={styles.rowSub} numberOfLines={1}>
-                {item.status === 'error' && item.error ? item.error : `Active ${relativeTime(item.updated_at)}`}
-              </Text>
+        renderItem={({ item, index }) => {
+          const first = index === 0;
+          const last = index === (sessions?.length ?? 0) - 1;
+          const sub = item.status === 'error' && item.error ? item.error : relativeTime(item.updated_at);
+          return (
+            <View style={[styles.itemWrap, first && styles.itemFirst, last && styles.itemLast]}>
               <Pressable
-                onPress={() => actions(item)}
-                hitSlop={10}
-                style={styles.more}
+                onPress={() => router.push({ pathname: '/session/[id]', params: { id: item.id, title: item.title } })}
+                onLongPress={() => actions(item)}
+                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={`More actions for ${item.title}`}
+                accessibilityLabel={item.title}
+                accessibilityHint="Opens the chat. Long press to rename or delete."
               >
-                <Text style={styles.moreText}>•••</Text>
+                <View style={styles.grow}>
+                  <Text style={type.bodyLarge} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  <Text style={type.bodyMedium} numberOfLines={1}>
+                    {sub}
+                  </Text>
+                </View>
+                {item.status !== 'idle' ? <StatusBadge status={item.status} /> : null}
+                <IconButton
+                  icon="dots-vertical"
+                  label={`More actions for ${item.title}`}
+                  onPress={() => actions(item)}
+                />
               </Pressable>
+              {!last ? <View style={styles.divider} /> : null}
             </View>
-          </Pressable>
-        )}
+          );
+        }}
       />
-      <View style={[styles.bottom, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
-        <Button title="＋  New session" onPress={newSession} loading={creating} />
-      </View>
-      <RenameModal
+      <Fab
+        icon={creating ? 'timer-sand' : 'pencil-outline'}
+        label="New chat"
+        onPress={creating ? () => undefined : newSession}
+        style={[styles.fab, { bottom: insets.bottom + space.lg }]}
+      />
+      <RenameSheet
         session={renaming}
         onClose={() => setRenaming(null)}
         onSave={async (title) => {
@@ -203,7 +199,7 @@ export default function SessionsScreen() {
   );
 }
 
-function RenameModal({
+function RenameSheet({
   session,
   onClose,
   onSave,
@@ -215,7 +211,6 @@ function RenameModal({
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     setTitle(session?.title ?? '');
@@ -234,67 +229,42 @@ function RenameModal({
   };
 
   return (
-    <Modal visible={session !== null} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.modalWrap} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.lg) }]}>
-          <Text style={styles.sheetTitle}>Rename session</Text>
-          <Field
-            label="Title"
-            value={title}
-            onChangeText={setTitle}
-            autoFocus
-            autoCapitalize="sentences"
-            onSubmitEditing={submit}
-          />
-          {error ? <Banner message={error} /> : null}
-          <View style={styles.sheetActions}>
-            <Button title="Cancel" variant="secondary" onPress={onClose} style={styles.flex} />
-            <Button title="Save" onPress={submit} loading={busy} disabled={!title.trim()} style={styles.flex} />
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    <Sheet visible={session !== null} onClose={onClose} title="Rename chat">
+      <Field
+        label="Title"
+        value={title}
+        onChangeText={setTitle}
+        autoFocus
+        autoCapitalize="sentences"
+        onSubmitEditing={submit}
+      />
+      {error ? <Banner message={error} /> : null}
+      <View style={styles.sheetActions}>
+        <Button title="Cancel" variant="text" onPress={onClose} />
+        <Button title="Save" onPress={submit} loading={busy} disabled={!title.trim()} />
+      </View>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  headerBtn: { minHeight: 40, paddingHorizontal: space.sm, alignItems: 'center', justifyContent: 'center' },
-  headerBtnText: { color: colors.accent, fontSize: 16, fontWeight: '600' },
-  flex: { flex: 1 },
-  list: { padding: space.lg, paddingTop: space.sm },
+  flex: { flex: 1, backgroundColor: m3.surface },
+  grow: { flex: 1, minWidth: 0 },
+  list: { paddingHorizontal: space.lg, paddingTop: space.sm },
+  section: { color: m3.onSurfaceVariant, marginBottom: space.sm, marginLeft: space.xs, marginTop: space.sm },
+  itemWrap: { backgroundColor: m3.surfaceContainerLow, overflow: 'hidden' },
+  itemFirst: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, paddingTop: space.xs },
+  itemLast: { borderBottomLeftRadius: radius.xl, borderBottomRightRadius: radius.xl, paddingBottom: space.xs },
   row: {
-    minHeight: touch + 24,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    paddingLeft: space.lg,
-    paddingTop: space.md,
-    marginTop: space.sm,
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingLeft: space.xl,
+    paddingRight: space.xs,
   },
-  rowPressed: { backgroundColor: colors.surfaceRaised },
-  rowTop: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingRight: space.lg },
-  rowTitle: { flex: 1, color: colors.text, fontSize: 17, fontWeight: '600' },
-  rowBottom: { flexDirection: 'row', alignItems: 'center' },
-  rowSub: { flex: 1, color: colors.textMuted, fontSize: 13 },
-  more: { width: touch, height: 40, alignItems: 'center', justifyContent: 'center' },
-  moreText: { color: colors.textFaint, fontSize: 14, letterSpacing: 1 },
-  bottom: {
-    paddingHorizontal: space.lg,
-    paddingTop: space.sm,
-    backgroundColor: colors.bg,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-  },
-  modalWrap: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.55)' },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-    padding: space.lg,
-  },
-  sheetTitle: { color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: space.lg },
-  sheetActions: { flexDirection: 'row', gap: space.md },
+  rowPressed: { backgroundColor: 'rgba(237,229,225,0.08)' },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: space.xl },
+  fab: { position: 'absolute', right: space.lg },
+  sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
 });

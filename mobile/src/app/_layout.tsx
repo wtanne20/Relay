@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { colors } from '../components/theme';
+import { m3 } from '../components/theme';
 import { ConnectionProvider, useConnection } from '../lib/connection';
 import { configureNotificationHandler, refreshPushRegistration } from '../lib/push';
 
@@ -15,12 +15,12 @@ const theme = {
   ...DarkTheme,
   colors: {
     ...DarkTheme.colors,
-    primary: colors.accent,
-    background: colors.bg,
-    card: colors.surface,
-    text: colors.text,
-    border: colors.border,
-    notification: colors.accent,
+    primary: m3.primary,
+    background: m3.surface,
+    card: m3.surface,
+    text: m3.onSurface,
+    border: m3.outlineVariant,
+    notification: m3.primary,
   },
 };
 
@@ -57,24 +57,26 @@ export default function RootLayout() {
           {Platform.OS !== 'web' ? <PushBridge /> : null}
           <Stack
             screenOptions={{
-              headerStyle: { backgroundColor: colors.surface },
-              headerTintColor: colors.text,
-              headerTitleStyle: { fontWeight: '600' },
-              contentStyle: { backgroundColor: colors.bg },
+              headerStyle: { backgroundColor: m3.surface },
+              headerShadowVisible: false,
+              headerTintColor: m3.onSurface,
+              headerTitleStyle: { fontSize: 20, fontWeight: '400' },
+              contentStyle: { backgroundColor: m3.surface },
               headerBackButtonDisplayMode: 'minimal',
+              animation: 'slide_from_right',
             }}
           >
-            <Stack.Screen name="index" options={{ title: 'Projects' }} />
-            <Stack.Screen name="connect" options={{ title: 'Connect to Relay' }} />
-            <Stack.Screen name="project/[id]" options={{ title: 'Sessions' }} />
+            <Stack.Screen name="index" options={{ title: 'Relay', headerShown: false }} />
+            <Stack.Screen name="connect" options={{ title: '' }} />
+            <Stack.Screen name="project/[id]" options={{ title: 'Chats' }} />
             <Stack.Screen name="session/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
             <Stack.Screen name="scan" options={{ title: 'Scan QR code', headerTransparent: true }} />
-            <Stack.Screen name="pair" options={{ title: 'Pairing' }} />
+            <Stack.Screen name="pair" options={{ title: '' }} />
             <Stack.Screen name="agent" options={{ title: 'Agent settings' }} />
             <Stack.Screen name="models" options={{ title: 'Choose model' }} />
             <Stack.Screen name="system-prompt" options={{ title: 'System prompt' }} />
-            <Stack.Screen name="project/instructions" options={{ title: 'Project instructions' }} />
+            <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
           </Stack>
         </ThemeProvider>
       </ConnectionProvider>
