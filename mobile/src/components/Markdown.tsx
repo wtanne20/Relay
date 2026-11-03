@@ -1,14 +1,16 @@
 import { memo, useMemo, type ReactNode } from 'react';
-import { Linking, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MockupCard, isMockup } from './Mockup';
 import { colors, radius, space } from './theme';
+import { Icon } from './ui';
 
 /**
  * A small Markdown renderer covering what coding agents produce: fenced code
- * blocks, headings, bullet/numbered lists, block quotes, paragraphs, and
- * inline `code`, **bold**, *italic* and [links](url). Streaming-safe: an
- * unterminated code fence renders as code.
+ * blocks, headings, bullet/numbered lists (one level of nesting), tables,
+ * block quotes, paragraphs, and inline `code`, **bold**, *italic*,
+ * [links](url) and bare https:// links. Streaming-safe: an unterminated code
+ * fence renders as code.
  */
 
 type Block =
@@ -17,7 +19,35 @@ type Block =
   | { kind: 'list'; ordered: boolean; items: string[]; start: number }
   | { kind: 'quote'; text: string }
   | { kind: 'rule' }
+  | { kind: 'table'; head: string[]; rows: string[][] }
   | { kind: 'para'; text: string };
+
+/** "| a | b |" -> ["a", "b"]; pipes inside `code` are kept. */
+function cells(line: string): string[] {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1);
+  const out: string[] = [];
+  let cur = '';
+  let code = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c === '`') code = !code;
+    if (c === '\\' && t[i + 1] === '|') {
+      cur += '|';
+      i++;
+    } else if (c === '|' && !code) {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
 export function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\r\n/g, '\n').split('\n');
@@ -47,6 +77,20 @@ export function parseBlocks(src: string): Block[] {
       blocks.push({ kind: 'code', lang: fence[2] ?? '', text: body.join('\n'), closed });
       continue;
     }
+    // A table: a header row, a |---|---| rule, then rows.
+    if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && TABLE_RULE.test(lines[i + 1])) {
+      flush();
+      const head = cells(line);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        const r = cells(lines[i]);
+        rows.push(head.map((_, c) => r[c] ?? ''));
+        i++;
+      }
+      blocks.push({ kind: 'table', head, rows });
+      continue;
+    }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       flush();
@@ -67,15 +111,29 @@ export function parseBlocks(src: string): Block[] {
       const ordered = !!numbered;
       const start = numbered ? parseInt(numbered[1], 10) : 1;
       const items: string[] = [];
+      const indent = (l: string) => l.length - l.trimStart().length;
+      const base = indent(line);
       while (i < lines.length) {
         const b = lines[i].match(/^\s*[-*+]\s+(.*)$/);
         const n = lines[i].match(/^\s*\d+[.)]\s+(.*)$/);
         const m = ordered ? n : b;
-        if (m) {
+        if (items.length && (b || n) && indent(lines[i]) >= base + 2) {
+          // Nested item: kept as a "- " line of its parent.
+          items[items.length - 1] += `\n- ${(b ?? n)?.[1] ?? ''}`;
+          i++;
+        } else if (m && indent(lines[i]) <= base + 1) {
           items.push(m[1]);
           i++;
         } else if (items.length && /^\s{2,}\S/.test(lines[i])) {
+          // Continuation or a nested list item; kept as lines of the item.
           items[items.length - 1] += `\n${lines[i].trim()}`;
+          i++;
+        } else if (
+          items.length &&
+          lines[i].trim() === '' &&
+          i + 1 < lines.length &&
+          /^\s{2,}[-*+\d]/.test(lines[i + 1])
+        ) {
           i++;
         } else {
           break;
@@ -106,7 +164,7 @@ export function parseBlocks(src: string): Block[] {
 }
 
 const INLINE =
-  /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*(?!\s)([^*\n]+?)\*|\b_(?!\s)([^_\n]+?)_\b|\[([^\]]+)\]\(([^)\s]+)\)/g;
+  /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*(?!\s)([^*\n]+?)\*|\b_(?!\s)([^_\n]+?)_\b|\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()\]]+[^\s<>()\].,;:!?'"])/g;
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -147,6 +205,13 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
           {m[7]}
         </Text>,
       );
+    } else if (m[9]) {
+      const url = m[9];
+      out.push(
+        <Text key={key} style={styles.link} onPress={() => Linking.openURL(url).catch(() => undefined)}>
+          {url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '')}
+        </Text>,
+      );
     }
     last = idx + m[0].length;
   }
@@ -167,6 +232,97 @@ export function CodeBlock({ lang, text }: { lang: string; text: string }) {
   );
 }
 
+/** A link on a line of its own, like "Buy on Amazon", shown as a button. */
+function LinkButton({ label, url }: { label: string; url: string }) {
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    host = '';
+  }
+  return (
+    <Pressable
+      onPress={() => Linking.openURL(url).catch(() => undefined)}
+      style={({ pressed }) => [styles.linkButton, pressed && { backgroundColor: colors.surfaceRaised }]}
+      accessibilityRole="link"
+      accessibilityHint={host}
+    >
+      <Icon name="open-in-new" size={16} color={colors.accent} />
+      <Text style={styles.linkButtonText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const HEADING_SIZE = [24, 21, 19, 17];
+
+const SUB = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
+
+/** A list item; nested "- sub" lines become an indented list. */
+function ListItem({ text, k, color }: { text: string; k: string; color: string }) {
+  const lines = text.split('\n');
+  const first = lines.findIndex((l) => SUB.test(l));
+  if (first < 0) {
+    return (
+      <Text selectable style={[styles.para, styles.listText, { color }]}>
+        {renderInline(text, k)}
+      </Text>
+    );
+  }
+  const lead = lines.slice(0, first).join('\n');
+  const subs: string[] = [];
+  for (const l of lines.slice(first)) {
+    const m = l.match(SUB);
+    if (m) subs.push(m[1]);
+    else if (subs.length) subs[subs.length - 1] += `\n${l}`;
+  }
+  return (
+    <View style={styles.listText}>
+      {lead ? (
+        <Text selectable style={[styles.para, { color }]}>
+          {renderInline(lead, k)}
+        </Text>
+      ) : null}
+      {subs.map((sub, j) => (
+        <View key={`${k}-s${j}`} style={styles.listItem}>
+          <Text style={[styles.para, styles.listMarker, { color: colors.textMuted }]}>◦</Text>
+          <Text selectable style={[styles.para, styles.listText, { color }]}>
+            {renderInline(sub, `${k}-s${j}`)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** A table that scrolls sideways when it's wider than the screen. */
+function Table({ head, rows, k, color }: { head: string[]; rows: string[][]; k: string; color: string }) {
+  // Size each column to its longest cell, so small tables fit a phone.
+  const plain = (t: string) => t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`]/g, '');
+  const widths = head.map((h, c) => {
+    const longest = Math.max(plain(h).length, ...rows.map((r) => plain(r[c] ?? '').length));
+    return Math.min(240, Math.max(72, longest * 7.5 + 24));
+  });
+  const cell = (t: string, key: string, bold: boolean, c: number) => (
+    <View key={key} style={[styles.cell, { width: widths[c] }]}>
+      <Text selectable style={[styles.cellText, { color }, bold && styles.bold]}>
+        {renderInline(t, key)}
+      </Text>
+    </View>
+  );
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled style={styles.tableScroll}>
+      <View style={styles.table}>
+        <View style={[styles.tr, styles.thead]}>{head.map((h, c) => cell(h, `${k}-h${c}`, true, c))}</View>
+        {rows.map((r, ri) => (
+          <View key={`${k}-r${ri}`} style={[styles.tr, ri > 0 && styles.trBorder]}>
+            {r.map((t, c) => cell(t, `${k}-r${ri}c${c}`, false, c))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
 function MarkdownImpl({ text, color = colors.text }: { text: string; color?: string }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   return (
@@ -182,7 +338,11 @@ function MarkdownImpl({ text, color = colors.text }: { text: string; color?: str
             );
           case 'heading':
             return (
-              <Text key={key} selectable style={[styles.heading, { color, fontSize: Math.max(16, 22 - b.level * 2) }]}>
+              <Text
+                key={key}
+                selectable
+                style={[styles.heading, { color, fontSize: HEADING_SIZE[Math.min(b.level, 4) - 1] }]}
+              >
                 {renderInline(b.text, key)}
               </Text>
             );
@@ -204,19 +364,22 @@ function MarkdownImpl({ text, color = colors.text }: { text: string; color?: str
                     <Text style={[styles.para, styles.listMarker, { color: colors.textMuted }]}>
                       {b.ordered ? `${b.start + j}.` : '•'}
                     </Text>
-                    <Text selectable style={[styles.para, styles.listText, { color }]}>
-                      {renderInline(item, `${key}-${j}`)}
-                    </Text>
+                    <ListItem text={item} k={`${key}-${j}`} color={color} />
                   </View>
                 ))}
               </View>
             );
-          case 'para':
+          case 'table':
+            return <Table key={key} head={b.head} rows={b.rows} k={key} color={color} />;
+          case 'para': {
+            const only = b.text.trim().match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/i);
+            if (only) return <LinkButton key={key} label={only[1]} url={only[2]} />;
             return (
               <Text key={key} selectable style={[styles.para, { color }]}>
                 {renderInline(b.text, key)}
               </Text>
             );
+          }
         }
       })}
     </View>
@@ -229,7 +392,7 @@ const monoFont = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
 const styles = StyleSheet.create({
   para: { fontSize: 16, lineHeight: 25, marginVertical: 4, letterSpacing: 0.15 },
-  heading: { fontWeight: '700', marginTop: space.sm, marginBottom: space.xs },
+  heading: { fontWeight: '700', marginTop: space.md, marginBottom: space.xs },
   bold: { fontWeight: '700' },
   italic: { fontStyle: 'italic' },
   link: { color: colors.accent, textDecorationLine: 'underline' },
@@ -254,4 +417,29 @@ const styles = StyleSheet.create({
   listItem: { flexDirection: 'row' },
   listMarker: { width: 22 },
   listText: { flex: 1 },
+  tableScroll: { marginVertical: space.sm },
+  table: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+  },
+  tr: { flexDirection: 'row' },
+  trBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  thead: { backgroundColor: colors.surfaceRaised },
+  cell: { paddingHorizontal: space.md, paddingVertical: space.sm },
+  linkButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: space.xs,
+    marginVertical: space.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  linkButtonText: { color: colors.accent, fontSize: 14, fontWeight: '600' },
+  cellText: { fontSize: 14, lineHeight: 20 },
 });
