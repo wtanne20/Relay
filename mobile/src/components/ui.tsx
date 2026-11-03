@@ -3,6 +3,7 @@ import type { ComponentProps, ReactNode } from 'react';
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -17,6 +18,27 @@ import type { SessionStatus } from '../lib/types';
 import { m3, mono, radius, space, statusColor, statusContainer, statusLabel, touch, type } from './theme';
 
 export type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
+
+const LOGO = require('../../assets/logo.png');
+
+/** The Relay brain mark on a rounded clay tile. */
+export function Logo({ size = 32 }: { size?: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size * 0.3,
+        backgroundColor: m3.primaryContainer,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      accessibilityLabel="Relay"
+    >
+      <Image source={LOGO} style={{ width: size * 0.72, height: size * 0.72 }} />
+    </View>
+  );
+}
 
 export function Icon({
   name,

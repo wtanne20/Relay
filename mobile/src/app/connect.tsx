@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { m3, radius, space, type } from '../components/theme';
-import { Banner, Button, Field, Icon, IconButton, type IconName } from '../components/ui';
+import { Banner, Button, Field, Icon, IconButton, Logo, type IconName } from '../components/ui';
 
 function Step({ icon, text }: { icon: IconName; text: string }) {
   return (
@@ -85,7 +85,7 @@ export default function ConnectScreen() {
         {!edit ? (
           <View style={styles.hero}>
             <View style={styles.logo}>
-              <Icon name="console-line" size={36} color={m3.onPrimaryContainer} />
+              <Logo size={80} />
             </View>
             <Text style={[type.displaySmall, styles.center]}>Pair with your PC</Text>
             <Text style={[type.bodyLarge, styles.lead]}>
@@ -207,15 +207,7 @@ const styles = StyleSheet.create({
   center: { textAlign: 'center' },
   content: { padding: space.xl, paddingBottom: 48 },
   hero: { alignItems: 'center', gap: space.md, marginBottom: space.xl },
-  logo: {
-    width: 72,
-    height: 72,
-    borderRadius: 24,
-    backgroundColor: m3.primaryContainer,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.sm,
-  },
+  logo: { marginBottom: space.sm },
   lead: { color: m3.onSurfaceVariant, textAlign: 'center', maxWidth: 360 },
   steps: {
     alignSelf: 'stretch',

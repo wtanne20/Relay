@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { m3, radius, space, type } from '../components/theme';
 import { Sheet } from '../components/Sheet';
-import { Avatar, Banner, Button, EmptyState, Fab, Field, IconButton, ListItem } from '../components/ui';
+import { Avatar, Banner, Logo, Button, EmptyState, Fab, Field, IconButton, ListItem } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import type { Project } from '../lib/types';
@@ -98,7 +98,7 @@ export default function ProjectsScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.appBar}>
         <View style={styles.brand}>
-          <Avatar icon="console-line" size={32} />
+          <Logo size={32} />
           <Text style={type.titleLarge}>Relay</Text>
         </View>
         <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
