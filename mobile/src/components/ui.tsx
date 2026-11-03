@@ -183,7 +183,7 @@ const styles = StyleSheet.create({
     marginVertical: space.sm,
     gap: space.sm,
   },
-  bannerText: { flex: 1, fontSize: 14 },
+  bannerText: { flex: 1, minWidth: 0, fontSize: 14 },
   bannerAction: { minHeight: 36, justifyContent: 'center', paddingHorizontal: space.sm },
   bannerActionText: { fontWeight: '700', fontSize: 14 },
   badge: {

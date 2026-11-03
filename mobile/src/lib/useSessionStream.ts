@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 
 import { describeError, type RelayClient } from './api';
-import type { Draft, Message, ServerEvent, SessionStatus } from './types';
+import type { Draft, Message, PendingApproval, ServerEvent, SessionStatus } from './types';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
 
@@ -40,6 +40,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
+  const [approval, setApproval] = useState<PendingApproval | null>(null);
 
   const messagesRef = useRef<Message[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -86,6 +87,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           setStatus(ev.status);
           setTaskError(ev.status === 'error' ? ev.error : null);
           setDraft(ev.running && ev.draft ? ev.draft : null);
+          setApproval(ev.running ? (ev.pending_approval ?? null) : null);
           if (ev.last_message_id !== null && ev.last_message_id !== lastId()) {
             catchUp().catch((e) => setLinkError(describeError(e)));
           }
@@ -94,7 +96,10 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           setStatus(ev.status);
           if (ev.status === 'running') setTaskError(null);
           if (ev.status === 'error') setTaskError(ev.error);
-          if (ev.status !== 'running') setDraft(null);
+          if (ev.status !== 'running') {
+            setDraft(null);
+            setApproval(null);
+          }
           break;
         case 'text_delta':
           setDraft((d) => ({ content: (d?.content ?? '') + ev.text, reasoning: d?.reasoning ?? '' }));
@@ -108,6 +113,12 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           break;
         case 'error':
           setTaskError(ev.message);
+          break;
+        case 'approval_request':
+          setApproval(ev.approval);
+          break;
+        case 'approval_resolved':
+          setApproval((a) => (a && a.tool_call_id === ev.tool_call_id ? null : a));
           break;
         case 'resync':
           catchUp().catch((e) => setLinkError(describeError(e)));
@@ -255,6 +266,8 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
     hasMore,
     loadingOlder,
     initialLoaded,
+    approval,
+    setApproval,
     loadOlder,
     applyMessages,
     markRunning,

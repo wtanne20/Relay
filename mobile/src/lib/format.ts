@@ -81,3 +81,15 @@ export function toolDetails(call: ToolCall): string {
     return call.arguments;
   }
 }
+
+/** Last path segment of a Windows or POSIX path. */
+export function basename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
+export function formatBytes(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}

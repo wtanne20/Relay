@@ -399,9 +399,25 @@ async fn list_skills(State(s): State<AppState>) -> ApiResult<Json<Value>> {
 async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     let (dirs, current) = s.cfg.read(|l| (l.model_dirs(), l.config.llama.model_path.clone()));
     let dirs_out: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect();
-    let models = tokio::task::spawn_blocking(move || crate::setup::discover_models(&dirs))
-        .await
-        .map_err(|e| anyhow::anyhow!("model scan failed: {e}"))?;
+    let cur = current.clone();
+    let models = tokio::task::spawn_blocking(move || {
+        let mut found = crate::setup::discover_models(&dirs);
+        // The configured model may live outside the scanned folders.
+        let p = Path::new(&cur);
+        if !cur.is_empty() && p.is_file() && !found.iter().any(|m| m.path == cur) {
+            found.insert(
+                0,
+                crate::setup::ModelFile {
+                    path: cur.clone(),
+                    name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    size_bytes: p.metadata().map(|m| m.len()).unwrap_or(0),
+                },
+            );
+        }
+        found
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("model scan failed: {e}"))?;
     Ok(Json(json!({
         "models": models,
         "current": current,

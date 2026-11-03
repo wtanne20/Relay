@@ -9,6 +9,18 @@ export interface ModelStatus {
   model_path: string;
   recent_restarts: number;
   since: string;
+  /** 0..1 while llama.cpp is being downloaded on first run. */
+  progress?: number | null;
+}
+
+export interface GpuInfo {
+  name: string;
+  vram_mb: number;
+}
+
+export interface TailscaleInfo {
+  dns_name: string | null;
+  ip: string | null;
 }
 
 export interface ServerInfo {
@@ -22,12 +34,16 @@ export interface ServerInfo {
   push_enabled: boolean;
   max_steps: number;
   model: ModelStatus;
+  gpus?: GpuInfo[];
+  tailscale?: TailscaleInfo | null;
 }
 
 export interface Project {
   id: string;
   name: string;
   path: string;
+  /** Extra instructions added to the system prompt for this project. */
+  instructions?: string;
   created_at: string;
 }
 
@@ -77,6 +93,7 @@ export type ServerEvent =
       running: boolean;
       last_message_id: number | null;
       draft: Draft | null;
+      pending_approval?: PendingApproval | null;
     }
   | { type: 'status'; status: SessionStatus; error: string | null }
   | { type: 'text_delta'; text: string }
@@ -93,4 +110,94 @@ export type ServerEvent =
   | { type: 'message'; message: Message }
   | { type: 'final'; content: string }
   | { type: 'error'; message: string }
-  | { type: 'resync'; dropped: number };
+  | { type: 'resync'; dropped: number }
+  | { type: 'approval_request'; approval: PendingApproval }
+  | { type: 'approval_resolved'; tool_call_id: string; approved: boolean };
+
+export interface PendingApproval {
+  tool_call_id: string;
+  name: string;
+  arguments: string;
+  requested_at: string;
+}
+
+export type ApprovalDecision = 'approve' | 'approve_all' | 'deny';
+
+// ----- agent settings -----
+
+export type ApprovalMode = 'never' | 'commands' | 'all_changes';
+
+export interface ToolToggles {
+  list_dir: boolean;
+  read_file: boolean;
+  write_file: boolean;
+  edit_file: boolean;
+  run_command: boolean;
+}
+
+export interface AgentSettings {
+  max_steps: number;
+  command_timeout_seconds: number;
+  approval: ApprovalMode;
+  thinking: boolean;
+  tools: ToolToggles;
+}
+
+export interface SamplingSettings {
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  min_p: number;
+  repeat_penalty: number;
+  presence_penalty: number;
+  max_tokens: number;
+}
+
+export interface LlamaSettings {
+  llama_server_path: string;
+  model_path: string;
+  models_dirs: string[];
+  port: number;
+  context_size: number;
+  gpu_layers: number;
+  flash_attn: 'on' | 'off' | 'auto';
+  cache_type_k: string;
+  cache_type_v: string;
+  extra_args: string[];
+  health_timeout_seconds: number;
+  model_name: string;
+  auto_setup: boolean;
+}
+
+export interface Settings {
+  agent: AgentSettings;
+  sampling: SamplingSettings;
+  llama: LlamaSettings;
+  push: { enabled: boolean };
+  disabled_skills: string[];
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+  defaults: Settings;
+  tools: { name: keyof ToolToggles; description: string }[];
+  cache_types: string[];
+  gpus: GpuInfo[];
+}
+
+export type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object ? (T[K] extends unknown[] ? T[K] : DeepPartial<T[K]>) : T[K];
+};
+
+export interface ModelFile {
+  path: string;
+  name: string;
+  size_bytes: number;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+}

@@ -1,4 +1,18 @@
-import * as SecureStore from 'expo-secure-store';
+import * as Secure from 'expo-secure-store';
+import { Platform } from 'react-native';
+
+/**
+ * The phone keeps credentials in the Keychain / Keystore. The web build
+ * (development only) has no secure store, so it falls back to localStorage.
+ */
+const SecureStore =
+  Platform.OS === 'web'
+    ? {
+        getItemAsync: async (k: string) => globalThis.localStorage?.getItem(k) ?? null,
+        setItemAsync: async (k: string, v: string) => globalThis.localStorage?.setItem(k, v),
+        deleteItemAsync: async (k: string) => globalThis.localStorage?.removeItem(k),
+      }
+    : Secure;
 
 export interface Credentials {
   /** Normalized base URL, e.g. http://my-pc.tail1234.ts.net:8765 */

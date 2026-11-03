@@ -88,21 +88,25 @@ export default function SessionsScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: () =>
-          Alert.alert('Delete this session?', 'Its messages are removed from Relay. Files on your PC are not touched.', [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Delete',
-              style: 'destructive',
-              onPress: async () => {
-                try {
-                  await client.deleteSession(s.id);
-                  setSessions((list) => list?.filter((x) => x.id !== s.id) ?? null);
-                } catch (e) {
-                  Alert.alert('Could not delete', describeError(e));
-                }
+          Alert.alert(
+            'Delete this session?',
+            'Its messages are removed from Relay. Files on your PC are not touched.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    await client.deleteSession(s.id);
+                    setSessions((list) => list?.filter((x) => x.id !== s.id) ?? null);
+                  } catch (e) {
+                    Alert.alert('Could not delete', describeError(e));
+                  }
+                },
               },
-            },
-          ]),
+            ],
+          ),
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -110,7 +114,22 @@ export default function SessionsScreen() {
 
   return (
     <View style={styles.flex}>
-      <Stack.Screen options={{ title: name ?? 'Sessions' }} />
+      <Stack.Screen
+        options={{
+          title: name ?? 'Sessions',
+          headerRight: () => (
+            <Pressable
+              onPress={() => router.push({ pathname: '/project/instructions', params: { id } })}
+              hitSlop={12}
+              style={styles.headerBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Project instructions"
+            >
+              <Text style={styles.headerBtnText}>Instructions</Text>
+            </Pressable>
+          ),
+        }}
+      />
       {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
       <FlatList
         data={sessions ?? []}
@@ -220,7 +239,14 @@ function RenameModal({
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close" />
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.lg) }]}>
           <Text style={styles.sheetTitle}>Rename session</Text>
-          <Field label="Title" value={title} onChangeText={setTitle} autoFocus autoCapitalize="sentences" onSubmitEditing={submit} />
+          <Field
+            label="Title"
+            value={title}
+            onChangeText={setTitle}
+            autoFocus
+            autoCapitalize="sentences"
+            onSubmitEditing={submit}
+          />
           {error ? <Banner message={error} /> : null}
           <View style={styles.sheetActions}>
             <Button title="Cancel" variant="secondary" onPress={onClose} style={styles.flex} />
@@ -233,6 +259,8 @@ function RenameModal({
 }
 
 const styles = StyleSheet.create({
+  headerBtn: { minHeight: 40, paddingHorizontal: space.sm, alignItems: 'center', justifyContent: 'center' },
+  headerBtnText: { color: colors.accent, fontSize: 16, fontWeight: '600' },
   flex: { flex: 1 },
   list: { padding: space.lg, paddingTop: space.sm },
   row: {
@@ -261,7 +289,12 @@ const styles = StyleSheet.create({
   },
   modalWrap: { flex: 1, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.55)' },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: space.lg },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    padding: space.lg,
+  },
   sheetTitle: { color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: space.lg },
   sheetActions: { flexDirection: 'row', gap: space.md },
 });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
+import { Group, NavRow } from '../components/SettingsControls';
 import { colors, space, touch } from '../components/theme';
 import { Banner, Button, Card } from '../components/ui';
 import { describeError } from '../lib/api';
@@ -83,24 +84,28 @@ export default function SettingsScreen() {
   };
 
   const restartModel = () => {
-    Alert.alert('Restart the model?', 'llama-server will be stopped and started again. Running tasks wait until it is ready.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Restart',
-        style: 'destructive',
-        onPress: async () => {
-          setRestarting(true);
-          try {
-            await client.restartModel();
-            await load();
-          } catch (e) {
-            Alert.alert('Restart failed', describeError(e));
-          } finally {
-            setRestarting(false);
-          }
+    Alert.alert(
+      'Restart the model?',
+      'llama-server will be stopped and started again. Running tasks wait until it is ready.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restart',
+          style: 'destructive',
+          onPress: async () => {
+            setRestarting(true);
+            try {
+              await client.restartModel();
+              await load();
+            } catch (e) {
+              Alert.alert('Restart failed', describeError(e));
+            } finally {
+              setRestarting(false);
+            }
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   const onDisconnect = () => {
@@ -136,10 +141,26 @@ export default function SettingsScreen() {
         />
       }
     >
+      <Text style={styles.section}>Agent</Text>
+      <Group>
+        <NavRow
+          label="Agent settings"
+          value="Model, sampling, tools, approvals"
+          onPress={() => router.push('/agent')}
+        />
+        <NavRow label="System prompt" onPress={() => router.push('/system-prompt')} />
+      </Group>
+
       <Text style={styles.section}>Server</Text>
       <Card>
         <Row label="Address" value={creds.url} />
         <Row label="Token" value={maskedToken} />
+        <Button
+          title="Pair again (scan QR code)"
+          variant="secondary"
+          onPress={() => router.push('/scan')}
+          style={styles.cardButton}
+        />
         <Button
           title="Edit address or token"
           variant="secondary"
@@ -158,8 +179,10 @@ export default function SettingsScreen() {
       <Card>
         <View style={styles.switchRow}>
           <View style={styles.grow}>
-            <Text style={styles.switchLabel}>Notify when a task ends</Text>
-            <Text style={styles.switchHint}>Only the project name, session title and status are sent.</Text>
+            <Text style={styles.switchLabel}>Notifications on this phone</Text>
+            <Text style={styles.switchHint}>
+              When a task ends or needs your approval. Only the project name, session title and status are sent.
+            </Text>
           </View>
           {pushBusy ? (
             <ActivityIndicator color={colors.accent} />
@@ -173,7 +196,7 @@ export default function SettingsScreen() {
           )}
         </View>
         {info && !info.push_enabled ? (
-          <Text style={styles.warn}>Push is turned off on the server ([push] enabled = false in config.toml).</Text>
+          <Text style={styles.warn}>Push is turned off on the PC. Turn it on in Agent settings → Notifications.</Text>
         ) : null}
       </Card>
       {pushError ? <Banner message={pushError} /> : null}
@@ -188,9 +211,23 @@ export default function SettingsScreen() {
             <Row label="OS" value={info.os} />
             <Row label="Uptime" value={formatDuration(info.uptime_seconds)} />
             <Row label="Projects" value={String(info.projects)} />
-            <Row label="Max steps" value={String(info.max_steps)} />
+            <Row
+              label="GPU"
+              value={
+                info.gpus && info.gpus.length
+                  ? info.gpus.map((g) => `${g.name} · ${Math.round(g.vram_mb / 1024)} GB`).join(', ')
+                  : 'None detected'
+              }
+            />
+            <Row
+              label="Tailscale"
+              value={info.tailscale ? (info.tailscale.dns_name ?? info.tailscale.ip ?? 'on') : 'Not detected on the PC'}
+            />
             <Row label="Model file" value={info.model.model_path || '(not set)'} />
-            <Row label="llama-server" value={`127.0.0.1:${info.model.port}${info.model.external ? ' (external)' : ''}`} />
+            <Row
+              label="llama-server"
+              value={`127.0.0.1:${info.model.port}${info.model.external ? ' (external)' : ''}`}
+            />
           </>
         ) : infoError ? (
           <Text style={styles.switchHint}>Unavailable</Text>

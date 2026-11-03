@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssistantBlock, DraftBlock, UserBubble } from '../../components/ChatItems';
 import { colors, radius, space, touch } from '../../components/theme';
+import { ApprovalCard } from '../../components/ApprovalCard';
 import { Banner, EmptyState, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
@@ -114,8 +115,7 @@ export default function ChatScreen() {
     }
   };
 
-  const linkLabel =
-    stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
+  const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
@@ -153,7 +153,9 @@ export default function ChatScreen() {
           onEndReached={stream.loadOlder}
           onEndReachedThreshold={0.3}
           ListFooterComponent={
-            stream.loadingOlder ? <ActivityIndicator style={{ margin: space.md }} color={colors.textMuted} /> : undefined
+            stream.loadingOlder ? (
+              <ActivityIndicator style={{ margin: space.md }} color={colors.textMuted} />
+            ) : undefined
           }
           ListEmptyComponent={
             stream.initialLoaded ? (
@@ -182,13 +184,32 @@ export default function ChatScreen() {
         ) : null}
         {stream.status === 'error' && stream.taskError ? <Banner message={stream.taskError} /> : null}
         {sendError ? <Banner message={sendError} actionLabel="Dismiss" onAction={() => setSendError(null)} /> : null}
+        {stream.approval ? (
+          <ApprovalCard
+            key={stream.approval.tool_call_id}
+            approval={stream.approval}
+            onDecide={async (decision) => {
+              const pending = stream.approval;
+              if (!pending) return;
+              try {
+                await client.answerApproval(id, pending.tool_call_id, decision);
+                stream.setApproval(null);
+              } catch (e) {
+                setSendError(describeError(e));
+                if (e instanceof ApiError && e.status === 409) stream.setApproval(null);
+              }
+            }}
+          />
+        ) : null}
 
         <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
           <TextInput
             style={styles.input}
             value={input}
             onChangeText={setInput}
-            placeholder={running ? 'Agent is working…' : 'Message the agent'}
+            placeholder={
+              stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
+            }
             placeholderTextColor={colors.textFaint}
             multiline
             autoCapitalize="sentences"

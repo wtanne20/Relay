@@ -69,6 +69,12 @@ export default function RootLayout() {
             <Stack.Screen name="project/[id]" options={{ title: 'Sessions' }} />
             <Stack.Screen name="session/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+            <Stack.Screen name="scan" options={{ title: 'Scan QR code', headerTransparent: true }} />
+            <Stack.Screen name="pair" options={{ title: 'Pairing' }} />
+            <Stack.Screen name="agent" options={{ title: 'Agent settings' }} />
+            <Stack.Screen name="models" options={{ title: 'Choose model' }} />
+            <Stack.Screen name="system-prompt" options={{ title: 'System prompt' }} />
+            <Stack.Screen name="project/instructions" options={{ title: 'Project instructions' }} />
           </Stack>
         </ThemeProvider>
       </ConnectionProvider>

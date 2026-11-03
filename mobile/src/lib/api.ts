@@ -1,5 +1,17 @@
 import type { Credentials } from './storage';
-import type { Message, ModelStatus, Project, ServerInfo, Session } from './types';
+import type {
+  ApprovalDecision,
+  DeepPartial,
+  Message,
+  ModelFile,
+  ModelStatus,
+  Project,
+  ServerInfo,
+  Session,
+  Settings,
+  SettingsResponse,
+  SkillInfo,
+} from './types';
 
 export const DEFAULT_PORT = 8765;
 const REQUEST_TIMEOUT_MS = 15000;
@@ -85,7 +97,11 @@ export class RelayClient {
       }
     }
     if (res.status === 401) {
-      throw new ApiError('The server rejected the token. Copy it again from the Relay console or config.toml.', 'auth', 401);
+      throw new ApiError(
+        'The PC rejected the token. Scan the QR code again (Start menu → Relay → Pair phone).',
+        'auth',
+        401,
+      );
     }
     if (!res.ok) {
       const msg =
@@ -108,12 +124,43 @@ export class RelayClient {
     return this.request<{ ok: boolean }>('POST', '/model/restart');
   }
 
+  // ----- agent settings -----
+  settings() {
+    return this.request<SettingsResponse>('GET', '/settings');
+  }
+  patchSettings(patch: DeepPartial<Settings>) {
+    return this.request<{ settings: Settings; model_restarting: boolean }>('PATCH', '/settings', patch);
+  }
+  models() {
+    return this.request<{ models: ModelFile[]; current: string; dirs: string[]; vram_mb: number }>(
+      'GET',
+      '/models',
+      undefined,
+      30000,
+    );
+  }
+  systemPrompt() {
+    return this.request<{ content: string; default: string; path: string }>('GET', '/system-prompt');
+  }
+  saveSystemPrompt(content: string) {
+    return this.request<{ content: string }>('PUT', '/system-prompt', { content });
+  }
+  async skills(): Promise<SkillInfo[]> {
+    return (await this.request<{ skills: SkillInfo[] }>('GET', '/skills', undefined, 30000)).skills;
+  }
+
   // ----- projects -----
   async projects(): Promise<Project[]> {
     return (await this.request<{ projects: Project[] }>('GET', '/projects')).projects;
   }
   async createProject(name: string, path: string): Promise<Project> {
     return (await this.request<{ project: Project }>('POST', '/projects', { name, path })).project;
+  }
+  async project(id: string): Promise<Project> {
+    return (await this.request<{ project: Project }>('GET', `/projects/${encodeURIComponent(id)}`)).project;
+  }
+  async updateProject(id: string, patch: { name?: string; instructions?: string }): Promise<Project> {
+    return (await this.request<{ project: Project }>('PATCH', `/projects/${encodeURIComponent(id)}`, patch)).project;
   }
   async deleteProject(id: string): Promise<void> {
     await this.request('DELETE', `/projects/${encodeURIComponent(id)}`);
@@ -160,6 +207,14 @@ export class RelayClient {
   }
   stop(id: string) {
     return this.request<{ stopping: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/stop`, {});
+  }
+
+  answerApproval(id: string, toolCallId: string, decision: ApprovalDecision, note?: string) {
+    return this.request<{ ok: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/approval`, {
+      tool_call_id: toolCallId,
+      decision,
+      note,
+    });
   }
 
   // ----- push -----
