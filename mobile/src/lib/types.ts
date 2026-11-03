@@ -47,7 +47,12 @@ export interface Project {
   /** Extra instructions added to the system prompt for this project. */
   instructions?: string;
   created_at: string;
+  /** Model file this project's chats use; null follows whatever is loaded. */
+  model?: string | null;
 }
+
+/** The built-in space for plain chats (no folder, no tools). */
+export const CHATS_ID = 'chats';
 
 export type SessionStatus = 'idle' | 'running' | 'done' | 'error' | 'stopped';
 
@@ -59,6 +64,14 @@ export interface Session {
   error: string | null;
   created_at: string;
   updated_at: string;
+  /** Model file for this chat; null follows the project. */
+  model?: string | null;
+  /** True while Relay may still name the chat. */
+  auto_title?: boolean;
+}
+
+export interface RecentSession extends Session {
+  project_name: string;
 }
 
 export interface ToolCall {
@@ -114,7 +127,8 @@ export type ServerEvent =
   | { type: 'error'; message: string }
   | { type: 'resync'; dropped: number }
   | { type: 'approval_request'; approval: PendingApproval }
-  | { type: 'approval_resolved'; tool_call_id: string; approved: boolean };
+  | { type: 'approval_resolved'; tool_call_id: string; approved: boolean }
+  | { type: 'title'; title: string };
 
 export interface PendingApproval {
   tool_call_id: string;

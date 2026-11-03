@@ -265,13 +265,13 @@ export default function SettingsScreen() {
     >
       <ModelStatusBar client={client} active={focused} />
 
-      <SectionTitle title="Agent" />
+      <SectionTitle title="Models" />
       <Group>
         <NavRow
-          icon="robot-outline"
-          label="Agent settings"
-          value="Model, sampling, tools, approvals"
-          onPress={() => router.push('/agent')}
+          icon="chip"
+          label="Choose model"
+          value="The model Relay loads by default, and tags"
+          onPress={() => router.push('/models')}
         />
         <NavRow
           icon="download-outline"
@@ -279,13 +279,23 @@ export default function SettingsScreen() {
           value="Find and download models from Hugging Face"
           onPress={() => router.push('/hub')}
         />
+        <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
+      </Group>
+
+      <SectionTitle title="Agent" />
+      <Group>
+        <NavRow
+          icon="robot-outline"
+          label="Agent settings"
+          value="Sampling, tools, approvals"
+          onPress={() => router.push('/agent')}
+        />
         <NavRow
           icon="text-box-outline"
           label="System prompt"
           value="Instructions the agent always follows"
           onPress={() => router.push('/system-prompt')}
         />
-        <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
       </Group>
 
       <SectionTitle title="Projects" />

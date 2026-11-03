@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { Sheet } from '../../components/Sheet';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Button, EmptyState, Fab, Field, IconButton, StatusBadge } from '../../components/ui';
@@ -12,7 +13,7 @@ import { describeError } from '../../lib/api';
 import { usePageStyle } from '../../lib/layout';
 import { useClient } from '../../lib/connection';
 import { relativeTime } from '../../lib/format';
-import type { Session } from '../../lib/types';
+import { CHATS_ID, type Project, type Session } from '../../lib/types';
 
 const POLL_MS = 5000;
 
@@ -26,6 +27,19 @@ export default function SessionsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<Session | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const plain = id === CHATS_ID;
+
+  useEffect(() => {
+    if (!client || !id) return;
+    client.project(id).then(setProject).catch(() => undefined);
+    client
+      .model()
+      .then((m) => setLoaded(m.model_path || null))
+      .catch(() => undefined);
+  }, [client, id]);
   const [, setTick] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -107,7 +121,7 @@ export default function SessionsScreen() {
     <View style={styles.flex}>
       <Stack.Screen
         options={{
-          title: name ?? 'Chats',
+          title: plain ? 'Chats' : (name ?? project?.name ?? 'Chats'),
           headerRight: () => (
             <IconButton
               icon="text-box-edit-outline"
@@ -134,9 +148,17 @@ export default function SessionsScreen() {
           />
         }
         ListHeaderComponent={
-          sessions && sessions.length > 0 ? (
-            <Text style={[type.titleSmall, styles.section]}>Recent chats</Text>
-          ) : undefined
+          <View>
+            <View style={styles.modelRow}>
+              <Text style={[type.bodyMedium, styles.modelLabel]}>
+                {plain ? 'Model for new chats' : 'Model for this project'}
+              </Text>
+              <ModelChip model={project?.model} fallback={loaded} onPress={() => setPicking(true)} />
+            </View>
+            {sessions && sessions.length > 0 ? (
+              <Text style={[type.titleSmall, styles.section]}>Recent chats</Text>
+            ) : null}
+          </View>
         }
         ListEmptyComponent={
           sessions === null ? (
@@ -147,7 +169,11 @@ export default function SessionsScreen() {
             <EmptyState
               icon="chat-plus-outline"
               title="Start a chat"
-              body="Ask the agent to fix a bug, add a feature or explain the code in this project."
+              body={
+                plain
+                  ? 'Ask anything. Plain chats run on your PC and have no access to your files.'
+                  : 'Ask the agent to fix a bug, add a feature or explain the code in this project.'
+              }
             />
           )
         }
@@ -192,6 +218,14 @@ export default function SessionsScreen() {
         label="New chat"
         onPress={creating ? () => undefined : newSession}
         style={[styles.fab, { bottom: insets.bottom + space.lg }]}
+      />
+      <ModelSheet
+        visible={picking}
+        onClose={() => setPicking(false)}
+        value={project?.model}
+        defaultTitle="Whichever model is loaded"
+        defaultBody={loaded ? `Now: ${modelLabel(loaded)}` : 'The model chosen in Settings'}
+        onPick={async (path) => setProject(await client.updateProject(id, { model: path }))}
       />
       <RenameSheet
         session={renaming}
@@ -276,5 +310,14 @@ const styles = StyleSheet.create({
   rowPressed: { backgroundColor: m3.pressed },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: space.xl },
   fab: { position: 'absolute', right: space.lg },
+  modelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.md,
+    marginBottom: space.sm,
+    marginLeft: space.xs,
+  },
+  modelLabel: { color: m3.onSurfaceVariant },
   sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
 });

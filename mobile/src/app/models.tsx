@@ -79,15 +79,8 @@ export default function ModelsScreen() {
           <>
             {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
             <Text style={[type.bodyMedium, styles.intro]}>
-              Picking a model reloads llama-server on the PC. Tap the tag icon to note what a model is good at.
+              This is the model Relay loads by default. Chats and projects can pick their own from the model button in the chat. Tap the tag icon to note what a model is good at. To get more models, use Download models in Settings.
             </Text>
-            <Button
-              title="Download more models"
-              icon="download"
-              variant="tonal"
-              onPress={() => router.push('/hub')}
-              style={styles.hubButton}
-            />
             {!data && !error ? <ActivityIndicator color={m3.primary} /> : null}
           </>
         }
@@ -169,7 +162,6 @@ const styles = StyleSheet.create({
   grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 48 },
   intro: { marginBottom: space.md, marginHorizontal: space.xs },
-  hubButton: { alignSelf: 'flex-start', marginBottom: space.lg },
   itemOuter: {
     flexDirection: 'row',
     alignItems: 'center',

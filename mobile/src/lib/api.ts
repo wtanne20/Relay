@@ -13,8 +13,7 @@ import type {
   Session,
   Settings,
   SettingsResponse,
-  SkillInfo,
-} from './types';
+  SkillInfo, RecentSession } from './types';
 
 export const DEFAULT_PORT = 8765;
 const REQUEST_TIMEOUT_MS = 15000;
@@ -191,7 +190,8 @@ export class RelayClient {
   async project(id: string): Promise<Project> {
     return (await this.request<{ project: Project }>('GET', `/projects/${encodeURIComponent(id)}`)).project;
   }
-  async updateProject(id: string, patch: { name?: string; instructions?: string }): Promise<Project> {
+  /** `model: ''` goes back to whatever model is loaded. */
+  async updateProject(id: string, patch: { name?: string; instructions?: string; model?: string }): Promise<Project> {
     return (await this.request<{ project: Project }>('PATCH', `/projects/${encodeURIComponent(id)}`, patch)).project;
   }
   async deleteProject(id: string): Promise<void> {
@@ -216,6 +216,15 @@ export class RelayClient {
   async renameSession(id: string, title: string): Promise<Session> {
     return (await this.request<{ session: Session }>('PATCH', `/sessions/${encodeURIComponent(id)}`, { title }))
       .session;
+  }
+  /** `model: ''` makes the chat follow its project again. */
+  async setSessionModel(id: string, model: string): Promise<Session> {
+    return (await this.request<{ session: Session }>('PATCH', `/sessions/${encodeURIComponent(id)}`, { model }))
+      .session;
+  }
+  /** Latest chats across all projects and plain chats. */
+  async recent(limit = 30): Promise<RecentSession[]> {
+    return (await this.request<{ sessions: RecentSession[] }>('GET', `/recent?limit=${limit}`)).sessions;
   }
   async deleteSession(id: string): Promise<void> {
     await this.request('DELETE', `/sessions/${encodeURIComponent(id)}`);

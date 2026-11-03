@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
-import type { ModelStatus, Project, Session } from '../lib/types';
+import { CHATS_ID, type ModelStatus, type Project, type Session } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
 import { m3, radius, space, statusColor, type } from './theme';
 import { Icon, IconButton, Logo } from './ui';
@@ -22,6 +22,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const pathname = usePathname();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [chats, setChats] = useState<Record<string, Session[]>>({});
+  const [plain, setPlain] = useState<Session[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [adding, setAdding] = useState(false);
@@ -34,9 +35,14 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const load = useCallback(async () => {
     if (!client) return;
     try {
-      const [ps, m] = await Promise.all([client.projects(), client.model()]);
+      const [ps, m, pl] = await Promise.all([
+        client.projects(),
+        client.model(),
+        client.sessions(CHATS_ID).catch(() => [] as Session[]),
+      ]);
       setProjects(ps);
       setModel(m);
+      setPlain(pl);
       // Expand the first project by default so a fresh install shows something.
       const expanded = Object.keys(openRef.current).length ? openRef.current : ps[0] ? { [ps[0].id]: true } : {};
       if (expanded !== openRef.current) setOpen(expanded);
@@ -101,12 +107,38 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         <Text style={[type.labelMedium, styles.kbd]}>Ctrl N</Text>
       </Pressable>
 
-      <View style={styles.sectionRow}>
-        <Text style={[type.labelMedium, styles.section]}>PROJECTS</Text>
-        <IconButton icon="folder-plus-outline" label="Add project" onPress={() => setAdding(true)} size={18} />
+      <View style={styles.homeRow}>
+        <Row icon="home-outline" label="Home" active={pathname === '/'} onPress={() => go('/')} />
       </View>
 
       <ScrollView style={styles.grow} contentContainerStyle={styles.list}>
+        <View style={styles.sectionRow}>
+          <Text style={[type.labelMedium, styles.section]}>CHATS</Text>
+        </View>
+        {plain.length === 0 ? <Text style={[type.bodySmall, styles.noChats]}>No chats yet</Text> : null}
+        {plain.slice(0, CHATS_SHOWN).map((s) => (
+          <Row
+            key={s.id}
+            label={s.title}
+            small
+            active={activeSession === s.id}
+            status={s.status}
+            onPress={() => go({ pathname: '/session/[id]', params: { id: s.id, title: s.title } })}
+          />
+        ))}
+        {plain.length > CHATS_SHOWN ? (
+          <Row
+            label={`All ${plain.length} chats`}
+            small
+            muted
+            onPress={() => go({ pathname: '/project/[id]', params: { id: CHATS_ID, name: 'Chats' } })}
+          />
+        ) : null}
+
+        <View style={styles.sectionRow}>
+          <Text style={[type.labelMedium, styles.section]}>PROJECTS</Text>
+          <IconButton icon="folder-plus-outline" label="Add project" onPress={() => setAdding(true)} size={18} />
+        </View>
         {projects === null ? <ActivityIndicator color={m3.primary} style={{ marginTop: space.lg }} /> : null}
         {projects?.length === 0 ? <Text style={[type.bodyMedium, styles.empty]}>Add a project to start.</Text> : null}
         {projects?.map((p) => {
@@ -292,11 +324,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    minHeight: 36,
     marginTop: space.lg,
     paddingLeft: space.md,
   },
   section: { color: m3.onSurfaceVariant, letterSpacing: 1 },
   list: { paddingBottom: space.lg },
+  homeRow: { marginTop: space.sm },
   empty: { paddingHorizontal: space.md, paddingVertical: space.sm },
   rowWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: radius.md },
   row: {

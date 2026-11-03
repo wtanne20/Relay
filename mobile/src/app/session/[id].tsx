@@ -14,12 +14,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssistantTurn, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
 import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
-import type { Message } from '../../lib/types';
+import { emit } from '../../lib/events';
+import { CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
 
 type Item =
@@ -38,6 +40,10 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     if (!client) {
@@ -46,9 +52,27 @@ export default function ChatScreen() {
     }
     client
       .session(id)
-      .then((s) => setTitle(s.title))
+      .then((s) => {
+        setSession(s);
+        setTitle(s.title);
+        return client.project(s.project_id).then(setProject);
+      })
+      .catch(() => undefined);
+    client
+      .model()
+      .then((m) => setLoaded(m.model_path || null))
       .catch(() => undefined);
   }, [client, id]);
+
+  // Relay names new chats after the first reply.
+  useEffect(() => {
+    if (stream.title) {
+      setTitle(stream.title);
+      emit('chats');
+    }
+  }, [stream.title]);
+
+  const plain = session?.project_id === CHATS_ID;
 
   const running = stream.status === 'running';
   useEffect(() => {
@@ -93,7 +117,9 @@ export default function ChatScreen() {
       setInput('');
       if (stream.link !== 'live') stream.reconnect();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
+      if (e instanceof ApiError && e.status === 409 && /another chat/i.test(e.message)) {
+        setSendError(describeError(e));
+      } else if (e instanceof ApiError && e.status === 409) {
         stream.setStatus('running');
         setSendError('The agent is still working. Stop it first or wait for it to finish.');
       } else {
@@ -154,9 +180,13 @@ export default function ChatScreen() {
                 <View style={styles.spark}>
                   <Icon name="creation" size={28} color={m3.primary} />
                 </View>
-                <Text style={[type.headlineMedium, styles.emptyTitle]}>What should we work on?</Text>
+                <Text style={[type.headlineMedium, styles.emptyTitle]}>
+                  {plain ? 'What would you like to know?' : 'What should we work on?'}
+                </Text>
                 <Text style={[type.bodyLarge, styles.emptyBody]}>
-                  The agent reads, edits and runs code inside this project's folder on your PC.
+                  {plain
+                    ? 'A plain chat with your local model. It runs privately on your PC and has no access to your files.'
+                    : `The agent reads, edits and runs code in ${project?.name ?? 'this project'} on your PC.`}
                 </Text>
               </View>
             ) : (
@@ -224,7 +254,15 @@ export default function ChatScreen() {
                 value={input}
                 onChangeText={setInput}
                 placeholder={
-                  stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
+                  stream.approval
+                    ? 'Waiting for your answer…'
+                    : running
+                      ? plain
+                        ? 'Writing…'
+                        : 'Agent is working…'
+                      : plain
+                        ? 'Message Relay'
+                        : 'Message the agent'
                 }
                 placeholderTextColor={m3.outline}
                 selectionColor={m3.primary}
@@ -237,10 +275,12 @@ export default function ChatScreen() {
               />
               <View style={styles.composerRow}>
                 <View style={styles.composerHint}>
-                  <Icon name="folder-outline" size={16} color={m3.outline} />
-                  <Text style={[type.bodySmall, { color: m3.outline }]} numberOfLines={1}>
-                    {running ? 'Working in your project…' : 'Runs on your PC'}
-                  </Text>
+                  <ModelChip
+                    model={session?.model}
+                    fallback={project?.model ?? loaded}
+                    onPress={() => setPicking(true)}
+                    disabled={!session}
+                  />
                 </View>
                 {running ? (
                   <Pressable
@@ -280,6 +320,20 @@ export default function ChatScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      <ModelSheet
+        visible={picking}
+        onClose={() => setPicking(false)}
+        value={session?.model}
+        defaultTitle={project?.model && !plain ? 'Same as the project' : 'Whichever model is loaded'}
+        defaultBody={
+          project?.model
+            ? `${plain ? 'Your default for chats' : project.name}: ${modelLabel(project.model)}`
+            : loaded
+              ? `Now: ${modelLabel(loaded)}`
+              : 'The model chosen in Settings'
+        }
+        onPick={async (path) => setSession(await client.setSessionModel(id, path))}
+      />
     </View>
   );
 }
@@ -333,7 +387,7 @@ const styles = StyleSheet.create({
     paddingBottom: space.xs,
   },
   composerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
-  composerHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: space.md, flex: 1, minWidth: 0 },
+  composerHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: space.xs, flex: 1, minWidth: 0 },
   action: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   send: { backgroundColor: m3.primary },
   sendOff: { backgroundColor: m3.surfaceContainerHighest },

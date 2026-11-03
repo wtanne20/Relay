@@ -41,6 +41,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const [approval, setApproval] = useState<PendingApproval | null>(null);
+  const [title, setTitle] = useState<string | null>(null);
 
   const messagesRef = useRef<Message[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -119,6 +120,9 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           break;
         case 'approval_resolved':
           setApproval((a) => (a && a.tool_call_id === ev.tool_call_id ? null : a));
+          break;
+        case 'title':
+          setTitle(ev.title);
           break;
         case 'resync':
           catchUp().catch((e) => setLinkError(describeError(e)));
@@ -268,6 +272,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
     initialLoaded,
     approval,
     setApproval,
+    title,
     loadOlder,
     applyMessages,
     markRunning,
