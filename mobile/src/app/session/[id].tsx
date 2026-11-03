@@ -306,7 +306,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 18,
-    backgroundColor: m3.primaryContainer,
+    backgroundColor: m3.surfaceContainerHigh,
     alignItems: 'center',
     justifyContent: 'center',
   },

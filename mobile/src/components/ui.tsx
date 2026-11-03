@@ -29,7 +29,7 @@ export function Logo({ size = 32 }: { size?: number }) {
         width: size,
         height: size,
         borderRadius: size * 0.3,
-        backgroundColor: m3.primaryContainer,
+        backgroundColor: m3.surfaceContainerHigh,
         alignItems: 'center',
         justifyContent: 'center',
       }}
@@ -448,7 +448,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 24,
-    backgroundColor: m3.primaryContainer,
+    backgroundColor: m3.surfaceContainerHigh,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: space.sm,

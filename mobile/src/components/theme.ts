@@ -3,9 +3,9 @@ import { Platform } from 'react-native';
 import type { SessionStatus } from '../lib/types';
 
 /**
- * Material 3 dark color scheme built from an emerald seed: green-tinted
- * near-black surfaces with tonal elevation, a soft green primary, and
- * high-contrast text. Change the seed colours here and the whole app (phone
+ * Material 3 dark color scheme: neutral grey surfaces with tonal elevation,
+ * and green (emerald seed) only for accents: primary actions, highlights,
+ * focus and status. Change the seed colours here and the whole app (phone
  * and desktop) follows.
  */
 export const m3 = {
@@ -13,9 +13,9 @@ export const m3 = {
   onPrimary: '#00391F',
   primaryContainer: '#105233',
   onPrimaryContainer: '#A9F4C3',
-  secondary: '#B4CCBA',
-  secondaryContainer: '#36493C',
-  onSecondaryContainer: '#D0E8D6',
+  secondary: '#C6C6C6',
+  secondaryContainer: '#383838',
+  onSecondaryContainer: '#EDEDED',
   tertiary: '#A3CDDB',
   tertiaryContainer: '#214C58',
   onTertiaryContainer: '#BFE9F8',
@@ -29,26 +29,26 @@ export const m3 = {
   warningContainer: '#3D2F10',
   onWarningContainer: '#FFE0A3',
 
-  surfaceDim: '#0F1311',
-  surface: '#111412',
-  surfaceContainerLowest: '#0B0F0D',
-  surfaceContainerLow: '#191D1A',
-  surfaceContainer: '#1D211E',
-  surfaceContainerHigh: '#272B28',
-  surfaceContainerHighest: '#323633',
-  onSurface: '#E0E4DF',
-  onSurfaceVariant: '#BFC9C0',
-  outline: '#89938B',
-  outlineVariant: '#3F4942',
-  inverseSurface: '#E0E4DF',
-  inverseOnSurface: '#2E322F',
+  surfaceDim: '#111111',
+  surface: '#141414',
+  surfaceContainerLowest: '#0E0E0E',
+  surfaceContainerLow: '#1B1B1B',
+  surfaceContainer: '#202020',
+  surfaceContainerHigh: '#2A2A2A',
+  surfaceContainerHighest: '#353535',
+  onSurface: '#E6E6E6',
+  onSurfaceVariant: '#C2C2C2',
+  outline: '#8E8E8E',
+  outlineVariant: '#424242',
+  inverseSurface: '#E6E6E6',
+  inverseOnSurface: '#303030',
   scrim: 'rgba(0,0,0,0.6)',
-  code: '#0C100E',
+  code: '#0F0F0F',
   /** State layers (onSurface at M3 opacities). */
-  hover: 'rgba(224,228,223,0.06)',
-  pressed: 'rgba(224,228,223,0.10)',
+  hover: 'rgba(230,230,230,0.06)',
+  pressed: 'rgba(230,230,230,0.10)',
   selected: 'rgba(141,215,168,0.12)',
-  disabled: 'rgba(224,228,223,0.12)',
+  disabled: 'rgba(230,230,230,0.12)',
 };
 
 /** Older names used across the app, mapped onto the M3 roles. */

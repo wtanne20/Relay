@@ -96,8 +96,8 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         accessibilityRole="button"
         accessibilityLabel="New chat"
       >
-        <Icon name="plus" size={20} color={m3.onPrimaryContainer} />
-        <Text style={[type.labelLarge, { color: m3.onPrimaryContainer }]}>New chat</Text>
+        <Icon name="plus" size={20} color={m3.primary} />
+        <Text style={type.labelLarge}>New chat</Text>
         <Text style={[type.labelMedium, styles.kbd]}>Ctrl N</Text>
       </Pressable>
 
@@ -108,9 +108,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
 
       <ScrollView style={styles.grow} contentContainerStyle={styles.list}>
         {projects === null ? <ActivityIndicator color={m3.primary} style={{ marginTop: space.lg }} /> : null}
-        {projects?.length === 0 ? (
-          <Text style={[type.bodyMedium, styles.empty]}>Add a project to start.</Text>
-        ) : null}
+        {projects?.length === 0 ? <Text style={[type.bodyMedium, styles.empty]}>Add a project to start.</Text> : null}
         {projects?.map((p) => {
           const expanded = !!open[p.id];
           const list = chats[p.id] ?? [];
@@ -285,11 +283,11 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: radius.lg,
     paddingHorizontal: space.lg,
-    backgroundColor: m3.primaryContainer,
+    backgroundColor: m3.surfaceContainerHigh,
     marginTop: space.md,
   },
-  newChatHover: { backgroundColor: '#17603D' },
-  kbd: { marginLeft: 'auto', color: m3.onPrimaryContainer, opacity: 0.6 },
+  newChatHover: { backgroundColor: m3.surfaceContainerHighest },
+  kbd: { marginLeft: 'auto', color: m3.outline },
   sectionRow: {
     flexDirection: 'row',
     alignItems: 'center',

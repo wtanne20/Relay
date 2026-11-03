@@ -582,10 +582,10 @@ pub fn write_pairing_page(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pair your phone with Relay</title>
 <style>
-body{{margin:0;font-family:system-ui,Segoe UI,sans-serif;background:#111412;color:#e0e4df;display:flex;min-height:100vh;align-items:center;justify-content:center}}
+body{{margin:0;font-family:system-ui,Segoe UI,sans-serif;background:#141414;color:#e6e6e6;display:flex;min-height:100vh;align-items:center;justify-content:center}}
 main{{max-width:520px;padding:32px;text-align:center}}
 .qr{{background:#fff;display:inline-block;padding:12px;border-radius:12px;margin:16px 0}}
-code{{background:#1d211e;padding:2px 6px;border-radius:6px}}
+code{{background:#202020;padding:2px 6px;border-radius:6px}}
 ol{{text-align:left;line-height:1.6}}.warn{{color:#f0c46c}}
 </style></head><body><main>
 <h1>Pair your phone</h1>
@@ -597,7 +597,7 @@ ol{{text-align:left;line-height:1.6}}.warn{{color:#f0c46c}}
 </ol>
 <p>Server address: <code>{url}</code></p>
 {warning}
-<p style="color:#bfc9c0;font-size:13px">This code contains your Relay access token. Don't share it. You can see this code again any time in the Relay app: Settings, Pair your phone.</p>
+<p style="color:#c2c2c2;font-size:13px">This code contains your Relay access token. Don't share it. You can see this code again any time in the Relay app: Settings, Pair your phone.</p>
 </main></body></html>"#
     );
     let path = data_dir.join("pairing.html");
