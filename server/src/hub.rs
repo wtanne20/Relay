@@ -434,6 +434,128 @@ impl Downloads {
         Ok(())
     }
 
+    /// Copies a model's files (`(from, to)` pairs, all parts of a split
+    /// model) to another library. The originals are left in place; the
+    /// caller removes them once the copy is in use. Shows in the downloads
+    /// list as "Moving".
+    pub fn move_files(
+        self: &Arc<Self>,
+        name: &str,
+        files: Vec<(PathBuf, PathBuf)>,
+    ) -> Result<Download> {
+        let Some((_, first_dest)) = files.first() else {
+            bail!("nothing to move");
+        };
+        for (_, to) in &files {
+            if to.exists() {
+                bail!("{} is already in that library", to.display());
+            }
+        }
+        let total = files
+            .iter()
+            .map(|(f, _)| f.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
+        {
+            let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+            if l.iter().any(|d| {
+                d.state == DownloadState::Downloading
+                    && files.iter().any(|(f, t)| {
+                        d.dest == t.to_string_lossy() || d.dest == f.to_string_lossy()
+                    })
+            }) {
+                bail!("{name} is already being moved");
+            }
+        }
+        let d = Download {
+            id: uuid::Uuid::new_v4().to_string(),
+            repo: "move".into(),
+            file: name.to_string(),
+            dest: first_dest.to_string_lossy().into_owned(),
+            total_bytes: total,
+            done_bytes: 0,
+            state: DownloadState::Downloading,
+            error: None,
+            cancel: CancellationToken::new(),
+        };
+        self.list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(0, d.clone());
+        let this = self.clone();
+        let (id, cancel) = (d.id.clone(), d.cancel.clone());
+        tokio::spawn(async move {
+            let r = tokio::select! {
+                r = this.copy_all(&id, &files) => r,
+                _ = cancel.cancelled() => Err(anyhow!("cancelled")),
+            };
+            match r {
+                Ok(()) => this.update(&id, |d| d.state = DownloadState::Done),
+                Err(e) => {
+                    // Remove anything half-copied; the originals are untouched.
+                    for (_, to) in &files {
+                        let _ = tokio::fs::remove_file(part_path(to)).await;
+                        let _ = tokio::fs::remove_file(to).await;
+                    }
+                    let cancelled = cancel.is_cancelled();
+                    if !cancelled {
+                        tracing::warn!("moving a model failed: {e:#}");
+                    }
+                    this.update(&id, |d| {
+                        if cancelled {
+                            d.state = DownloadState::Cancelled;
+                        } else {
+                            d.state = DownloadState::Failed;
+                            d.error = Some(format!("{e:#}"));
+                        }
+                    });
+                }
+            }
+        });
+        Ok(d)
+    }
+
+    async fn copy_all(&self, id: &str, files: &[(PathBuf, PathBuf)]) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        let mut done: u64 = 0;
+        for (from_path, to_path) in files {
+            if let Some(dir) = to_path.parent() {
+                tokio::fs::create_dir_all(dir).await?;
+            }
+            let tmp = part_path(to_path);
+            let mut from = tokio::fs::File::open(from_path).await?;
+            let mut to = tokio::fs::File::create(&tmp).await?;
+            let mut buf = vec![0u8; 8 * 1024 * 1024];
+            loop {
+                let n = from.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                to.write_all(&buf[..n]).await?;
+                done += n as u64;
+                self.update(id, |d| d.done_bytes = done);
+            }
+            to.flush().await?;
+            drop(to);
+            // Check the copy is complete before it replaces anything.
+            let want = from_path.metadata()?.len();
+            let got = tokio::fs::metadata(&tmp).await?.len();
+            if want != got {
+                bail!(
+                    "the copy of {} is incomplete ({got} of {want} bytes)",
+                    from_path.display()
+                );
+            }
+            tokio::fs::rename(&tmp, to_path).await?;
+        }
+        Ok(())
+    }
+
+    /// State of one entry, if it's still listed.
+    pub fn state(&self, id: &str) -> Option<DownloadState> {
+        let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        l.iter().find(|d| d.id == id).map(|d| d.state)
+    }
+
     /// The finished copy of `source`, if one was imported this session.
     pub fn imported_copy_done(&self, id: &str) -> Option<String> {
         let l = self.list.lock().unwrap_or_else(|e| e.into_inner());

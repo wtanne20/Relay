@@ -1035,3 +1035,107 @@ async fn plain_chats_titles_and_models() {
     assert_eq!(st, 404);
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn model_libraries_add_move_and_remove() {
+    let h = Harness::start().await;
+    let builtin = h.dir.join("data/models");
+    let model = builtin.join("pub/repo/tiny.gguf");
+    std::fs::create_dir_all(model.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&model, vec![7u8; 4096]).expect("write model");
+
+    let v = h.get("/libraries").await;
+    let libs = v["libraries"].as_array().expect("list").clone();
+    assert_eq!(libs.len(), 1, "{v}");
+    assert_eq!(libs[0]["builtin"], true);
+    assert_eq!(libs[0]["default"], true);
+    assert_eq!(libs[0]["models"].as_array().expect("models").len(), 1);
+    assert_eq!(libs[0]["size_bytes"], 4096);
+    assert!(libs[0]["disk"]["total_bytes"].as_u64().expect("total") > 0);
+
+    // Refused: relative paths, other apps' folders and nested libraries.
+    let (st, _) = h.post("/libraries", json!({"path": "rel/dir"})).await;
+    assert_eq!(st, 400);
+    let lm = h.dir.join(".lmstudio/models");
+    let (st, _) = h
+        .post("/libraries", json!({"path": lm.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 400);
+    assert!(!lm.exists(), "another app's folder is never created");
+    let nested = builtin.join("inner");
+    let (st, _) = h
+        .post("/libraries", json!({"path": nested.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 400);
+
+    let second = h.dir.join("Second Disk/Relay/models");
+    let (st, v) = h
+        .post(
+            "/libraries",
+            json!({"path": second.to_string_lossy(), "make_default": true}),
+        )
+        .await;
+    assert_eq!(st, 201, "{v}");
+    assert!(second.is_dir());
+    let (st, _) = h
+        .post("/libraries", json!({"path": second.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 409, "same library twice");
+    let second_s = dunce::canonicalize(&second)
+        .expect("canon")
+        .to_string_lossy()
+        .into_owned();
+    let libs = h.get("/libraries").await["libraries"].clone();
+    let lib2 = libs
+        .as_array()
+        .expect("list")
+        .iter()
+        .find(|l| l["path"] == json!(second_s))
+        .expect("second library listed")
+        .clone();
+    assert_eq!(lib2["default"], true);
+    assert_eq!(lib2["builtin"], false);
+
+    // Moving copies, then removes the original.
+    let (st, v) = h
+        .post(
+            "/models/move",
+            json!({"path": model.to_string_lossy(), "library": second_s}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    let moved = second.join("pub/repo/tiny.gguf");
+    for _ in 0..100 {
+        if moved.is_file() && !model.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(moved.is_file(), "model copied");
+    assert_eq!(std::fs::metadata(&moved).expect("meta").len(), 4096);
+    assert!(!model.exists(), "original removed after the move");
+    assert!(!builtin.join("pub").exists(), "empty folders tidied");
+    let (st, _) = h
+        .post(
+            "/models/move",
+            json!({"path": moved.to_string_lossy(), "library": second_s}),
+        )
+        .await;
+    assert_eq!(st, 400, "already there");
+
+    // Removing a library forgets it but keeps its files.
+    let (st, _) = h
+        .post(
+            "/libraries/remove",
+            json!({"path": builtin.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(st, 400, "built-in can't be removed");
+    let (st, v) = h.post("/libraries/remove", json!({"path": second_s})).await;
+    assert_eq!(st, 200, "{v}");
+    assert!(moved.is_file(), "files stay on disk");
+    let libs = v["libraries"].as_array().expect("list").clone();
+    assert_eq!(libs.len(), 1);
+    assert_eq!(libs[0]["default"], true, "built-in is the default again");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

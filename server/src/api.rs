@@ -1,6 +1,6 @@
 //! REST routes, authentication middleware and the shared application state.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{FromRequest, Path as UrlPath, Query, Request, State, WebSocketUpgrade};
@@ -166,6 +166,10 @@ pub fn router(state: AppState) -> Router {
         .route("/models", get(list_models))
         .route("/models/tags", axum::routing::put(set_model_tags))
         .route("/models/import", post(import_model))
+        .route("/models/move", post(move_model))
+        .route("/libraries", get(list_libraries).post(add_library))
+        .route("/libraries/default", post(set_default_library))
+        .route("/libraries/remove", post(remove_library))
         .route("/hub/search", get(hub_search))
         .route("/hub/files", get(hub_files))
         .route("/hub/downloads", get(hub_downloads).post(hub_download))
@@ -691,6 +695,9 @@ async fn hub_downloads(State(s): State<AppState>) -> Json<Value> {
 struct HubDownload {
     repo: String,
     file: String,
+    /// Library to save into; the default library when absent.
+    #[serde(default)]
+    library: Option<String>,
 }
 
 async fn hub_download(
@@ -710,7 +717,10 @@ async fn hub_download(
         .into_iter()
         .find(|f| f.file == body.file)
         .ok_or(ApiError::NotFound("model file"))?;
-    let models_dir = relay_models_dir(&s);
+    let models_dir = match body.library.as_deref().map(str::trim) {
+        Some(l) if !l.is_empty() => find_library(&s, l)?.0,
+        _ => relay_models_dir(&s),
+    };
     let d = s
         .downloads
         .start(&models_dir, &body.repo, model)
@@ -722,6 +732,313 @@ async fn hub_download(
 /// folder (in its data folder unless moved in Settings), never another app's.
 fn relay_models_dir(s: &AppState) -> std::path::PathBuf {
     s.cfg.read(|l| l.relay_models_dir())
+}
+
+// ---------- model libraries ----------
+
+/// (built-in folder, default folder for downloads, extra libraries)
+fn library_paths(s: &AppState) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    s.cfg.read(|l| {
+        (
+            l.data_dir.join("models"),
+            l.relay_models_dir(),
+            l.config
+                .llama
+                .models_dirs
+                .iter()
+                .map(|p| l.resolve(p))
+                .collect(),
+        )
+    })
+}
+
+async fn libraries_now(s: &AppState) -> ApiResult<Vec<crate::libraries::Library>> {
+    let (builtin, default, extra) = library_paths(s);
+    Ok(
+        tokio::task::spawn_blocking(move || crate::libraries::list(&builtin, &default, &extra))
+            .await
+            .map_err(|e| anyhow::anyhow!("listing libraries failed: {e}"))?,
+    )
+}
+
+async fn list_libraries(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let libraries = libraries_now(&s).await?;
+    let current = s.cfg.read(|l| l.config.llama.model_path.clone());
+    Ok(Json(
+        json!({ "libraries": libraries, "current_model": current }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct LibraryPath {
+    path: String,
+    /// Also make it the library new downloads go to.
+    #[serde(default)]
+    make_default: bool,
+}
+
+/// Adds a folder (created if needed) as a model library.
+async fn add_library(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<LibraryPath>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let wanted = body.path.trim().trim_matches('"');
+    if crate::libraries::is_other_apps_folder(Path::new(wanted)) {
+        return Err(ApiError::BadRequest(
+            "that folder belongs to another app. Pick a folder of Relay's own, like W:\\Relay\\models".into(),
+        ));
+    }
+    let path = prepare_folder(wanted).await?;
+    let p = PathBuf::from(&path);
+    let (builtin, default, extra) = library_paths(&s);
+    for lib in std::iter::once(&builtin)
+        .chain(Some(&default))
+        .chain(extra.iter())
+    {
+        if crate::libraries::same_path(lib, &p) {
+            return Err(ApiError::Conflict(
+                "that folder is already a library".into(),
+            ));
+        }
+        if crate::libraries::contains(lib, &p) || crate::libraries::contains(&p, lib) {
+            return Err(ApiError::BadRequest(format!(
+                "libraries can't be inside each other ({} is already a library)",
+                lib.display()
+            )));
+        }
+    }
+    let make_default = body.make_default;
+    let stored = path.clone();
+    s.cfg.update(move |c| {
+        c.llama.models_dirs.push(stored.clone());
+        if make_default {
+            c.models_folder = stored;
+        }
+    })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "libraries": libraries_now(&s).await? })),
+    ))
+}
+
+#[derive(Deserialize)]
+struct OnlyPath {
+    path: String,
+}
+
+fn find_library(s: &AppState, path: &str) -> ApiResult<(PathBuf, bool)> {
+    let (builtin, default, extra) = library_paths(s);
+    let p = Path::new(path.trim().trim_matches('"'));
+    std::iter::once(builtin.clone())
+        .chain(Some(default))
+        .chain(extra)
+        .find(|lib| crate::libraries::same_path(lib, p))
+        .map(|lib| {
+            let is_builtin = crate::libraries::same_path(&lib, &builtin);
+            (lib, is_builtin)
+        })
+        .ok_or(ApiError::NotFound("library"))
+}
+
+/// New downloads and copies go to this library.
+async fn set_default_library(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<OnlyPath>,
+) -> ApiResult<Json<Value>> {
+    let (lib, builtin) = find_library(&s, &body.path)?;
+    let value = if builtin {
+        String::new()
+    } else {
+        lib.to_string_lossy().into_owned()
+    };
+    s.cfg.update(move |c| {
+        // Keep the old default listed as a library.
+        let old = c.models_folder.trim().to_string();
+        if !old.is_empty() && !c.llama.models_dirs.iter().any(|d| d.trim() == old) {
+            c.llama.models_dirs.push(old);
+        }
+        c.models_folder = value;
+    })?;
+    Ok(Json(json!({ "libraries": libraries_now(&s).await? })))
+}
+
+/// Forgets a library. Its folder and the models in it stay on the disk.
+async fn remove_library(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<OnlyPath>,
+) -> ApiResult<Json<Value>> {
+    let (lib, builtin) = find_library(&s, &body.path)?;
+    if builtin {
+        return Err(ApiError::BadRequest(
+            "Relay's built-in library can't be removed".into(),
+        ));
+    }
+    let current = s.cfg.read(|l| l.config.llama.model_path.clone());
+    if !current.is_empty() && crate::libraries::contains(&lib, Path::new(&current)) {
+        return Err(ApiError::Conflict(
+            "the model in use is in this library. Choose another model or move it first".into(),
+        ));
+    }
+    let busy = s.downloads.list().into_iter().any(|d| {
+        d.state == crate::hub::DownloadState::Downloading
+            && crate::libraries::contains(&lib, Path::new(&d.dest))
+    });
+    if busy {
+        return Err(ApiError::Conflict(
+            "wait for the download or move into this library to finish".into(),
+        ));
+    }
+    s.cfg.update(move |c| {
+        c.llama
+            .models_dirs
+            .retain(|d| !crate::libraries::same_path(Path::new(d.trim()), &lib));
+        if !c.models_folder.trim().is_empty()
+            && crate::libraries::same_path(Path::new(c.models_folder.trim()), &lib)
+        {
+            c.models_folder = String::new();
+        }
+    })?;
+    Ok(Json(json!({ "libraries": libraries_now(&s).await? })))
+}
+
+#[derive(Deserialize)]
+struct MoveModel {
+    /// The model file (the first part of a split model).
+    path: String,
+    /// The library to move it to.
+    library: String,
+}
+
+/// Moves a model to another library: copies every file, checks the copies,
+/// points chats (and the loaded model) at the new place, then removes the
+/// originals. Only models inside Relay's libraries can be moved.
+async fn move_model(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<MoveModel>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let src = PathBuf::from(body.path.trim().trim_matches('"'));
+    let is_gguf = src
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !is_gguf || !src.is_file() {
+        return Err(ApiError::BadRequest(format!(
+            "not a model file: {}",
+            src.display()
+        )));
+    }
+    let (target, _) = find_library(&s, &body.library)?;
+    let libs = libraries_now(&s).await?;
+    let Some(from_lib) = libs
+        .iter()
+        .map(|l| PathBuf::from(&l.path))
+        .find(|l| crate::libraries::contains(l, &src))
+    else {
+        return Err(ApiError::BadRequest(
+            "only models in Relay's libraries can be moved".into(),
+        ));
+    };
+    if crate::libraries::same_path(&from_lib, &target) {
+        return Err(ApiError::BadRequest(
+            "the model is already in that library".into(),
+        ));
+    }
+    let parts = crate::libraries::model_parts(&src);
+    let mut files = Vec::new();
+    for part in &parts {
+        let canon_lib = dunce::canonicalize(&from_lib).unwrap_or(from_lib.clone());
+        let canon_part = dunce::canonicalize(part).unwrap_or(part.clone());
+        let rel = canon_part
+            .strip_prefix(&canon_lib)
+            .map_err(|_| ApiError::BadRequest("the model is outside its library".into()))?
+            .to_path_buf();
+        files.push((part.clone(), target.join(rel)));
+    }
+    let size = crate::libraries::model_size(&src);
+    let room = {
+        let t = target.clone();
+        tokio::task::spawn_blocking(move || crate::libraries::disk(&t))
+            .await
+            .ok()
+            .flatten()
+    };
+    if let Some(d) = room
+        && d.free_bytes < size + 512 * 1024 * 1024
+    {
+        return Err(ApiError::BadRequest(format!(
+            "not enough space on {}: the model needs {:.1} GB and {:.1} GB is free",
+            d.root,
+            size as f64 / 1e9,
+            d.free_bytes as f64 / 1e9
+        )));
+    }
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let d = s
+        .downloads
+        .move_files(&name, files.clone())
+        .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+
+    let id = d.id.clone();
+    let st = s.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match st.downloads.state(&id) {
+                Some(crate::hub::DownloadState::Done) => break,
+                Some(crate::hub::DownloadState::Downloading) => continue,
+                _ => return,
+            }
+        }
+        let old = src.to_string_lossy().into_owned();
+        let new = files[0].1.to_string_lossy().into_owned();
+        let (o, n) = (old.clone(), new.clone());
+        if let Err(e) = st.db.call(move |c| db::replace_model_path(c, &o, &n)).await {
+            tracing::warn!("could not point chats at the moved model: {e:#}");
+        }
+        let in_use = |st: &AppState| {
+            let cur = st.cfg.get().llama.model_path;
+            !cur.is_empty() && crate::libraries::same_path(Path::new(&cur), Path::new(&old))
+        };
+        if in_use(&st) {
+            while st.agent.any_running() {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            let path = new.clone();
+            match st.cfg.update(move |c| c.llama.model_path = path) {
+                Ok(_) => st.model.switch_to(&new).await,
+                Err(e) => {
+                    tracing::warn!("could not switch to the moved model: {e:#}");
+                    return;
+                }
+            }
+        }
+        // The old files may stay locked for a moment after llama-server exits.
+        for (from, _) in &files {
+            for attempt in 0..20 {
+                match tokio::fs::remove_file(from).await {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(e) if attempt == 19 => {
+                        tracing::warn!("could not remove {} after moving it: {e}", from.display())
+                    }
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+                }
+            }
+        }
+        // Tidy up the now-empty <publisher>\<model> folders.
+        if let Some(mut dir) = src.parent().map(Path::to_path_buf) {
+            while crate::libraries::contains(&from_lib, &dir) && std::fs::remove_dir(&dir).is_ok() {
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => break,
+                }
+            }
+        }
+        tracing::info!("moved {old} to {new}");
+    });
+    Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
 }
 
 #[derive(Deserialize)]
@@ -906,7 +1223,7 @@ async fn prepare_folder(path: &str) -> ApiResult<String> {
     let trimmed = path.trim().trim_matches('"').to_string();
     if !Path::new(&trimmed).is_absolute() {
         return Err(ApiError::BadRequest(format!(
-            "projects folder must be a full path (for example C:\\Users\\me\\Projects): {trimmed}"
+            "the folder must be a full path (for example W:\\Relay\\models): {trimmed}"
         )));
     }
     tokio::fs::create_dir_all(&trimmed)

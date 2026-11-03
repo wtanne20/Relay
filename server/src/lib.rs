@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod hub;
+pub mod libraries;
 pub mod migrate;
 pub mod mockup;
 pub mod model_manager;

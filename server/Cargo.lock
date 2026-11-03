@@ -1156,6 +1156,7 @@ dependencies = [
  "clap",
  "dunce",
  "futures-core",
+ "libc",
  "qrcode",
  "rand 0.10.3",
  "reqwest",
