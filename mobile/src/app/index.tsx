@@ -252,6 +252,25 @@ export default function Home() {
           </View>
 
           <View style={styles.composer}>
+            <View style={styles.topRow}>
+              <Pressable
+                onPress={() => setPicking((v) => !v)}
+                style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                  styles.target,
+                  picking && styles.targetOn,
+                  (hovered || pressed) && !picking && styles.hover,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`${project ? `Project: ${project.name}` : 'Plain chat'}. Change`}
+                accessibilityState={{ expanded: picking }}
+              >
+                <Icon
+                  name={project ? 'folder-outline' : 'chat-outline'}
+                  size={20}
+                  color={picking ? m3.onSecondaryContainer : m3.onSurfaceVariant}
+                />
+              </Pressable>
+            </View>
             <TextInput
               ref={input}
               style={[styles.input, !wide && styles.inputPhone]}
@@ -266,20 +285,9 @@ export default function Home() {
               accessibilityLabel="Prompt"
             />
             <View style={styles.row}>
-              <Pressable
-                onPress={() => setPicking((v) => !v)}
-                style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.chip, hovered && styles.hover]}
-                accessibilityRole="button"
-                accessibilityLabel={`${project ? `Project: ${project.name}` : 'Plain chat'}. Change`}
-              >
-                <Icon name={project ? 'folder-outline' : 'chat-outline'} size={18} color={m3.onSurfaceVariant} />
-                <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]} numberOfLines={1}>
-                  {project?.name ?? 'Chat'}
-                </Text>
-                <Icon name={picking ? 'chevron-up' : 'chevron-down'} size={18} color={m3.onSurfaceVariant} />
-              </Pressable>
-              <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
-              <View style={styles.grow} />
+              <View style={styles.modelSlot}>
+                <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
+              </View>
               <Pressable
                 onPress={send}
                 disabled={!canSend}
@@ -551,7 +559,7 @@ const styles = StyleSheet.create({
     borderColor: m3.outlineVariant,
   },
   input: {
-    minHeight: 88,
+    minHeight: 150,
     maxHeight: 320,
     color: m3.onSurface,
     fontSize: 17,
@@ -559,28 +567,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.sm,
   },
-  inputPhone: { minHeight: 56, fontSize: 16, lineHeight: 22 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.sm },
-  chip: {
-    flexDirection: 'row',
+  inputPhone: { minHeight: 120, fontSize: 16, lineHeight: 22 },
+  row: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm, marginTop: space.sm },
+  topRow: { flexDirection: 'row', alignItems: 'center' },
+  target: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
-    gap: 6,
-    height: 36,
-    maxWidth: 300,
-    paddingHorizontal: space.md,
-    borderRadius: radius.sm,
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: m3.outlineVariant,
   },
+  targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
+  modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row' },
   hover: { backgroundColor: m3.hover },
   send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendOn: { backgroundColor: m3.primary },
   sendOff: { backgroundColor: m3.surfaceContainerHighest },
   menu: {
     position: 'absolute',
-    top: '100%',
+    top: space.md + 44,
     left: space.md,
-    marginTop: space.xs,
     width: 340,
     maxWidth: '92%',
     backgroundColor: m3.surfaceContainer,
