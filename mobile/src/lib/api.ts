@@ -232,6 +232,19 @@ export class RelayClient {
   async recent(limit = 30): Promise<RecentSession[]> {
     return (await this.request<{ sessions: RecentSession[] }>('GET', `/recent?limit=${limit}`)).sessions;
   }
+  /** Hides a chat from the lists (true) or brings it back (false). */
+  async archiveSession(id: string, archived: boolean): Promise<Session> {
+    return (await this.request<{ session: Session }>('PATCH', `/sessions/${encodeURIComponent(id)}`, { archived }))
+      .session;
+  }
+  async archiveProject(id: string, archived: boolean): Promise<Project> {
+    return (await this.request<{ project: Project }>('PATCH', `/projects/${encodeURIComponent(id)}`, { archived }))
+      .project;
+  }
+  /** Archived projects and chats. */
+  async archived(): Promise<{ projects: Project[]; sessions: RecentSession[] }> {
+    return this.request('GET', '/archived');
+  }
   async deleteSession(id: string): Promise<void> {
     await this.request('DELETE', `/sessions/${encodeURIComponent(id)}`);
   }

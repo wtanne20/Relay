@@ -177,6 +177,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/skills", get(list_skills))
         .route("/recent", get(recent))
+        .route("/archived", get(archived))
         .route("/mockups", post(create_mockup))
         .route("/mockups/{id}", get(get_mockup))
         .route("/projects", get(list_projects).post(create_project))
@@ -950,6 +951,8 @@ struct UpdateProject {
     instructions: Option<String>,
     /// A model file for the project's chats; "" goes back to the loaded model.
     model: Option<String>,
+    /// Hide the project (and its chats) from the lists, or restore it.
+    archived: Option<bool>,
 }
 
 /// `Some("")` clears the choice; otherwise it must be a .gguf file on the PC.
@@ -1066,11 +1069,14 @@ async fn update_project(
         Some("") => return Err(ApiError::BadRequest("name must not be empty".into())),
         other => other.map(str::to_string),
     };
-    if id == db::CHATS_PROJECT_ID && (name.is_some() || body.path.is_some()) {
+    if id == db::CHATS_PROJECT_ID
+        && (name.is_some() || body.path.is_some() || body.archived.is_some())
+    {
         return Err(ApiError::BadRequest(
             "plain chats have no name or folder to change".into(),
         ));
     }
+    let archived = body.archived;
     let path = body.path.as_deref().map(validate_folder).transpose()?;
     let model = validate_model(body.model)?;
     let instructions = body.instructions;
@@ -1081,6 +1087,9 @@ async fn update_project(
     }
     let project =
         s.db.call(move |c| {
+            if let Some(a) = archived {
+                db::set_project_archived(c, &id, a)?;
+            }
             db::update_project(
                 c,
                 &id,
@@ -1134,6 +1143,8 @@ struct PatchSession {
     title: Option<String>,
     /// A model file for this chat; "" follows the project again.
     model: Option<String>,
+    /// Hide the chat from the lists, or restore it.
+    archived: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1146,6 +1157,14 @@ async fn recent(State(s): State<AppState>, Query(q): Query<RecentQuery>) -> ApiR
     let limit = q.limit.unwrap_or(30).clamp(1, 200);
     let sessions = s.db.call(move |c| db::recent_sessions(c, limit)).await?;
     Ok(Json(json!({ "sessions": sessions })))
+}
+
+/// Archived projects and chats, to restore or delete.
+async fn archived(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let (projects, sessions) =
+        s.db.call(|c| Ok((db::archived_projects(c)?, db::archived_sessions(c)?)))
+            .await?;
+    Ok(Json(json!({ "projects": projects, "sessions": sessions })))
 }
 
 async fn list_sessions(
@@ -1228,6 +1247,9 @@ async fn patch_session(
             if let Some(m) = &model {
                 db::set_session_model(c, &id, m.as_deref())?;
             }
+            if let Some(a) = body.archived {
+                db::set_session_archived(c, &id, a)?;
+            }
             db::get_session(c, &id)
         })
         .await?
@@ -1288,6 +1310,10 @@ async fn send_prompt(
     JsonBody(body): JsonBody<Prompt>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let message = s.agent.start(&id, body.content).await?;
+    // Carrying on with an archived chat brings it back to the lists.
+    let sid = id.clone();
+    s.db.call(move |c| db::set_session_archived(c, &sid, false))
+        .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({ "message": message, "status": "running" })),

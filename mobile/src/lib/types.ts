@@ -49,6 +49,8 @@ export interface Project {
   created_at: string;
   /** Model file this project's chats use; null follows whatever is loaded. */
   model?: string | null;
+  /** Hidden from the lists until restored. */
+  archived?: boolean;
 }
 
 /** The built-in space for plain chats (no folder, no tools). */
@@ -68,6 +70,8 @@ export interface Session {
   model?: string | null;
   /** True while Relay may still name the chat. */
   auto_title?: boolean;
+  /** Hidden from the lists until restored. */
+  archived?: boolean;
 }
 
 export interface RecentSession extends Session {

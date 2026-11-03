@@ -451,6 +451,7 @@ async fn system_prompt_includes_agents_md_and_skills() {
         path: dir.join("proj").to_string_lossy().into_owned(),
         instructions: "Prefer small commits.".into(),
         model: None,
+        archived: false,
         created_at: String::new(),
     };
     let skills = relay::skills::discover(&[dir.join("skills")]);
@@ -874,6 +875,50 @@ async fn plain_chats_titles_and_models() {
         .await;
     assert_eq!(st, 201);
     assert_eq!(v["session"]["auto_title"], false);
+
+    // Archiving hides a chat from the lists until it is restored.
+    let mine = v["session"]["id"].as_str().expect("id").to_string();
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{mine}"),
+            Some(json!({"archived": true})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["session"]["archived"], true);
+    let listed = |v: &Value, key: &str, id: &str| {
+        v[key]
+            .as_array()
+            .expect("list")
+            .iter()
+            .any(|x| x["id"] == id)
+    };
+    assert!(!listed(&h.get("/recent").await, "sessions", &mine));
+    assert!(!listed(
+        &h.get("/projects/chats/sessions").await,
+        "sessions",
+        &mine
+    ));
+    assert!(listed(&h.get("/archived").await, "sessions", &mine));
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{mine}"),
+            Some(json!({"archived": false})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    assert!(listed(&h.get("/recent").await, "sessions", &mine));
+    assert!(!listed(&h.get("/archived").await, "sessions", &mine));
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/projects/chats",
+            Some(json!({"archived": true})),
+        )
+        .await;
+    assert_eq!(st, 400, "the plain chats space can't be archived");
 
     // Recent lists chats from every project with the project's name.
     let recent = h.get("/recent?limit=5").await;

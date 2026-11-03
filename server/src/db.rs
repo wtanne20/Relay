@@ -30,6 +30,9 @@ pub struct Project {
     /// Model file this project's chats use unless a chat picks its own.
     #[serde(default)]
     pub model: Option<String>,
+    /// Hidden from the lists until restored.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Project {
@@ -53,6 +56,9 @@ pub struct Session {
     /// True while the title is the placeholder, so Relay may write one.
     #[serde(default)]
     pub auto_title: bool,
+    /// Hidden from the lists until restored.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// A session with its project's name, for the home screen.
@@ -207,6 +213,13 @@ fn upgrade(conn: &Connection) -> Result<()> {
             "ALTER TABLE sessions ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 0",
         )?;
     }
+    for table in ["projects", "sessions"] {
+        if !has_col(table, "archived")? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+            ))?;
+        }
+    }
     conn.execute(
         "INSERT OR IGNORE INTO projects (id, name, path, created_at) VALUES (?1, 'Chats', '', ?2)",
         params![CHATS_PROJECT_ID, now()],
@@ -216,7 +229,7 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 // ---------- projects ----------
 
-const PROJECT_COLS: &str = "id, name, path, created_at, instructions, model";
+const PROJECT_COLS: &str = "id, name, path, created_at, instructions, model, archived";
 
 fn project_row(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -226,15 +239,25 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         created_at: r.get(3)?,
         instructions: r.get(4)?,
         model: r.get(5)?,
+        archived: r.get::<_, i64>(6)? != 0,
     })
 }
 
+/// Projects in the lists; archived ones only come back from `archived_projects`.
 pub fn list_projects(c: &Connection) -> Result<Vec<Project>> {
+    projects_where(c, false)
+}
+
+pub fn archived_projects(c: &Connection) -> Result<Vec<Project>> {
+    projects_where(c, true)
+}
+
+fn projects_where(c: &Connection, archived: bool) -> Result<Vec<Project>> {
     let mut st = c.prepare(&format!(
-        "SELECT {PROJECT_COLS} FROM projects WHERE id != ?1 ORDER BY name COLLATE NOCASE"
+        "SELECT {PROJECT_COLS} FROM projects WHERE id != ?1 AND archived = ?2 ORDER BY name COLLATE NOCASE"
     ))?;
     let rows = st
-        .query_map([CHATS_PROJECT_ID], project_row)?
+        .query_map(params![CHATS_PROJECT_ID, archived as i64], project_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -267,6 +290,7 @@ pub fn create_project(c: &Connection, name: &str, path: &str) -> Result<Project>
         instructions: String::new(),
         created_at: now(),
         model: None,
+        archived: false,
     };
     c.execute(
         "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -310,6 +334,13 @@ pub fn update_project(
     get_project(c, id)
 }
 
+pub fn set_project_archived(c: &Connection, id: &str, archived: bool) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE projects SET archived = ?1 WHERE id = ?2 AND id != ?3",
+        params![archived as i64, id, CHATS_PROJECT_ID],
+    )? > 0)
+}
+
 /// Removes the project (and its sessions/messages) from Relay's database.
 /// Never touches the folder on disk.
 pub fn delete_project(c: &Connection, id: &str) -> Result<bool> {
@@ -319,7 +350,7 @@ pub fn delete_project(c: &Connection, id: &str) -> Result<bool> {
 // ---------- sessions ----------
 
 const SESSION_COLS: &str =
-    "id, project_id, title, status, error, created_at, updated_at, model, auto_title";
+    "id, project_id, title, status, error, created_at, updated_at, model, auto_title, archived";
 
 fn session_row(r: &Row) -> rusqlite::Result<Session> {
     Ok(Session {
@@ -332,24 +363,35 @@ fn session_row(r: &Row) -> rusqlite::Result<Session> {
         updated_at: r.get(6)?,
         model: r.get(7)?,
         auto_title: r.get::<_, i64>(8)? != 0,
+        archived: r.get::<_, i64>(9)? != 0,
     })
 }
 
-/// The most recently active chats across all projects and plain chats.
+/// The most recently active chats across all projects and plain chats
+/// (leaving out archived chats and the chats of archived projects).
 pub fn recent_sessions(c: &Connection, limit: usize) -> Result<Vec<RecentSession>> {
+    sessions_with_project(c, "s.archived = 0 AND p.archived = 0", limit)
+}
+
+/// Chats archived one by one (not those inside an archived project).
+pub fn archived_sessions(c: &Connection) -> Result<Vec<RecentSession>> {
+    sessions_with_project(c, "s.archived = 1 AND p.archived = 0", 1000)
+}
+
+fn sessions_with_project(c: &Connection, filter: &str, limit: usize) -> Result<Vec<RecentSession>> {
     let cols = SESSION_COLS
         .split(", ")
         .map(|col| format!("s.{col}"))
         .collect::<Vec<_>>()
         .join(", ");
     let mut st = c.prepare(&format!(
-        "SELECT {cols}, p.name FROM sessions s JOIN projects p ON p.id = s.project_id ORDER BY s.updated_at DESC LIMIT ?1"
+        "SELECT {cols}, p.name FROM sessions s JOIN projects p ON p.id = s.project_id WHERE {filter} ORDER BY s.updated_at DESC LIMIT ?1"
     ))?;
     let rows = st
         .query_map([limit as i64], |r| {
             Ok(RecentSession {
                 session: session_row(r)?,
-                project_name: r.get(9)?,
+                project_name: r.get(10)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -358,7 +400,7 @@ pub fn recent_sessions(c: &Connection, limit: usize) -> Result<Vec<RecentSession
 
 pub fn list_sessions(c: &Connection, project_id: &str) -> Result<Vec<Session>> {
     let mut st = c.prepare(&format!(
-        "SELECT {SESSION_COLS} FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC"
+        "SELECT {SESSION_COLS} FROM sessions WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC"
     ))?;
     let rows = st
         .query_map([project_id], session_row)?
@@ -400,6 +442,7 @@ pub fn create_session(
         updated_at: t,
         model: None,
         auto_title,
+        archived: false,
     };
     c.execute(
         "INSERT INTO sessions (id, project_id, title, status, created_at, updated_at, auto_title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -458,6 +501,13 @@ pub fn set_session_status(
         params![status, error, now(), id],
     )?;
     Ok(())
+}
+
+pub fn set_session_archived(c: &Connection, id: &str, archived: bool) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE sessions SET archived = ?1 WHERE id = ?2",
+        params![archived as i64, id],
+    )? > 0)
 }
 
 pub fn delete_session(c: &Connection, id: &str) -> Result<bool> {

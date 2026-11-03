@@ -74,6 +74,9 @@ export default function Home() {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  /** Chats ("c:id") and projects ("p:id") picked with a long press. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [acting, setActing] = useState(false);
   const input = useRef<React.ComponentRef<typeof TextInput>>(null);
 
   const load = useCallback(async () => {
@@ -163,6 +166,77 @@ export default function Home() {
     input.current?.focus();
   };
 
+  const selecting = selected.size > 0;
+  const toggle = (key: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const picked = () => {
+    const ids = [...selected];
+    return {
+      chats: ids.filter((k) => k.startsWith('c:')).map((k) => k.slice(2)),
+      projects: ids.filter((k) => k.startsWith('p:')).map((k) => k.slice(2)),
+    };
+  };
+  const selectionLabel = () => {
+    const { chats: c, projects: p } = picked();
+    const parts = [];
+    if (c.length) parts.push(`${c.length} chat${c.length === 1 ? '' : 's'}`);
+    if (p.length) parts.push(`${p.length} project${p.length === 1 ? '' : 's'}`);
+    return parts.join(' and ');
+  };
+  /** Runs `act` on every selected chat and project, then reports any that failed. */
+  const bulk = async (
+    verb: string,
+    onChat: (id: string) => Promise<unknown>,
+    onProject: (id: string) => Promise<unknown>,
+  ) => {
+    const { chats: c, projects: p } = picked();
+    setActing(true);
+    const results = await Promise.allSettled([...c.map(onChat), ...p.map(onProject)]);
+    setActing(false);
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    setSelected(new Set());
+    if (p.some((id) => id === target)) choose(CHATS_ID);
+    emit('chats');
+    emit('projects');
+    load();
+    if (failed.length) {
+      alert(`Could not ${verb} ${failed.length} of them`, describeError(failed[0].reason));
+    }
+  };
+  const archiveSelected = () =>
+    bulk(
+      'archive',
+      (id) => client.archiveSession(id, true),
+      (id) => client.archiveProject(id, true),
+    );
+  const deleteSelected = () => {
+    const { projects: p } = picked();
+    alert(
+      `Delete ${selectionLabel()}?`,
+      p.length
+        ? 'Chats are deleted for good. Projects are removed from Relay with all their chats, but their folders and files on your PC are kept.'
+        : 'These chats are deleted for good.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            bulk(
+              'delete',
+              (id) => client.deleteSession(id),
+              (id) => client.deleteProject(id),
+            ),
+        },
+      ],
+    );
+  };
+
   const confirmDelete = (p: Project) => {
     alert(
       `Remove “${p.name}”?`,
@@ -229,7 +303,11 @@ export default function Home() {
       ) : null}
       <ScrollView
         style={styles.flex}
-        contentContainerStyle={[styles.content, wide && styles.contentWide, { paddingBottom: insets.bottom + 48 }]}
+        contentContainerStyle={[
+          styles.content,
+          wide && styles.contentWide,
+          { paddingBottom: insets.bottom + (selecting ? 120 : 48) },
+        ]}
         keyboardShouldPersistTaps="handled"
         refreshControl={
           wide ? undefined : (
@@ -352,15 +430,27 @@ export default function Home() {
                 <View key={s.id}>
                   {i > 0 ? <View style={styles.divider} /> : null}
                   <Pressable
-                    onPress={() => open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } })}
+                    onPress={() =>
+                      selecting
+                        ? toggle(`c:${s.id}`)
+                        : open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } })
+                    }
+                    onLongPress={() => toggle(`c:${s.id}`)}
                     style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
                       styles.item,
                       (hovered || pressed) && styles.hover,
+                      selected.has(`c:${s.id}`) && styles.selected,
                     ]}
-                    accessibilityRole="button"
+                    accessibilityRole={selecting ? 'checkbox' : 'button'}
+                    accessibilityState={selecting ? { checked: selected.has(`c:${s.id}`) } : undefined}
                     accessibilityLabel={s.title}
+                    accessibilityHint={selecting ? undefined : 'Opens the chat. Press and hold to select.'}
                   >
-                    <Icon name="chat-outline" size={20} color={m3.onSurfaceVariant} />
+                    <Icon
+                      name={selected.has(`c:${s.id}`) ? 'check-circle' : selecting ? 'circle-outline' : 'chat-outline'}
+                      size={20}
+                      color={selected.has(`c:${s.id}`) ? m3.primary : m3.onSurfaceVariant}
+                    />
                     <View style={styles.grow}>
                       <Text style={type.bodyLarge} numberOfLines={1}>
                         {s.title}
@@ -407,32 +497,89 @@ export default function Home() {
                   {i > 0 ? <View style={styles.divider} /> : null}
                   <View style={styles.projectRow}>
                     <Pressable
-                      onPress={() => open({ pathname: '/project/[id]', params: { id: p.id, name: p.name } })}
-                      onLongPress={() => confirmDelete(p)}
+                      onPress={() =>
+                        selecting
+                          ? toggle(`p:${p.id}`)
+                          : open({ pathname: '/project/[id]', params: { id: p.id, name: p.name } })
+                      }
+                      onLongPress={() => toggle(`p:${p.id}`)}
                       style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
                         styles.item,
                         styles.grow,
                         (hovered || pressed) && styles.hover,
+                        selected.has(`p:${p.id}`) && styles.selected,
                       ]}
-                      accessibilityRole="button"
+                      accessibilityRole={selecting ? 'checkbox' : 'button'}
+                      accessibilityState={selecting ? { checked: selected.has(`p:${p.id}`) } : undefined}
                       accessibilityLabel={p.name}
-                      accessibilityHint="Opens its chats. Long press to remove."
+                      accessibilityHint={selecting ? undefined : 'Opens its chats. Press and hold to select.'}
                     >
-                      <Avatar label={p.name} size={32} />
+                      {selecting ? (
+                        <View style={styles.checkSlot}>
+                          <Icon
+                            name={selected.has(`p:${p.id}`) ? 'check-circle' : 'circle-outline'}
+                            size={22}
+                            color={selected.has(`p:${p.id}`) ? m3.primary : m3.onSurfaceVariant}
+                          />
+                        </View>
+                      ) : (
+                        <Avatar label={p.name} size={32} />
+                      )}
                       <Text style={[type.bodyLarge, styles.grow]} numberOfLines={1}>
                         {p.name}
                       </Text>
                     </Pressable>
-                    <IconButton icon="dots-vertical" label={`Remove ${p.name}`} onPress={() => confirmDelete(p)} />
+                    {selecting ? null : (
+                      <IconButton icon="dots-vertical" label={`Remove ${p.name}`} onPress={() => confirmDelete(p)} />
+                    )}
                   </View>
                 </View>
               ))}
             </View>
           ) : null}
 
+          <Pressable
+            onPress={() => open('/archived')}
+            style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+              styles.archivedLink,
+              (hovered || pressed) && styles.hover,
+            ]}
+            accessibilityRole="button"
+          >
+            <Icon name="archive-outline" size={18} color={m3.onSurfaceVariant} />
+            <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]}>Archived</Text>
+          </Pressable>
+
           {wide ? <PairCard /> : null}
         </View>
       </ScrollView>
+
+      {selecting ? (
+        <View style={[styles.selectBar, { bottom: insets.bottom + space.lg }]}>
+          <IconButton icon="close" label="Cancel selection" onPress={() => setSelected(new Set())} />
+          <Text style={[type.titleSmall, styles.grow]} numberOfLines={1}>
+            {wide ? selectionLabel() : `${selected.size} selected`}
+          </Text>
+          {acting ? <ActivityIndicator color={m3.primary} /> : null}
+          {wide ? (
+            <>
+              <Button
+                title="Archive"
+                icon="archive-outline"
+                variant="tonal"
+                onPress={archiveSelected}
+                disabled={acting}
+              />
+              <Button title="Delete" icon="delete-outline" variant="tonal" onPress={deleteSelected} disabled={acting} />
+            </>
+          ) : (
+            <>
+              <IconButton icon="archive-outline" label="Archive" onPress={archiveSelected} disabled={acting} />
+              <IconButton icon="delete-outline" label="Delete" onPress={deleteSelected} disabled={acting} />
+            </>
+          )}
+        </View>
+      ) : null}
 
       <ModelSheet
         visible={pickingModel}
@@ -559,7 +706,7 @@ const styles = StyleSheet.create({
     borderColor: m3.outlineVariant,
   },
   input: {
-    minHeight: 150,
+    minHeight: 56,
     maxHeight: 320,
     color: m3.onSurface,
     fontSize: 17,
@@ -567,7 +714,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.sm,
   },
-  inputPhone: { minHeight: 120, fontSize: 16, lineHeight: 22 },
+  inputPhone: { minHeight: 44, fontSize: 16, lineHeight: 22 },
   row: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm, marginTop: space.sm },
   topRow: { flexDirection: 'row', alignItems: 'center' },
   target: {
@@ -582,6 +729,40 @@ const styles = StyleSheet.create({
   targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
   modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row' },
   hover: { backgroundColor: m3.hover },
+  selected: { backgroundColor: m3.secondaryContainer },
+  checkSlot: { width: 32, alignItems: 'center' },
+  archivedLink: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    height: 40,
+    paddingHorizontal: space.md,
+    borderRadius: radius.sm,
+  },
+  selectBar: {
+    position: 'absolute',
+    left: space.lg,
+    right: space.lg,
+    alignSelf: 'center',
+    maxWidth: 720,
+    marginHorizontal: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingLeft: space.xs,
+    paddingRight: space.md,
+    minHeight: 60,
+    borderRadius: radius.xl,
+    backgroundColor: m3.surfaceContainerHighest,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
   send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendOn: { backgroundColor: m3.primary },
   sendOff: { backgroundColor: m3.surfaceContainerHighest },
