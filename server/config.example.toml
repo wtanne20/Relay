@@ -1,0 +1,39 @@
+# Relay configuration. Copy to config.toml, or just run `relay` once and it
+# creates config.toml with a fresh token. Edit while Relay is stopped.
+
+# Bearer token for the API. Leave empty to generate one on next start.
+token = ""
+# Listen on all interfaces so Tailscale can reach it. Do NOT port-forward this.
+bind = "0.0.0.0:8765"
+system_prompt_path = "system_prompt.md"
+# Extra skill folders (a skill folder or a folder of skill folders).
+skills_paths = []
+max_steps = 50
+# Shell for run_command: "powershell.exe" (Windows PowerShell 5.1) or "pwsh" (PowerShell 7).
+shell = "powershell.exe"
+
+[llama]
+# llama-server.exe, or the llama.cpp folder that contains it.
+llama_server_path = 'C:\llama.cpp'
+model_path = 'C:\Users\me\.lmstudio\models\lmstudio-community\Qwen-GGUF\model-Q6_K.gguf'
+port = 8080
+# Relay adds -m <model_path> and --port <port>, and always forces --host 127.0.0.1.
+args = [
+    "--jinja",
+    "-ngl", "99",
+    "-c", "65536",
+    "--flash-attn", "on",
+    "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0",
+    "--temp", "0.6",
+    "--top-k", "20",
+    "--top-p", "0.95",
+    "--host", "127.0.0.1",
+]
+# Seconds to wait for /health after launching (large models load slowly).
+health_timeout_seconds = 600
+model_name = "local"
+
+[push]
+# Expo push notifications when a task finishes, errors or is stopped.
+enabled = true

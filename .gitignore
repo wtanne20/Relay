@@ -1,0 +1,17 @@
+# Rust
+server/target/
+# Relay runtime data (contains your token and history)
+server/config.toml
+server/relay.db*
+server/logs/
+server/system_prompt.md
+server/system_prompt.md.bak
+# Node / Expo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/ios/
+mobile/android/
+*.log
+.DS_Store
