@@ -133,7 +133,7 @@ function ProjectsScreen() {
             <EmptyState
               icon="folder-plus-outline"
               title="No projects yet"
-              body="Add a folder on your PC and the agent will work inside it."
+              body="Give it a name and Relay makes a folder for it on your PC. The agent works inside it."
             />
           )
         }

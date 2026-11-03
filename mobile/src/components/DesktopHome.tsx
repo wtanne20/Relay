@@ -105,7 +105,7 @@ export function DesktopHome() {
           <View style={styles.firstRun}>
             <Text style={[type.titleLarge, styles.center]}>Add your first project</Text>
             <Text style={[type.bodyLarge, styles.muted]}>
-              Pick a folder on this PC. The agent reads, edits and runs code only inside it.
+              Give it a name and Relay makes its folder. The agent reads, edits and runs code only inside it.
             </Text>
             <Button title="Add project" icon="folder-plus-outline" onPress={() => setAdding(true)} />
           </View>
