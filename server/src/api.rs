@@ -176,6 +176,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/skills", get(list_skills))
         .route("/recent", get(recent))
+        .route("/mockups", post(create_mockup))
+        .route("/mockups/{id}", get(get_mockup))
         .route("/projects", get(list_projects).post(create_project))
         .route(
             "/projects/{id}",
@@ -712,6 +714,69 @@ async fn hub_cancel(
     } else {
         Err(ApiError::NotFound("download"))
     }
+}
+
+// ---------- mockups ----------
+
+#[derive(Deserialize)]
+struct NewMockup {
+    /// The HTML (or SVG) the model wrote.
+    source: String,
+    #[serde(default)]
+    svg: bool,
+}
+
+/// Mockup pictures are drawn one at a time.
+static MOCKUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Draws a mockup to a picture for the phone. The desktop app shows the HTML
+/// live instead.
+async fn create_mockup(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<NewMockup>,
+) -> ApiResult<Json<Value>> {
+    if body.source.trim().is_empty() {
+        return Err(ApiError::BadRequest("the mockup is empty".into()));
+    }
+    if body.source.len() > crate::mockup::MAX_HTML {
+        return Err(ApiError::BadRequest(
+            "the mockup is too large to draw".into(),
+        ));
+    }
+    let page = crate::mockup::prepare(&body.source, body.svg);
+    let size = crate::mockup::size_hint(&body.source);
+    let id = crate::mockup::mockup_id(&page, size);
+    let dir = s.data_dir.join("mockups");
+    let _turn = MOCKUP_LOCK.lock().await;
+    crate::mockup::render(&dir, &id, &page, size)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok(Json(json!({ "id": id, "width": size.0, "height": size.1 })))
+}
+
+async fn get_mockup(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Response> {
+    let id = id.trim_end_matches(".png");
+    if !crate::mockup::valid_id(id) {
+        return Err(ApiError::NotFound("mockup"));
+    }
+    let path = s.data_dir.join("mockups").join(format!("{id}.png"));
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::NotFound("mockup"))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn model_status(State(s): State<AppState>) -> Json<Value> {

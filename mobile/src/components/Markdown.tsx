@@ -1,6 +1,7 @@
 import { memo, useMemo, type ReactNode } from 'react';
 import { Linking, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { MockupCard, isMockup } from './Mockup';
 import { colors, radius, space } from './theme';
 
 /**
@@ -11,7 +12,7 @@ import { colors, radius, space } from './theme';
  */
 
 type Block =
-  | { kind: 'code'; lang: string; text: string }
+  | { kind: 'code'; lang: string; text: string; closed: boolean }
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; ordered: boolean; items: string[]; start: number }
   | { kind: 'quote'; text: string }
@@ -41,8 +42,9 @@ export function parseBlocks(src: string): Block[] {
         body.push(lines[i]);
         i++;
       }
+      const closed = i < lines.length;
       i++; // closing fence (or end of input while streaming)
-      blocks.push({ kind: 'code', lang: fence[2] ?? '', text: body.join('\n') });
+      blocks.push({ kind: 'code', lang: fence[2] ?? '', text: body.join('\n'), closed });
       continue;
     }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
@@ -152,7 +154,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return out;
 }
 
-function CodeBlock({ lang, text }: { lang: string; text: string }) {
+export function CodeBlock({ lang, text }: { lang: string; text: string }) {
   return (
     <View style={styles.codeBlock}>
       {lang ? <Text style={styles.codeLang}>{lang}</Text> : null}
@@ -173,7 +175,11 @@ function MarkdownImpl({ text, color = colors.text }: { text: string; color?: str
         const key = `b${i}`;
         switch (b.kind) {
           case 'code':
-            return <CodeBlock key={key} lang={b.lang} text={b.text} />;
+            return isMockup(b.lang, b.text) ? (
+              <MockupCard key={key} lang={b.lang} source={b.text} complete={b.closed} />
+            ) : (
+              <CodeBlock key={key} lang={b.lang} text={b.text} />
+            );
           case 'heading':
             return (
               <Text key={key} selectable style={[styles.heading, { color, fontSize: Math.max(16, 22 - b.level * 2) }]}>

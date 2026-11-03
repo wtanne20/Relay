@@ -79,7 +79,9 @@ export default function ModelsScreen() {
           <>
             {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
             <Text style={[type.bodyMedium, styles.intro]}>
-              This is the model Relay loads by default. Chats and projects can pick their own from the model button in the chat. Tap the tag icon to note what a model is good at. To get more models, use Download models in Settings.
+              This is the model Relay loads by default. Chats and projects can pick their own from the model button in
+              the chat. Tap the tag icon to note what a model is good at. To get more models, use Download models in
+              Settings.
             </Text>
             {!data && !error ? <ActivityIndicator color={m3.primary} /> : null}
           </>

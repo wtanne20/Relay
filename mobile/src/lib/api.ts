@@ -13,7 +13,9 @@ import type {
   Session,
   Settings,
   SettingsResponse,
-  SkillInfo, RecentSession } from './types';
+  SkillInfo,
+  RecentSession,
+} from './types';
 
 export const DEFAULT_PORT = 8765;
 const REQUEST_TIMEOUT_MS = 15000;
@@ -256,6 +258,16 @@ export class RelayClient {
       decision,
       note,
     });
+  }
+
+  // ----- mockups -----
+  /** Has the PC draw an HTML/SVG mockup to a picture (for the phone). */
+  mockup(source: string, svg: boolean) {
+    return this.request<{ id: string; width: number; height: number }>('POST', '/mockups', { source, svg }, 60000);
+  }
+  /** The picture's URL; needs the Authorization header. */
+  mockupUrl(id: string): string {
+    return `${this.creds.url}/mockups/${encodeURIComponent(id)}`;
   }
 
   // ----- push -----

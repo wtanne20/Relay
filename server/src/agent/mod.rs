@@ -800,6 +800,7 @@ Today: {}\n",
         s.push_str(project.instructions.trim());
         s.push('\n');
     }
+    s.push_str(MOCKUP_HINT);
     s
 }
 
@@ -919,8 +920,12 @@ pub async fn build_system_prompt(
         s.push('\n');
         s.push_str(&section);
     }
+    s.push_str(MOCKUP_HINT);
     s
 }
+
+/// Tells the model how to draw a UI mockup that Relay can show as a picture.
+pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. Keep any explanation short and outside the block.\n";
 
 /// Converts stored history to OpenAI chat messages. Tool calls without a
 /// stored result (e.g. after a crash) get a synthetic result so the request

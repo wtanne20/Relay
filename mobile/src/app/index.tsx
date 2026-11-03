@@ -245,18 +245,11 @@ export default function Home() {
             <View style={styles.row}>
               <Pressable
                 onPress={() => setPicking((v) => !v)}
-                style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [
-                  styles.chip,
-                  hovered && styles.hover,
-                ]}
+                style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.chip, hovered && styles.hover]}
                 accessibilityRole="button"
                 accessibilityLabel={`${project ? `Project: ${project.name}` : 'Plain chat'}. Change`}
               >
-                <Icon
-                  name={project ? 'folder-outline' : 'chat-outline'}
-                  size={18}
-                  color={m3.onSurfaceVariant}
-                />
+                <Icon name={project ? 'folder-outline' : 'chat-outline'} size={18} color={m3.onSurfaceVariant} />
                 <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]} numberOfLines={1}>
                   {project?.name ?? 'Chat'}
                 </Text>
@@ -498,7 +491,13 @@ const styles = StyleSheet.create({
   content: { padding: space.lg },
   contentWide: { paddingHorizontal: space.xl, paddingTop: 72 },
   column: { width: '100%', maxWidth: 720, alignSelf: 'center', gap: space.md },
-  hello: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.lg, marginBottom: space.md },
+  hello: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.lg,
+    marginBottom: space.md,
+  },
   helloPhone: { justifyContent: 'flex-start', marginHorizontal: space.xs, marginBottom: space.xs },
   greetingWide: { fontSize: 40, lineHeight: 48 },
   composer: {

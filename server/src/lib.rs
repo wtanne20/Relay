@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod hub;
 pub mod migrate;
+pub mod mockup;
 pub mod model_manager;
 pub mod process_guard;
 pub mod push;

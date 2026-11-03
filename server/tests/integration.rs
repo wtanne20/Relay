@@ -921,5 +921,21 @@ async fn plain_chats_titles_and_models() {
         .await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["project"]["model"], json!(model.to_string_lossy()));
+
+    // Mockups: empty sources and unknown pictures are refused.
+    let (st, _) = h.post("/mockups", json!({"source": "  "})).await;
+    assert_eq!(st, 400);
+    let (st, _) = h
+        .req(reqwest::Method::GET, "/mockups/..%2F..%2Fconfig.toml", None)
+        .await;
+    assert_eq!(st, 404);
+    let (st, _) = h
+        .req(
+            reqwest::Method::GET,
+            "/mockups/0123456789abcdef01234567.png",
+            None,
+        )
+        .await;
+    assert_eq!(st, 404);
     let _ = std::fs::remove_dir_all(&h.dir);
 }

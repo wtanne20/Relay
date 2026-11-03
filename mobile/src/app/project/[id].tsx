@@ -34,7 +34,10 @@ export default function SessionsScreen() {
 
   useEffect(() => {
     if (!client || !id) return;
-    client.project(id).then(setProject).catch(() => undefined);
+    client
+      .project(id)
+      .then(setProject)
+      .catch(() => undefined);
     client
       .model()
       .then((m) => setLoaded(m.model_path || null))
