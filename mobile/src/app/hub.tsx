@@ -2,13 +2,14 @@ import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { Sheet } from '../components/Sheet';
 import { m3, radius, space, type } from '../components/theme';
 import { Banner, Button, Field, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { formatBytes } from '../lib/format';
 import { usePageStyle } from '../lib/layout';
-import type { HubDownload, HubFile, HubRepo } from '../lib/types';
+import type { HubDownload, HubFile, HubRepo, ModelLibrary } from '../lib/types';
 
 const SUGGESTIONS = ['Qwen3 Coder', 'Devstral', 'GLM', 'gpt-oss', 'Gemma', 'Mistral'];
 
@@ -37,6 +38,9 @@ export default function HubScreen() {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [downloads, setDownloads] = useState<HubDownload[]>([]);
+  const [libs, setLibs] = useState<ModelLibrary[]>([]);
+  const [library, setLibrary] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const search = useCallback(
@@ -59,12 +63,19 @@ export default function HubScreen() {
   const pollDownloads = useCallback(async () => {
     if (!client) return;
     try {
-      const d = (await client.hubDownloads()).downloads;
+      const d = (await client.hubDownloads()).downloads.filter((x) => x.repo !== 'move');
       setDownloads(d);
       if (d.some((x) => x.state === 'downloading')) timer.current = setTimeout(pollDownloads, 1000);
     } catch {
       timer.current = setTimeout(pollDownloads, 3000);
     }
+  }, [client]);
+
+  useEffect(() => {
+    client
+      ?.libraries()
+      .then((r) => setLibs(r.libraries))
+      .catch(() => undefined);
   }, [client]);
 
   useEffect(() => {
@@ -77,9 +88,11 @@ export default function HubScreen() {
 
   if (!client) return null;
 
+  const target = libs.find((l) => l.path === library) ?? libs.find((l) => l.default);
+
   const start = async (repo: string, file: string) => {
     try {
-      await client.hubDownload(repo, file);
+      await client.hubDownload(repo, file, target?.path);
       if (timer.current) clearTimeout(timer.current);
       pollDownloads();
     } catch (e) {
@@ -90,9 +103,55 @@ export default function HubScreen() {
   return (
     <ScrollView style={styles.flex} contentContainerStyle={[styles.content, page]} keyboardShouldPersistTaps="handled">
       <Text style={[type.bodyMedium, styles.intro]}>
-        Search Hugging Face for GGUF models. Downloads go to Relay&apos;s models folder on your PC and show up in Choose
-        model when they finish.
+        Search Hugging Face for GGUF models. Downloads show up in Choose model when they finish.
       </Text>
+      {target ? (
+        <Pressable
+          onPress={() => libs.length > 1 && setPicking(true)}
+          disabled={libs.length < 2}
+          style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.saveTo, hovered && styles.hover]}
+          accessibilityRole="button"
+          accessibilityLabel="Choose where downloads are saved"
+        >
+          <Icon name="folder-download-outline" size={20} color={m3.onSurfaceVariant} />
+          <View style={styles.grow}>
+            <Text style={type.bodySmall}>Saving to</Text>
+            <Text style={type.bodyMedium} numberOfLines={1} ellipsizeMode="middle">
+              {target.path}
+              {target.disk ? ` · ${formatBytes(target.disk.free_bytes)} free` : ''}
+            </Text>
+          </View>
+          {libs.length > 1 ? <Text style={[type.labelLarge, { color: m3.primary }]}>Change</Text> : null}
+        </Pressable>
+      ) : null}
+      <Sheet visible={picking} onClose={() => setPicking(false)} title="Save downloads to">
+        {libs.map((l) => (
+          <Pressable
+            key={l.path}
+            onPress={() => {
+              setLibrary(l.path);
+              setPicking(false);
+            }}
+            style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [styles.saveTo, hovered && styles.hover]}
+            accessibilityRole="button"
+          >
+            <Icon
+              name={l.path === target?.path ? 'radiobox-marked' : 'radiobox-blank'}
+              size={20}
+              color={l.path === target?.path ? m3.primary : m3.onSurfaceVariant}
+            />
+            <View style={styles.grow}>
+              <Text style={type.bodyLarge} numberOfLines={2}>
+                {l.path}
+              </Text>
+              <Text style={type.bodySmall}>
+                {l.disk ? `${formatBytes(l.disk.free_bytes)} free` : 'Drive not available'}
+                {l.disk?.kind === 'network' ? ' · network drive, slow to load' : ''}
+              </Text>
+            </View>
+          </Pressable>
+        ))}
+      </Sheet>
       <Field
         label="Search"
         icon="magnify"
@@ -285,6 +344,14 @@ function RepoRow({
 }
 
 const styles = StyleSheet.create({
+  saveTo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.md,
+  },
   flex: { flex: 1, backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 64 },

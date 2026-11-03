@@ -1,6 +1,7 @@
 import type { Credentials } from './storage';
 import type {
   HubDownload,
+  ModelLibrary,
   HubFile,
   HubRepo,
   ApprovalDecision,
@@ -153,8 +154,26 @@ export class RelayClient {
   hubDownloads() {
     return this.request<{ downloads: HubDownload[] }>('GET', '/hub/downloads');
   }
-  hubDownload(repo: string, file: string) {
-    return this.request<{ download: HubDownload }>('POST', '/hub/downloads', { repo, file }, 30000);
+  hubDownload(repo: string, file: string, library?: string) {
+    return this.request<{ download: HubDownload }>('POST', '/hub/downloads', { repo, file, library }, 30000);
+  }
+  libraries() {
+    return this.request<{ libraries: ModelLibrary[]; current_model: string }>('GET', '/libraries');
+  }
+  /** Adds a folder (created if needed) as a model library. */
+  addLibrary(path: string, makeDefault: boolean) {
+    return this.request<{ libraries: ModelLibrary[] }>('POST', '/libraries', { path, make_default: makeDefault });
+  }
+  setDefaultLibrary(path: string) {
+    return this.request<{ libraries: ModelLibrary[] }>('POST', '/libraries/default', { path });
+  }
+  /** Forgets a library; its files stay on the disk. */
+  removeLibrary(path: string) {
+    return this.request<{ libraries: ModelLibrary[] }>('POST', '/libraries/remove', { path });
+  }
+  /** Moves a model to another library; progress shows in hubDownloads (repo "move"). */
+  moveModel(path: string, library: string) {
+    return this.request<{ download: HubDownload }>('POST', '/models/move', { path, library }, 30000);
   }
   hubCancel(id: string) {
     return this.request<{ ok: boolean }>('DELETE', `/hub/downloads/${encodeURIComponent(id)}`);

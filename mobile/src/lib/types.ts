@@ -260,3 +260,24 @@ export interface HubDownload {
   state: 'downloading' | 'done' | 'failed' | 'cancelled';
   error?: string | null;
 }
+
+export interface Disk {
+  /** The drive, e.g. "W:\". */
+  root: string;
+  total_bytes: number;
+  free_bytes: number;
+  kind: 'local' | 'network' | 'removable' | 'unknown';
+}
+
+/** A folder Relay keeps models in, like a Steam library. */
+export interface ModelLibrary {
+  path: string;
+  /** Relay's own folder in its data folder; always there. */
+  builtin: boolean;
+  /** New downloads go here. */
+  default: boolean;
+  exists: boolean;
+  disk: Disk | null;
+  models: { path: string; name: string; size_bytes: number }[];
+  size_bytes: number;
+}

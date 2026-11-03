@@ -67,7 +67,7 @@ function FolderSetting({
   placeholder,
   hint,
 }: {
-  setting: 'projects_folder' | 'models_folder';
+  setting: 'projects_folder';
   icon: IconName;
   label: string;
   empty: string;
@@ -293,13 +293,11 @@ export default function SettingsScreen() {
           value="The model Relay loads by default, and tags"
           onPress={() => router.push('/models')}
         />
-        <FolderSetting
-          setting="models_folder"
+        <NavRow
           icon="folder-download-outline"
-          label="Models folder"
-          empty="Relay's data folder"
-          placeholder="W:\Relay\models"
-          hint="Where Relay saves the models it downloads or copies. Pick a drive with plenty of space. It's created if it doesn't exist. Models already saved stay where they are and keep working. Leave empty for Relay's data folder."
+          label="Model libraries"
+          value="Where models are saved, disk space, move models"
+          onPress={() => router.push('/libraries')}
         />
         <NavRow
           icon="download-outline"
