@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AssistantTurn, UserBubble } from '../../components/ChatItems';
+import { AssistantTurn, noteStart, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
@@ -89,6 +89,9 @@ export default function ChatScreen() {
   const items = useMemo(() => {
     // Consecutive assistant messages (one agent reply) become one turn.
     const out: Item[] = [];
+    stream.messages.forEach((m, i) => {
+      if (m.role === 'assistant') noteStart(m, stream.messages[i - 1]);
+    });
     for (const m of stream.messages) {
       if (m.role === 'user') out.push({ key: `m${m.id}`, kind: 'user', message: m });
       else if (m.role === 'assistant') {

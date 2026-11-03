@@ -11,7 +11,7 @@ import { describeError } from '../lib/api';
 import { usePageStyle } from '../lib/layout';
 import { useConnection } from '../lib/connection';
 import { basename } from '../lib/format';
-import type { ApprovalMode, Settings, SettingsResponse, SkillInfo } from '../lib/types';
+import type { AgentSettings, ApprovalMode, Settings, SettingsResponse, SkillInfo } from '../lib/types';
 
 const APPROVAL_OPTIONS: { value: ApprovalMode; label: string }[] = [
   { value: 'never', label: 'Never' },
@@ -25,6 +25,20 @@ const APPROVAL_HINT: Record<ApprovalMode, string> = {
   all_changes: 'Ask me before running commands or changing files.',
 };
 
+type ThinkingMode = 'off' | 'brief' | 'full';
+const THINKING_OPTIONS: { value: ThinkingMode; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'brief', label: 'Brief' },
+  { value: 'full', label: 'Full' },
+];
+const THINKING_HINT: Record<ThinkingMode, string> = {
+  off: 'Answers straight away. Fastest, but less careful on hard tasks.',
+  brief: 'Thinks a little before each step. A good balance of speed and care.',
+  full: 'Thinks as long as it likes. Slowest and uses the most tokens.',
+};
+const thinkingMode = (a: AgentSettings): ThinkingMode =>
+  !a.thinking ? 'off' : a.brief_thinking === false ? 'full' : 'brief';
+
 const COMMON_CACHE = ['f16', 'q8_0', 'q4_0'];
 
 const TOOL_ICONS: Record<string, IconName> = {
@@ -33,6 +47,8 @@ const TOOL_ICONS: Record<string, IconName> = {
   write_file: 'file-plus-outline',
   edit_file: 'file-edit-outline',
   run_command: 'console',
+  web_search: 'magnify',
+  fetch_url: 'web',
 };
 
 function same(a: unknown, b: unknown) {
@@ -175,12 +191,13 @@ export default function AgentSettingsScreen() {
             options={APPROVAL_OPTIONS}
             onChange={(v) => set('agent', { approval: v })}
           />
-          <ToggleRow
+          <Segmented
             label="Thinking"
             icon="head-lightbulb-outline"
-            hint="Let reasoning models think before they answer. Slower, usually smarter."
-            value={a.thinking}
-            onChange={(v) => set('agent', { thinking: v })}
+            hint={THINKING_HINT[thinkingMode(a)]}
+            value={thinkingMode(a)}
+            options={THINKING_OPTIONS}
+            onChange={(v) => set('agent', { thinking: v !== 'off', brief_thinking: v !== 'full' })}
           />
           <NumberRow
             label="Max steps per prompt"
@@ -218,6 +235,14 @@ export default function AgentSettingsScreen() {
               onChange={(v) => set('agent', { tools: { ...a.tools, [t.name]: v } })}
             />
           ))}
+          <TextRow
+            label="Brave Search API key"
+            icon="key-outline"
+            hint="Optional. Without a key, web search uses DuckDuckGo, which needs no account. A free key from brave.com/search/api gives steadier results."
+            value={a.search_api_key ?? ''}
+            placeholder="Not set"
+            onChange={(v) => set('agent', { search_api_key: v.trim() })}
+          />
         </Group>
 
         <SectionTitle

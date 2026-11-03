@@ -119,7 +119,7 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
     }
     let system = body["messages"][0]["content"].as_str().unwrap_or("");
     // Plain chats send no tools; agent chats must.
-    if !system.contains("can't browse the web")
+    if !system.contains("This is a plain chat")
         && body
             .get("tools")
             .and_then(Value::as_array)

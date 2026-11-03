@@ -15,6 +15,8 @@ const TOOL_ICON: Record<string, IconName> = {
   write_file: 'file-plus-outline',
   edit_file: 'file-edit-outline',
   list_dir: 'folder-outline',
+  web_search: 'magnify',
+  fetch_url: 'web',
 };
 
 export function UserBubble({ message }: { message: Message }) {
@@ -29,42 +31,46 @@ export function UserBubble({ message }: { message: Message }) {
   );
 }
 
-const LIVE_TAIL_CHARS = 700;
-
 /**
- * The model's thinking. `live` streams the latest part while the model is
- * still thinking; `preview` shows the first lines with a tap to read all of
- * it; otherwise it's a collapsed "Thought process" row.
+ * A short status from the model's thinking so far: its latest complete
+ * sentence (or line), trimmed. Shown on one line while it works, so the
+ * person sees what it's doing without the whole stream racing past.
  */
-function Reasoning({ text, live, preview }: { text: string; live?: boolean; preview?: boolean }) {
+export function thinkingStatus(text: string): string {
+  const body = text.trim();
+  const parts = body
+    .split(/\n+/)
+    .flatMap((line) => line.match(/.+?(?:[.!?]+(?=\s|$)|$)/g) ?? [])
+    .map((x) =>
+      x
+        .replace(/^[\s#*>\-\d.)]+/, '')
+        .replace(/[*_`]/g, '')
+        .trim(),
+    )
+    .filter((x) => x.length > 1);
+  // The last part may still be being written; prefer the one before it.
+  const finished = /[.!?:*]$/.test(body) ? parts : parts.slice(0, -1);
+  let pick = finished[finished.length - 1] ?? parts[parts.length - 1] ?? '';
+  pick = pick.replace(/[.:]+$/, '');
+  if (!pick) return 'Thinking…';
+  if (pick.length > 90) pick = pick.slice(0, 88).replace(/[\s,;]+\S*$/, '');
+  return /[?!]$/.test(pick) ? pick : `${pick}…`;
+}
+
+/** "Thought for 12s", from the seconds the model spent, if known. */
+function thoughtLabel(seconds?: number): string {
+  if (!seconds || !Number.isFinite(seconds) || seconds < 1) return 'Thought process';
+  if (seconds < 60) return `Thought for ${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return s ? `Thought for ${m}m ${s}s` : `Thought for ${m}m`;
+}
+
+/** The model's thinking, folded into one row you can open. */
+function Reasoning({ text, seconds }: { text: string; seconds?: number }) {
   const [open, setOpen] = useState(false);
   const body = text.trim();
   if (!body) return null;
-  if (live) {
-    const tail = body.length > LIVE_TAIL_CHARS ? `…${body.slice(-LIVE_TAIL_CHARS).replace(/^\S*\s/, '')}` : body;
-    return (
-      <View style={styles.reasoning}>
-        <Text selectable style={styles.thoughtText}>
-          {tail}
-        </Text>
-      </View>
-    );
-  }
-  if (preview) {
-    return (
-      <Pressable
-        onPress={() => setOpen((o) => !o)}
-        style={styles.reasoning}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityHint={open ? 'Shows less of the thinking' : 'Shows all of the thinking'}
-      >
-        <Text selectable={open} style={styles.thoughtText} numberOfLines={open ? undefined : 3}>
-          {body}
-        </Text>
-      </Pressable>
-    );
-  }
   return (
     <View style={styles.reasoning}>
       <Pressable
@@ -75,7 +81,7 @@ function Reasoning({ text, live, preview }: { text: string; live?: boolean; prev
         hitSlop={6}
       >
         <Icon name="lightbulb-outline" size={16} color={m3.onSurfaceVariant} />
-        <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]}>Thought process</Text>
+        <Text style={[type.bodyMedium, { color: m3.onSurfaceVariant }]}>{thoughtLabel(seconds)}</Text>
         <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
       </Pressable>
       {open ? (
@@ -173,15 +179,29 @@ export const AssistantBlock = memo(function AssistantBlock({
 
 type Step =
   | { kind: 'text'; key: string; text: string }
-  | { kind: 'thought'; key: string; text: string; live?: boolean }
+  | { kind: 'thought'; key: string; text: string; seconds?: number }
   | { kind: 'tool'; key: string; call: ToolCall };
+
+/** When the model started on each reply: the time of the message before it. */
+const startedAt = new WeakMap<Message, string>();
+export function noteStart(m: Message, previous: Message | undefined) {
+  if (previous) startedAt.set(m, previous.created_at);
+}
+function secondsBefore(m: Message): number | undefined {
+  const from = startedAt.get(m);
+  if (!from) return undefined;
+  const s = (Date.parse(m.created_at) - Date.parse(from)) / 1000;
+  return Number.isFinite(s) && s >= 0 ? s : undefined;
+}
 
 /** "Ran 2 commands · read 3 files" style summary of a turn's tool use. */
 function stepsSummary(calls: ToolCall[]): string {
   const n = (...names: string[]) => calls.filter((c) => names.includes(c.name)).length;
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
   const parts: string[] = [];
-  const known = n('run_command', 'read_file', 'edit_file', 'write_file', 'list_dir');
+  const known = n('run_command', 'read_file', 'edit_file', 'write_file', 'list_dir', 'web_search', 'fetch_url');
+  if (n('web_search')) parts.push(`searched the web ${n('web_search') === 1 ? 'once' : `${n('web_search')} times`}`);
+  if (n('fetch_url')) parts.push(`read ${plural(n('fetch_url'), 'page')}`);
   if (n('run_command')) parts.push(`ran ${plural(n('run_command'), 'command')}`);
   if (n('read_file')) parts.push(`read ${plural(n('read_file'), 'file')}`);
   if (n('edit_file', 'write_file')) parts.push(`changed ${plural(n('edit_file', 'write_file'), 'file')}`);
@@ -216,7 +236,8 @@ export const AssistantTurn = memo(function AssistantTurn({
   const steps: Step[] = [];
   const calls: ToolCall[] = [];
   for (const m of work) {
-    if (m.reasoning?.trim()) steps.push({ kind: 'thought', key: `r${m.id}`, text: m.reasoning });
+    if (m.reasoning?.trim())
+      steps.push({ kind: 'thought', key: `r${m.id}`, text: m.reasoning, seconds: secondsBefore(m) });
     if (m.content.trim()) steps.push({ kind: 'text', key: `t${m.id}`, text: m.content });
     for (const c of m.tool_calls ?? []) {
       steps.push({ kind: 'tool', key: c.id, call: c });
@@ -230,16 +251,14 @@ export const AssistantTurn = memo(function AssistantTurn({
     ? toolSummary(pendingCall, undefined, true)
     : running && !draft?.content
       ? draft?.reasoning
-        ? 'Thinking…'
+        ? thinkingStatus(draft.reasoning)
         : 'Working…'
       : null;
-  // Thinking that's streaming right now, before any answer text.
-  if (running && draft?.reasoning?.trim() && !draft.content) {
-    steps.push({ kind: 'thought', key: 'live-r', text: draft.reasoning, live: true });
-  }
+  const answerSeconds = lastIsAnswer ? secondsBefore(last) : undefined;
   const showSteps = calls.length > 0 || (steps.length > 0 && !answer);
   // One fold-out for all the work, including the thinking behind the answer.
-  if (showSteps && answerReasoning?.trim()) steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning });
+  if (showSteps && answerReasoning?.trim())
+    steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning, seconds: answerSeconds });
 
   return (
     <View style={styles.turn}>
@@ -270,7 +289,7 @@ export const AssistantTurn = memo(function AssistantTurn({
                 st.kind === 'tool' ? (
                   <ToolActivityRow key={st.key} call={st.call} result={results.get(st.call.id)} running={running} />
                 ) : st.kind === 'thought' ? (
-                  <Reasoning key={st.key} text={st.text} live={st.live} preview={!st.live} />
+                  <Reasoning key={st.key} text={st.text} seconds={st.seconds} />
                 ) : (
                   <Text key={st.key} selectable style={[type.bodyMedium, styles.stepNote]}>
                     {st.text.trim()}
@@ -281,13 +300,13 @@ export const AssistantTurn = memo(function AssistantTurn({
           ) : null}
         </View>
       ) : null}
-      {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} preview /> : null}
+      {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} seconds={answerSeconds} /> : null}
       {answer ? <Markdown text={answer} /> : null}
       {!showSteps && !answer && running ? (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />
-          <Text style={[type.bodyMedium, { color: m3.onSurfaceVariant }]}>
-            {draft?.reasoning ? 'Thinking…' : 'Working…'}
+          <Text style={[type.bodyMedium, styles.stepsText]} numberOfLines={1}>
+            {draft?.reasoning ? thinkingStatus(draft.reasoning) : 'Working…'}
           </Text>
         </View>
       ) : null}
@@ -298,13 +317,15 @@ export const AssistantTurn = memo(function AssistantTurn({
 export function DraftBlock({ content, reasoning }: { content: string; reasoning: string }) {
   return (
     <View style={styles.assistant}>
-      {reasoning ? <Reasoning text={reasoning} live={!content} /> : null}
+      {reasoning && content ? <Reasoning text={reasoning} /> : null}
       {content ? (
         <Markdown text={content} />
       ) : (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />
-          <Text style={[type.bodyMedium, { color: m3.onSurfaceVariant }]}>{reasoning ? 'Thinking…' : 'Working…'}</Text>
+          <Text style={[type.bodyMedium, styles.stepsText]} numberOfLines={1}>
+            {reasoning ? thinkingStatus(reasoning) : 'Working…'}
+          </Text>
         </View>
       )}
     </View>

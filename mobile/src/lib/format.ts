@@ -59,6 +59,15 @@ export function toolSummary(call: ToolCall, result: Message | undefined, running
       return `${pending ? 'Writing' : 'Wrote'} ${shorten(path)}${result?.is_error ? ' — failed' : ''}`;
     case 'edit_file':
       return `${pending ? 'Editing' : 'Edited'} ${shorten(path)}${result?.is_error ? ' — failed' : ''}`;
+    case 'web_search': {
+      const q = shorten(typeof a.query === 'string' ? a.query : '');
+      return `${pending ? 'Searching the web for' : 'Searched the web for'} “${q}”${result?.is_error ? ' — failed' : ''}`;
+    }
+    case 'fetch_url': {
+      const url = typeof a.url === 'string' ? a.url : '';
+      const host = url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || url;
+      return `${pending ? 'Reading' : 'Read'} ${shorten(host)}${result?.is_error ? ' — failed' : ''}`;
+    }
     case 'list_dir':
       return `${pending ? 'Listing' : 'Listed'} ${shorten(path)}${result?.is_error ? ' — failed' : ''}`;
     default:

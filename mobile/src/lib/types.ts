@@ -149,6 +149,8 @@ export interface ToolToggles {
   write_file: boolean;
   edit_file: boolean;
   run_command: boolean;
+  web_search: boolean;
+  fetch_url: boolean;
 }
 
 export interface AgentSettings {
@@ -156,7 +158,11 @@ export interface AgentSettings {
   command_timeout_seconds: number;
   approval: ApprovalMode;
   thinking: boolean;
+  /** Ask the model to keep its thinking short. */
+  brief_thinking?: boolean;
   tools: ToolToggles;
+  /** Brave Search API key; empty = DuckDuckGo. */
+  search_api_key: string;
 }
 
 export interface SamplingSettings {

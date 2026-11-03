@@ -162,18 +162,16 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'%' if i + 2 < b.len() + 0 && i + 2 <= b.len() - 1 => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(v) => {
-                        out.push(v);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(b'%');
-                        i += 1;
-                    }
+            b'%' if i + 2 < b.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(v) => {
+                    out.push(v);
+                    i += 3;
                 }
-            }
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
             b'+' => {
                 out.push(b' ');
                 i += 1;
@@ -223,7 +221,9 @@ async fn check_public(url: &reqwest::Url) -> Result<()> {
     if !matches!(url.scheme(), "http" | "https") {
         bail!("only http and https links can be read");
     }
-    let host = url.host_str().ok_or_else(|| anyhow!("the link has no host"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("the link has no host"))?;
     let lower = host.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".ts.net") {
         bail!("Relay only reads pages on the public internet, not {host}");
@@ -330,8 +330,26 @@ pub fn html_to_text(html: &str) -> String {
         "script", "style", "noscript", "svg", "head", "nav", "footer", "template", "iframe",
     ];
     const BREAK: &[&str] = &[
-        "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
-        "header", "ul", "ol", "table", "pre", "blockquote", "hr",
+        "p",
+        "div",
+        "br",
+        "li",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "section",
+        "article",
+        "header",
+        "ul",
+        "ol",
+        "table",
+        "pre",
+        "blockquote",
+        "hr",
     ];
     while i < html.len() {
         let Some(off) = html[i..].find('<') else {
@@ -341,7 +359,10 @@ pub fn html_to_text(html: &str) -> String {
         out.push_str(&html[i..i + off]);
         i += off;
         if lower[i..].starts_with("<!--") {
-            i = lower[i..].find("-->").map(|e| i + e + 3).unwrap_or(html.len());
+            i = lower[i..]
+                .find("-->")
+                .map(|e| i + e + 3)
+                .unwrap_or(html.len());
             continue;
         }
         let end = match html[i..].find('>') {
@@ -375,17 +396,11 @@ pub fn html_to_text(html: &str) -> String {
     }
     let text = decode_entities(&out);
     let mut clean = String::with_capacity(text.len());
-    let mut blank = 0;
     for line in text.lines() {
         let l = line.split_whitespace().collect::<Vec<_>>().join(" ");
         if l.is_empty() || l == "-" {
-            blank += 1;
-            if blank == 1 && !clean.is_empty() {
-                clean.push('\n');
-            }
             continue;
         }
-        blank = 0;
         clean.push_str(&l);
         clean.push('\n');
     }
@@ -504,7 +519,10 @@ mod tests {
         assert_eq!(hits.len(), 2, "{hits:?}");
         assert_eq!(hits[0].url, "https://docs.rs/axum/latest/axum/");
         assert_eq!(hits[0].title, "axum - Rust");
-        assert_eq!(hits[0].snippet, "axum is a web application framework & more.");
+        assert_eq!(
+            hits[0].snippet,
+            "axum is a web application framework & more."
+        );
         assert_eq!(hits[1].url, "https://github.com/tokio-rs/axum");
         assert_eq!(parse_ddg(html, 1).len(), 1);
     }

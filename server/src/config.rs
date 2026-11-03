@@ -61,6 +61,8 @@ pub struct ToolToggles {
     pub write_file: bool,
     pub edit_file: bool,
     pub run_command: bool,
+    pub web_search: bool,
+    pub fetch_url: bool,
 }
 
 impl Default for ToolToggles {
@@ -71,6 +73,8 @@ impl Default for ToolToggles {
             write_file: true,
             edit_file: true,
             run_command: true,
+            web_search: true,
+            fetch_url: true,
         }
     }
 }
@@ -83,6 +87,8 @@ impl ToolToggles {
             "write_file" => self.write_file,
             "edit_file" => self.edit_file,
             "run_command" => self.run_command,
+            "web_search" => self.web_search,
+            "fetch_url" => self.fetch_url,
             _ => false,
         }
     }
@@ -98,7 +104,11 @@ pub struct AgentConfig {
     pub approval: ApprovalMode,
     /// Let reasoning models think before answering (Qwen3 enable_thinking).
     pub thinking: bool,
+    /// Ask the model to keep its thinking short (fewer tokens, faster replies).
+    pub brief_thinking: bool,
     pub tools: ToolToggles,
+    /// Brave Search API key for web_search. Empty = DuckDuckGo (no account).
+    pub search_api_key: String,
 }
 
 impl Default for AgentConfig {
@@ -108,7 +118,9 @@ impl Default for AgentConfig {
             command_timeout_seconds: 120,
             approval: ApprovalMode::Never,
             thinking: true,
+            brief_thinking: true,
             tools: ToolToggles::default(),
+            search_api_key: String::new(),
         }
     }
 }
