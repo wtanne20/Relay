@@ -322,26 +322,183 @@ impl Downloads {
                 continue;
             }
             let url = format!("{HF}/{repo}/resolve/main/{part}?download=true");
-            let mut resp = http.get(&url).send().await?.error_for_status()?;
             let tmp = part_path(&dest);
-            let mut file = tokio::fs::File::create(&tmp).await?;
-            let mut done: u64 = 0;
-            while let Some(chunk) = tokio::time::timeout(Duration::from_secs(120), resp.chunk())
-                .await
-                .map_err(|_| anyhow!("download stalled"))??
-            {
-                file.write_all(&chunk).await?;
-                done += chunk.len() as u64;
-                let now = base + done;
+            let done = fetch(&http, &url, &tmp, |n| {
+                let now = base + n;
                 self.update(id, |d| d.done_bytes = now);
-            }
-            file.flush().await?;
-            drop(file);
+            })
+            .await?;
             tokio::fs::rename(&tmp, &dest).await?;
             base += done;
         }
         Ok(())
     }
+}
+
+/// Parallel connections for one large file. A single HTTP stream from the
+/// Hugging Face CDN is often capped at a few MB/s; several ranges at once
+/// fill the line.
+const SEGMENTS: u64 = 8;
+/// Files smaller than this download over one connection.
+const SEGMENT_MIN: u64 = 128 * 1024 * 1024;
+
+/// Total size, if the server serves byte ranges.
+async fn ranged_size(http: &reqwest::Client, url: &str) -> Option<u64> {
+    let resp = http
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await
+        .ok()?;
+    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return None;
+    }
+    // "bytes 0-0/12345"
+    let total = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)?
+        .to_str()
+        .ok()?
+        .rsplit('/')
+        .next()?
+        .parse()
+        .ok()?;
+    Some(total)
+}
+
+/// Downloads `url` into `tmp`, reporting the bytes done so far. Returns the size.
+async fn fetch(
+    http: &reqwest::Client,
+    url: &str,
+    tmp: &Path,
+    progress: impl Fn(u64),
+) -> Result<u64> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let Some(total) = ranged_size(http, url).await.filter(|t| *t >= SEGMENT_MIN) else {
+        return fetch_single(http, url, tmp, progress).await;
+    };
+    let file = tokio::fs::File::create(tmp).await?;
+    file.set_len(total).await?;
+    drop(file);
+
+    let done = Arc::new(AtomicU64::new(0));
+    let step = total.div_ceil(SEGMENTS);
+    let mut tasks = tokio::task::JoinSet::new();
+    for i in 0..SEGMENTS {
+        let start = i * step;
+        if start >= total {
+            break;
+        }
+        let end = (start + step).min(total); // exclusive
+        let (http, url, tmp, done) = (
+            http.clone(),
+            url.to_string(),
+            tmp.to_path_buf(),
+            done.clone(),
+        );
+        tasks.spawn(async move { fetch_range(&http, &url, &tmp, start, end, &done).await });
+    }
+    loop {
+        tokio::select! {
+            r = tasks.join_next() => match r {
+                None => break,
+                Some(Ok(Ok(()))) => {}
+                Some(Ok(Err(e))) => return Err(e),
+                Some(Err(e)) => bail!("download task failed: {e}"),
+            },
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+        }
+        progress(done.load(Ordering::Relaxed));
+    }
+    progress(done.load(Ordering::Relaxed));
+    let got = done.load(Ordering::Relaxed);
+    if got != total {
+        bail!("download incomplete ({got} of {total} bytes)");
+    }
+    Ok(total)
+}
+
+/// One byte range `[start, end)`, written in place. Retries a few times,
+/// carrying on from where it stopped.
+async fn fetch_range(
+    http: &reqwest::Client,
+    url: &str,
+    tmp: &Path,
+    start: u64,
+    end: u64,
+    done: &std::sync::atomic::AtomicU64,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncSeekExt;
+    let mut pos = start;
+    let mut attempt: u64 = 0;
+    while pos < end {
+        let r: Result<()> = async {
+            let resp = http
+                .get(url)
+                .header(reqwest::header::RANGE, format!("bytes={pos}-{}", end - 1))
+                .send()
+                .await?
+                .error_for_status()?;
+            if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                bail!("the server stopped serving byte ranges");
+            }
+            let mut f = tokio::fs::OpenOptions::new().write(true).open(tmp).await?;
+            f.seek(std::io::SeekFrom::Start(pos)).await?;
+            let mut f = tokio::io::BufWriter::with_capacity(4 * 1024 * 1024, f);
+            let mut resp = resp;
+            while let Some(chunk) = tokio::time::timeout(Duration::from_secs(120), resp.chunk())
+                .await
+                .map_err(|_| anyhow!("download stalled"))??
+            {
+                let take = (chunk.len() as u64).min(end - pos) as usize;
+                f.write_all(&chunk[..take]).await?;
+                pos += take as u64;
+                done.fetch_add(take as u64, Ordering::Relaxed);
+                if pos >= end {
+                    break;
+                }
+            }
+            f.flush().await?;
+            Ok(())
+        }
+        .await;
+        if pos >= end {
+            return Ok(());
+        }
+        attempt += 1;
+        match r {
+            Err(e) if attempt > 5 => return Err(e),
+            Ok(()) if attempt > 5 => bail!("download kept stopping early"),
+            Err(e) => tracing::info!("download range retry: {e:#}"),
+            Ok(()) => {}
+        }
+        tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
+    }
+    Ok(())
+}
+
+/// One connection, start to end.
+async fn fetch_single(
+    http: &reqwest::Client,
+    url: &str,
+    tmp: &Path,
+    progress: impl Fn(u64),
+) -> Result<u64> {
+    let mut resp = http.get(url).send().await?.error_for_status()?;
+    let file = tokio::fs::File::create(tmp).await?;
+    let mut file = tokio::io::BufWriter::with_capacity(4 * 1024 * 1024, file);
+    let mut done: u64 = 0;
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(120), resp.chunk())
+        .await
+        .map_err(|_| anyhow!("download stalled"))??
+    {
+        file.write_all(&chunk).await?;
+        done += chunk.len() as u64;
+        progress(done);
+    }
+    file.flush().await?;
+    Ok(done)
 }
 
 impl Downloads {
@@ -582,6 +739,77 @@ async fn remove_partials(dir: &Path, parts: &[String]) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Serves `data` with byte-range support, like the Hugging Face CDN.
+    async fn range_server(data: Arc<Vec<u8>>, ranges: bool) -> String {
+        use axum::http::{HeaderMap, StatusCode, header};
+        let app = axum::Router::new().route(
+            "/f",
+            axum::routing::get(move |h: HeaderMap| {
+                let data = data.clone();
+                async move {
+                    let range = h
+                        .get(header::RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("bytes="))
+                        .and_then(|v| v.split_once('-'))
+                        .and_then(|(a, b)| {
+                            Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+                        });
+                    match range {
+                        Some((a, b)) if ranges => {
+                            let b = b.min(data.len() - 1);
+                            (
+                                StatusCode::PARTIAL_CONTENT,
+                                [(
+                                    header::CONTENT_RANGE,
+                                    format!("bytes {a}-{b}/{}", data.len()),
+                                )],
+                                data[a..=b].to_vec(),
+                            )
+                        }
+                        _ => (
+                            StatusCode::OK,
+                            [(header::CONTENT_RANGE, String::new())],
+                            data.to_vec(),
+                        ),
+                    }
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = l.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(l, app).await });
+        format!("http://{addr}/f")
+    }
+
+    #[tokio::test]
+    async fn downloads_in_parallel_ranges_and_without() {
+        let data: Vec<u8> = (0..(SEGMENT_MIN as usize + 12_345))
+            .map(|i| (i * 31 % 251) as u8)
+            .collect();
+        let data = Arc::new(data);
+        let dir = std::env::temp_dir().join(format!("relay-fetch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let http = client().expect("client");
+        for ranges in [true, false] {
+            let url = range_server(data.clone(), ranges).await;
+            let tmp = dir.join(format!("m-{ranges}.gguf.part"));
+            let last = std::sync::Mutex::new(0u64);
+            let n = fetch(&http, &url, &tmp, |d| *last.lock().expect("lock") = d)
+                .await
+                .expect("fetch");
+            assert_eq!(n, data.len() as u64);
+            assert_eq!(*last.lock().expect("lock"), n);
+            assert!(
+                std::fs::read(&tmp).expect("read") == *data,
+                "bytes match (ranges={ranges})"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn validates_names() {

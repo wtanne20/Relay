@@ -25,3 +25,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 strip = true
+
+# Dev builds: optimize dependencies (TLS, HTTP, tokio) so downloads and
+# llama-server traffic run at full speed; Relay's own code stays debuggable.
+[profile.dev.package."*"]
+opt-level = 3

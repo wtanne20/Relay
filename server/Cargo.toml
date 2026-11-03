@@ -37,3 +37,8 @@ strip = true
 [dev-dependencies]
 futures-core = "0.3"
 tokio-tungstenite = "0.29"
+
+# Dev builds: optimize dependencies (TLS, HTTP, tokio) so downloads and
+# llama-server traffic run at full speed; Relay's own code stays debuggable.
+[profile.dev.package."*"]
+opt-level = 3
