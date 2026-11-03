@@ -29,7 +29,7 @@ fi
 metro=$!
 trap 'kill $metro 2>/dev/null || true' EXIT
 if [ "$desktop" = 1 ]; then
-  (cd "$root/desktop" && npx tauri dev)
+  (cd "$root/desktop" && npx tauri dev --additional-watch-folders ../server/src)
 else
   wait $metro
 fi
