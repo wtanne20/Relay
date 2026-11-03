@@ -18,7 +18,7 @@ use crate::config::{CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, Up
 use crate::db::{self, Db};
 use crate::model_manager::ModelManager;
 use crate::push::Pusher;
-use crate::setup::{Hardware, Tailscale};
+use crate::setup::{self, Hardware, Tailscale};
 
 pub struct AppInner {
     pub cfg: Arc<SharedConfig>,
@@ -124,6 +124,7 @@ where
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/info", get(info))
+        .route("/pairing", get(pairing))
         .route("/model", get(model_status))
         .route("/model/restart", post(model_restart))
         .route("/models", get(list_models))
@@ -158,8 +159,31 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
+        // Outside auth so browser preflight requests (which carry no token) get an answer.
+        .layer(cors())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Origins allowed to call the API from a browser engine: the Relay desktop
+/// app's window and the local Expo dev server. Every request still needs the
+/// token; this only lets those pages read the responses.
+pub const ALLOWED_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+];
+
+fn cors() -> tower_http::cors::CorsLayer {
+    use axum::http::{HeaderValue, Method};
+    let origins: Vec<HeaderValue> = ALLOWED_ORIGINS.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(std::time::Duration::from_secs(600))
 }
 
 /// Requires `Authorization: Bearer <token>` on every request. WebSocket
@@ -214,6 +238,17 @@ async fn info(State(s): State<AppState>) -> ApiResult<Json<Value>> {
         "gpus": s.hardware.gpus,
         "tailscale": s.tailscale,
     })))
+}
+
+/// What the phone needs to pair: the address (Tailscale when available),
+/// the relay:// link and the QR code as SVG. Lets the desktop app show the
+/// pairing code.
+async fn pairing(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let (bind, token) = s.cfg.read(|l| (l.config.bind.clone(), l.config.token.clone()));
+    let url = setup::pairing_url(s.tailscale.as_ref(), crate::port_of(&bind));
+    let payload = setup::pairing_payload(&url, &token);
+    let svg = setup::qr_svg(&payload, 256).map_err(|e| ApiError::Internal(format!("QR code: {e}")))?;
+    Ok(Json(json!({ "url": url, "link": payload, "svg": svg, "tailscale": s.tailscale.is_some() })))
 }
 
 // ---------- settings ----------

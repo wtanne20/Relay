@@ -424,10 +424,15 @@ pub fn qr_console(payload: &str) -> Result<String> {
         .build())
 }
 
+/// The pairing QR code as an SVG document.
+pub fn qr_svg(payload: &str, size: u32) -> Result<String> {
+    let code = qrcode::QrCode::new(payload.as_bytes())?;
+    Ok(code.render::<qrcode::render::svg::Color>().min_dimensions(size, size).quiet_zone(true).build())
+}
+
 /// Writes pairing.html (QR code + instructions) into the data folder.
 pub fn write_pairing_page(data_dir: &Path, url: &str, payload: &str, tailscale_found: bool) -> Result<PathBuf> {
-    let code = qrcode::QrCode::new(payload.as_bytes())?;
-    let svg = code.render::<qrcode::render::svg::Color>().min_dimensions(320, 320).quiet_zone(true).build();
+    let svg = qr_svg(payload, 320)?;
     let warning = if tailscale_found {
         String::new()
     } else {

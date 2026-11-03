@@ -420,6 +420,7 @@ pub async fn run_shell(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn()?;
+    crate::process_guard::tie_to_relay(&child);
     let pid = child.id();
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;

@@ -6,12 +6,16 @@ on:
     tags: ["v*"]
     paths:
       - "server/**"
+      - "desktop/**"
+      - "mobile/**"
       - "installer/**"
       - "README.md"
       - ".github/workflows/windows.yml"
   pull_request:
     paths:
       - "server/**"
+      - "desktop/**"
+      - "mobile/**"
       - "installer/**"
   workflow_dispatch:
 
@@ -36,7 +40,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             server/target
-          key: windows-cargo-${{ hashFiles('server/Cargo.lock') }}
+            desktop/src-tauri/target
+          key: windows-cargo-${{ hashFiles('server/Cargo.lock', 'desktop/src-tauri/Cargo.lock') }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            desktop/package-lock.json
 
       - name: Test
         working-directory: server
@@ -45,6 +58,13 @@ jobs:
       - name: Build relay.exe
         working-directory: server
         run: cargo build --release --locked
+
+      - name: Build the desktop app (relay-desktop.exe)
+        run: |
+          Push-Location mobile; npm ci; Pop-Location
+          Push-Location desktop; npm ci; npx tauri build --no-bundle; Pop-Location
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path desktop\src-tauri\target\release\relay-desktop.exe)) { throw "relay-desktop.exe was not built" }
 
       - name: Read version
         id: version

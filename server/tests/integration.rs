@@ -628,3 +628,47 @@ async fn settings_skills_and_approvals() {
     assert_eq!(ev.last().map(|e| e["status"].clone()), Some(json!("stopped")));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn pairing_and_cors() {
+    let h = Harness::start().await;
+
+    // The pairing endpoint needs the token like everything else.
+    let r = h.http.get(format!("{}/pairing", h.base)).send().await.expect("pairing");
+    assert_eq!(r.status(), 401);
+    let p = h.get("/pairing").await;
+    let link = p["link"].as_str().expect("link");
+    assert!(link.starts_with("relay://pair?url="), "{link}");
+    assert!(link.contains(&h.token));
+    assert!(p["svg"].as_str().is_some_and(|s| s.contains("<svg")));
+
+    let preflight = |origin: &'static str| {
+        h.http
+            .request(reqwest::Method::OPTIONS, format!("{}/info", h.base))
+            .header("Origin", origin)
+            .header("Access-Control-Request-Method", "GET")
+            .header("Access-Control-Request-Headers", "authorization")
+            .send()
+    };
+    // The desktop window and the local dev server may read responses...
+    for origin in ["http://tauri.localhost", "tauri://localhost", "http://localhost:8081"] {
+        let r = preflight(origin).await.expect("preflight");
+        assert_eq!(
+            r.headers().get("access-control-allow-origin").and_then(|v| v.to_str().ok()),
+            Some(origin),
+            "{origin}"
+        );
+    }
+    // ...other web pages may not.
+    let r = preflight("https://evil.example").await.expect("preflight");
+    assert!(r.headers().get("access-control-allow-origin").is_none());
+    // CORS never replaces the token.
+    let r = h
+        .http
+        .get(format!("{}/info", h.base))
+        .header("Origin", "http://tauri.localhost")
+        .send()
+        .await
+        .expect("info");
+    assert_eq!(r.status(), 401);
+}

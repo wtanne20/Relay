@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod migrate;
 pub mod model_manager;
+pub mod process_guard;
 pub mod push;
 pub mod setup;
 pub mod skills;
@@ -65,9 +66,57 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     Ok((api::router(state.clone()), state))
 }
 
+/// How [`run_server`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServeOutcome {
+    /// Another Relay already listens on the port; nothing was started.
+    AlreadyRunning,
+    /// The server ran and was stopped through the shutdown token.
+    Stopped,
+}
+
+/// Options for [`run_server`].
+pub struct ServeOptions {
+    /// Print the QR code and connection details to the console.
+    pub console: bool,
+    /// Open the pairing page in the browser on the very first run.
+    pub open_pairing_page: bool,
+    /// Cancel this to stop the server; running tasks and llama-server are
+    /// stopped before `run_server` returns.
+    pub shutdown: CancellationToken,
+}
+
 /// `relay serve`: runs until Ctrl+C (or the window is closed), then stops
 /// tasks and llama-server.
 pub async fn serve(cfg: LoadedConfig) -> Result<()> {
+    let bind = cfg.config.bind.clone();
+    let token = cfg.config.token.clone();
+    let data_dir = cfg.data_dir.clone();
+    let shutdown = CancellationToken::new();
+    let signal = shutdown.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        signal.cancel();
+    });
+    let opts = ServeOptions { console: true, open_pairing_page: true, shutdown };
+    if run_server(cfg, opts).await? == ServeOutcome::AlreadyRunning {
+        println!();
+        println!("  Relay is already running on this PC (port {} is in use).", port_of(&bind));
+        println!("  Opening the pairing page instead...");
+        let ts = setup::detect_tailscale().await;
+        let url = setup::pairing_url(ts.as_ref(), port_of(&bind));
+        if let Ok(page) = setup::write_pairing_page(&data_dir, &url, &setup::pairing_payload(&url, &token), ts.is_some()) {
+            setup::open_in_browser(&page);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    Ok(())
+}
+
+/// Runs the Relay server until `opts.shutdown` is cancelled. Used by
+/// `relay serve` and by the Relay desktop app, which runs the server in the
+/// background.
+pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOutcome> {
     let bind = cfg.config.bind.clone();
     let token = cfg.config.token.clone();
     let cfg_path = cfg.path.clone();
@@ -76,18 +125,7 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
 
     let listener = match tokio::net::TcpListener::bind(&bind).await {
         Ok(l) => l,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            println!();
-            println!("  Relay is already running on this PC (port {} is in use).", port_of(&bind));
-            println!("  Opening the pairing page instead...");
-            let ts = setup::detect_tailscale().await;
-            let url = setup::pairing_url(ts.as_ref(), port_of(&bind));
-            if let Ok(page) = setup::write_pairing_page(&data_dir, &url, &setup::pairing_payload(&url, &token), ts.is_some()) {
-                setup::open_in_browser(&page);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            return Ok(());
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Ok(ServeOutcome::AlreadyRunning),
         Err(e) => return Err(e).with_context(|| format!("binding {bind}")),
     };
     let (app, state) = build_app(cfg).await?;
@@ -96,44 +134,46 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
     let payload = setup::pairing_payload(&url, &token);
     let page = setup::write_pairing_page(&data_dir, &url, &payload, state.tailscale.is_some());
 
-    println!();
-    println!("  Relay {} is running. Keep this window open (you can minimize it).", env!("CARGO_PKG_VERSION"));
-    println!("  Settings and data: {}", cfg_path.parent().unwrap_or(&data_dir).display());
-    println!();
-    match setup::qr_console(&payload) {
-        Ok(qr) => {
-            println!("  Scan this with the Relay phone app to connect:");
-            println!("{qr}");
-        }
-        Err(e) => tracing::warn!("could not draw QR code: {e}"),
-    }
-    println!("  Or enter it by hand:");
-    println!("    Address: {url}");
-    println!("    Token:   {token}");
-    if state.tailscale.is_none() {
+    if opts.console {
         println!();
-        println!("  Tailscale was not found on this PC. Install it from https://tailscale.com and");
-        println!("  sign in with the same account as your phone, then restart Relay.");
+        println!("  Relay {} is running. Keep this window open (you can minimize it).", env!("CARGO_PKG_VERSION"));
+        println!("  Settings and data: {}", cfg_path.parent().unwrap_or(&data_dir).display());
+        println!();
+        match setup::qr_console(&payload) {
+            Ok(qr) => {
+                println!("  Scan this with the Relay phone app to connect:");
+                println!("{qr}");
+            }
+            Err(e) => tracing::warn!("could not draw QR code: {e}"),
+        }
+        println!("  Or enter it by hand:");
+        println!("    Address: {url}");
+        println!("    Token:   {token}");
+        if state.tailscale.is_none() {
+            println!();
+            println!("  Tailscale was not found on this PC. Install it from https://tailscale.com and");
+            println!("  sign in with the same account as your phone, then restart Relay.");
+        }
+        println!();
+        println!("  Press Ctrl+C or close this window to stop Relay.");
+        println!();
     }
-    println!();
-    println!("  Press Ctrl+C or close this window to stop Relay.");
-    println!();
 
     match page {
-        Ok(p) if first_run => setup::open_in_browser(&p),
+        Ok(p) if first_run && opts.open_pairing_page => setup::open_in_browser(&p),
         Ok(_) => {}
         Err(e) => tracing::warn!("could not write pairing page: {e:#}"),
     }
 
-    let shutdown = state.shutdown.clone();
+    let external = opts.shutdown.clone();
+    let internal = state.shutdown.clone();
     tokio::spawn(async move {
-        wait_for_shutdown_signal().await;
-        shutdown.cancel();
+        external.cancelled().await;
+        internal.cancel();
     });
 
     let graceful = state.shutdown.clone();
-    let server = axum::serve(listener, app)
-        .with_graceful_shutdown(async move { graceful.cancelled().await });
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move { graceful.cancelled().await });
     let forced = state.shutdown.clone();
     tokio::select! {
         r = server => r.context("server error")?,
@@ -148,7 +188,7 @@ pub async fn serve(cfg: LoadedConfig) -> Result<()> {
     tracing::info!("stopping llama-server");
     state.model.shutdown().await;
     tracing::info!("bye");
-    Ok(())
+    Ok(ServeOutcome::Stopped)
 }
 
 /// `relay pair`: shows the QR code (console and browser) without starting
@@ -200,6 +240,7 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-fn port_of(bind: &str) -> &str {
+/// The port part of a bind address such as `0.0.0.0:8765`.
+pub fn port_of(bind: &str) -> &str {
     bind.rsplit(':').next().unwrap_or("8765")
 }

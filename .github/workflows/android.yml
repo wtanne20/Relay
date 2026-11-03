@@ -1,6 +1,9 @@
 name: Android app
 
-# Builds an installable Relay.apk for Android phones (no Expo account needed).
+# Builds installable APKs for Android phones (no Expo account needed):
+#  - Relay.apk      the normal app
+#  - Relay-Dev.apk  a development build ("Relay Dev") that loads the app's code
+#                   live from Metro on your PC; see DEVELOPING.md
 # It is signed with the Android debug key, which is fine for installing on
 # your own phone: download the artifact, open it on the phone and allow
 # "install unknown apps" when asked.
@@ -20,6 +23,22 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: release
+            artifact: Relay-android
+            apk: Relay.apk
+            gradle_task: assembleRelease
+            output: release/app-release.apk
+          - variant: dev
+            artifact: Relay-Dev-android
+            apk: Relay-Dev.apk
+            gradle_task: assembleDebug
+            output: debug/app-debug.apk
+    env:
+      APP_VARIANT: ${{ matrix.variant }}
     defaults:
       run:
         working-directory: mobile
@@ -50,19 +69,19 @@ jobs:
 
       - name: Build APK
         working-directory: mobile/android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew ${{ matrix.gradle_task }} --no-daemon
 
       - name: Rename
-        run: cp android/app/build/outputs/apk/release/app-release.apk Relay.apk
+        run: cp android/app/build/outputs/apk/${{ matrix.output }} ${{ matrix.apk }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Relay-android
-          path: mobile/Relay.apk
+          name: ${{ matrix.artifact }}
+          path: mobile/${{ matrix.apk }}
           if-no-files-found: error
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.variant == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: mobile/Relay.apk

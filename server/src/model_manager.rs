@@ -471,6 +471,7 @@ impl Supervisor {
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("failed to launch {}: {e}", exe.display()))?;
+        crate::process_guard::tie_to_relay(&child);
         if let Some(out) = child.stdout.take() {
             tokio::spawn(pipe_to_log(out, log.clone()));
         }

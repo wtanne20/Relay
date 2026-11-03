@@ -1,0 +1,14 @@
+# Throwaway config for UI work without a GPU (dev.ps1 -Mock / dev.sh --mock).
+# The dev scripts copy this to dev/data/config.toml and fill in the paths.
+# Relay generates a token on first start and saves it back here.
+bind = "0.0.0.0:8766"
+
+[agent]
+approval = "commands"
+
+[llama]
+llama_server_path = "@MOCK_LLAMA@"
+model_path = "@MODEL@"
+port = 18082
+extra_args = ["--load-ms", "1500"]
+auto_setup = false

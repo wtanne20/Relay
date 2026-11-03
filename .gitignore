@@ -23,3 +23,9 @@ server/skills/*
 # Installer output
 installer/Output/
 mobile/Relay.apk
+# Desktop app
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+# Dev scripts' throwaway data (token, chats)
+dev/data/

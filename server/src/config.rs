@@ -277,10 +277,16 @@ impl Config {
 
 pub const CACHE_TYPES: &[&str] = &["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0"];
 
-/// Where Relay keeps its data when no --config is given: ./config.toml if it
+/// Where Relay keeps its data when no --config is given: $RELAY_CONFIG if set,
+/// else ./config.toml if it
 /// exists (running from a source checkout), otherwise %LOCALAPPDATA%\Relay
 /// on Windows or ~/.local/share/relay elsewhere.
 pub fn default_config_path() -> PathBuf {
+    // RELAY_CONFIG points the server and the desktop app at another config,
+    // e.g. the throwaway one the dev scripts use.
+    if let Some(p) = std::env::var_os("RELAY_CONFIG").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
     let local = PathBuf::from("config.toml");
     if local.exists() {
         return local;
