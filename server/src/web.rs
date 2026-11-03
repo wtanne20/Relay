@@ -14,6 +14,9 @@ use serde_json::Value;
 pub const MAX_PAGE_CHARS: usize = 12_000;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
+/// Pause between DuckDuckGo searches, and before the retry after a captcha.
+const DDG_GAP: Duration = Duration::from_millis(1500);
+const DDG_RETRY_WAIT: Duration = Duration::from_secs(5);
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 Relay";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,22 +59,38 @@ pub async fn search(query: &str, max: usize, brave_key: &str) -> Result<Vec<Hit>
             .await?;
         return Ok(parse_brave(&v, max));
     }
-    let html = http
-        .get("https://html.duckduckgo.com/html/")
-        .query(&[("q", query)])
-        .send()
-        .await
-        .context("could not reach DuckDuckGo")?
-        .error_for_status()?
-        .text()
-        .await?;
-    let hits = parse_ddg(&html, max);
-    if hits.is_empty() && html.contains("anomaly") {
-        bail!(
-            "DuckDuckGo asked for a captcha. Try again in a minute, or add a Brave Search API key in Agent settings"
-        );
+    // DuckDuckGo shows a captcha when searches come in quick bursts (the
+    // model often asks for several at once), so they go one at a time, a
+    // little apart, with one retry after a pause.
+    static DDG: tokio::sync::Mutex<Option<tokio::time::Instant>> =
+        tokio::sync::Mutex::const_new(None);
+    let mut last = DDG.lock().await;
+    for attempt in 0..2 {
+        if let Some(t) = *last {
+            let gap = if attempt == 0 {
+                DDG_GAP
+            } else {
+                DDG_RETRY_WAIT
+            };
+            tokio::time::sleep_until(t + gap).await;
+        }
+        let html = http
+            .get("https://html.duckduckgo.com/html/")
+            .query(&[("q", query)])
+            .send()
+            .await
+            .context("could not reach DuckDuckGo");
+        *last = Some(tokio::time::Instant::now());
+        let html = html?.error_for_status()?.text().await?;
+        let hits = parse_ddg(&html, max);
+        if hits.is_empty() && html.contains("anomaly") {
+            continue;
+        }
+        return Ok(hits);
     }
-    Ok(hits)
+    bail!(
+        "DuckDuckGo asked for a captcha. Try again in a minute, or add a Brave Search API key in Agent settings"
+    )
 }
 
 pub fn parse_brave(v: &Value, max: usize) -> Vec<Hit> {
