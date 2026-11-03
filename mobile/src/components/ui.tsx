@@ -325,29 +325,37 @@ export function ListItem({
   onLongPress?: () => void;
   accessibilityHint?: string;
 }) {
+  // The trailing control sits beside the pressable row, not inside it
+  // (a button may not contain another button on the web/desktop).
   return (
-    <Pressable
-      onPress={onPress}
-      onLongPress={onLongPress}
-      disabled={!onPress && !onLongPress}
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={title}
-      accessibilityHint={accessibilityHint}
-      style={({ pressed }) => [styles.listItem, pressed && styles.listPressed]}
-    >
-      {leading}
-      <View style={styles.grow}>
-        <Text style={type.bodyLarge} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text style={type.bodyMedium} numberOfLines={1} ellipsizeMode="middle">
-            {subtitle}
+    <View style={styles.listRow}>
+      <Pressable
+        onPress={onPress}
+        onLongPress={onLongPress}
+        disabled={!onPress && !onLongPress}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityLabel={title}
+        accessibilityHint={accessibilityHint}
+        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+          styles.listItem,
+          trailing ? styles.listItemWithTrailing : null,
+          (pressed || hovered) && styles.listPressed,
+        ]}
+      >
+        {leading}
+        <View style={styles.grow}>
+          <Text style={type.bodyLarge} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
-      </View>
-      {trailing}
-    </Pressable>
+          {subtitle ? (
+            <Text style={type.bodyMedium} numberOfLines={1} ellipsizeMode="middle">
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+      {trailing ? <View style={styles.listTrailing}>{trailing}</View> : null}
+    </View>
   );
 }
 
@@ -447,7 +455,12 @@ const styles = StyleSheet.create({
   },
   emptyBody: { textAlign: 'center', color: m3.onSurfaceVariant },
   avatar: { backgroundColor: m3.primaryContainer, alignItems: 'center', justifyContent: 'center' },
+  listRow: { flexDirection: 'row', alignItems: 'center' },
+  listItemWithTrailing: { paddingRight: 0 },
+  listTrailing: { paddingRight: space.sm },
   listItem: {
+    flex: 1,
+    minWidth: 0,
     minHeight: 72,
     flexDirection: 'row',
     alignItems: 'center',

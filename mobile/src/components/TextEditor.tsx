@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { usePageStyle } from '../lib/layout';
 import { m3, mono, radius, space, type } from './theme';
 import { Banner, Button } from './ui';
 
@@ -21,6 +22,7 @@ export function TextEditor({
   placeholder?: string;
 }) {
   const insets = useSafeAreaInsets();
+  const page = usePageStyle();
   const [original, setOriginal] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +79,7 @@ export function TextEditor({
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={90}
     >
-      <View style={[styles.flex, styles.content, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
+      <View style={[styles.flex, styles.content, page, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
         <Text style={type.bodyMedium}>{intro}</Text>
         {error ? <Banner message={error} /> : null}
         <TextInput

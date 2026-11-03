@@ -18,6 +18,7 @@ import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
+import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
 import type { Message } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
 
@@ -31,6 +32,8 @@ export default function ChatScreen() {
   const { id, title: initialTitle } = useLocalSearchParams<{ id: string; title?: string }>();
   const insets = useSafeAreaInsets();
   const stream = useSessionStream(client, id);
+  const wide = useWide();
+  const page = usePageStyle();
   const [title, setTitle] = useState(initialTitle ?? 'Session');
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -121,13 +124,15 @@ export default function ChatScreen() {
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <IconButton
-          icon="arrow-left"
-          label="Back"
-          color={m3.onSurface}
-          onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
-        />
+      <View style={[styles.header, wide && styles.headerWide]}>
+        {wide ? null : (
+          <IconButton
+            icon="arrow-left"
+            label="Back"
+            color={m3.onSurface}
+            onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
+          />
+        )}
         <View style={styles.headerText}>
           <Text style={type.titleMedium} numberOfLines={1}>
             {title}
@@ -148,7 +153,7 @@ export default function ChatScreen() {
           inverted
           data={items}
           keyExtractor={(it) => it.key}
-          contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
+          contentContainerStyle={[styles.list, page, items.length === 0 && styles.listEmpty]}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           onEndReached={stream.loadOlder}
@@ -186,85 +191,89 @@ export default function ChatScreen() {
           }}
         />
 
-        {stream.linkError && stream.link !== 'live' ? (
-          <Banner kind="warning" message={stream.linkError} actionLabel="Retry" onAction={stream.reconnect} />
-        ) : null}
-        {stream.status === 'error' && stream.taskError ? <Banner message={stream.taskError} /> : null}
-        {sendError ? <Banner message={sendError} actionLabel="Dismiss" onAction={() => setSendError(null)} /> : null}
-        {stream.approval ? (
-          <ApprovalCard
-            key={stream.approval.tool_call_id}
-            approval={stream.approval}
-            onDecide={async (decision) => {
-              const pending = stream.approval;
-              if (!pending) return;
-              try {
-                await client.answerApproval(id, pending.tool_call_id, decision);
-                stream.setApproval(null);
-              } catch (e) {
-                setSendError(describeError(e));
-                if (e instanceof ApiError && e.status === 409) stream.setApproval(null);
-              }
-            }}
-          />
-        ) : null}
-
-        <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
-          <View style={styles.composer}>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder={
-                stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
-              }
-              placeholderTextColor={m3.outline}
-              selectionColor={m3.primary}
-              cursorColor={m3.primary}
-              multiline
-              autoCapitalize="sentences"
-              accessibilityLabel="Prompt"
+        <View style={page}>
+          {stream.linkError && stream.link !== 'live' ? (
+            <Banner kind="warning" message={stream.linkError} actionLabel="Retry" onAction={stream.reconnect} />
+          ) : null}
+          {stream.status === 'error' && stream.taskError ? <Banner message={stream.taskError} /> : null}
+          {sendError ? <Banner message={sendError} actionLabel="Dismiss" onAction={() => setSendError(null)} /> : null}
+          {stream.approval ? (
+            <ApprovalCard
+              key={stream.approval.tool_call_id}
+              approval={stream.approval}
+              onDecide={async (decision) => {
+                const pending = stream.approval;
+                if (!pending) return;
+                try {
+                  await client.answerApproval(id, pending.tool_call_id, decision);
+                  stream.setApproval(null);
+                } catch (e) {
+                  setSendError(describeError(e));
+                  if (e instanceof ApiError && e.status === 409) stream.setApproval(null);
+                }
+              }}
             />
-            <View style={styles.composerRow}>
-              <View style={styles.composerHint}>
-                <Icon name="folder-outline" size={16} color={m3.outline} />
-                <Text style={[type.bodySmall, { color: m3.outline }]} numberOfLines={1}>
-                  {running ? 'Working in your project…' : 'Runs on your PC'}
-                </Text>
+          ) : null}
+
+          <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, wide ? space.lg : space.sm) }]}>
+            <View style={styles.composer}>
+              <TextInput
+                style={styles.input}
+                value={input}
+                onChangeText={setInput}
+                placeholder={
+                  stream.approval ? 'Waiting for your answer…' : running ? 'Agent is working…' : 'Message the agent'
+                }
+                placeholderTextColor={m3.outline}
+                selectionColor={m3.primary}
+                cursorColor={m3.primary}
+                multiline
+                autoCapitalize="sentences"
+                autoFocus={wide}
+                onKeyPress={enterToSend(send)}
+                accessibilityLabel="Prompt"
+              />
+              <View style={styles.composerRow}>
+                <View style={styles.composerHint}>
+                  <Icon name="folder-outline" size={16} color={m3.outline} />
+                  <Text style={[type.bodySmall, { color: m3.outline }]} numberOfLines={1}>
+                    {running ? 'Working in your project…' : 'Runs on your PC'}
+                  </Text>
+                </View>
+                {running ? (
+                  <Pressable
+                    onPress={stop}
+                    disabled={stopping}
+                    style={({ pressed }) => [styles.action, styles.stop, (pressed || stopping) && { opacity: 0.7 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Stop the agent"
+                  >
+                    {stopping ? (
+                      <ActivityIndicator color={m3.onErrorContainer} />
+                    ) : (
+                      <Icon name="stop" size={22} color={m3.onErrorContainer} />
+                    )}
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={send}
+                    disabled={!canSend}
+                    style={({ pressed }) => [
+                      styles.action,
+                      canSend ? styles.send : styles.sendOff,
+                      pressed && { opacity: 0.85 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send"
+                  >
+                    {sending ? (
+                      <ActivityIndicator color={m3.onPrimary} />
+                    ) : (
+                      <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
+                    )}
+                  </Pressable>
+                )}
               </View>
-              {running ? (
-                <Pressable
-                  onPress={stop}
-                  disabled={stopping}
-                  style={({ pressed }) => [styles.action, styles.stop, (pressed || stopping) && { opacity: 0.7 }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Stop the agent"
-                >
-                  {stopping ? (
-                    <ActivityIndicator color={m3.onErrorContainer} />
-                  ) : (
-                    <Icon name="stop" size={22} color={m3.onErrorContainer} />
-                  )}
-                </Pressable>
-              ) : (
-                <Pressable
-                  onPress={send}
-                  disabled={!canSend}
-                  style={({ pressed }) => [
-                    styles.action,
-                    canSend ? styles.send : styles.sendOff,
-                    pressed && { opacity: 0.85 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Send"
-                >
-                  {sending ? (
-                    <ActivityIndicator color={m3.onPrimary} />
-                  ) : (
-                    <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
-                  )}
-                </Pressable>
-              )}
             </View>
           </View>
         </View>
@@ -281,6 +290,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: space.xs,
     gap: space.xs,
+  },
+  headerWide: {
+    paddingLeft: space.xl,
+    paddingRight: space.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: m3.outlineVariant,
   },
   headerText: { flex: 1, minWidth: 0, paddingHorizontal: space.xs },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },

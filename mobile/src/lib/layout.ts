@@ -19,3 +19,19 @@ export function usePageStyle(max: number = PAGE_MAX): ViewStyle | undefined {
   const wide = useWide();
   return wide ? { width: '100%', maxWidth: max, alignSelf: 'center' } : undefined;
 }
+
+/**
+ * Desktop composer behaviour: Enter sends, Shift+Enter adds a new line.
+ * Returns an onKeyPress handler for a multiline TextInput (no-op on phones,
+ * where Enter always adds a new line).
+ */
+export function enterToSend(send: () => void) {
+  return (e: { nativeEvent: { key: string }; preventDefault?: () => void }) => {
+    if (Platform.OS !== 'web') return;
+    const ne = e.nativeEvent as { key: string; shiftKey?: boolean; isComposing?: boolean };
+    if (ne.key === 'Enter' && !ne.shiftKey && !ne.isComposing) {
+      e.preventDefault?.();
+      send();
+    }
+  };
+}

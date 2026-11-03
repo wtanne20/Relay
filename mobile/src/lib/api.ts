@@ -117,6 +117,10 @@ export class RelayClient {
   info() {
     return this.request<ServerInfo>('GET', '/info');
   }
+  /** Pairing details for a phone: address, relay:// link and QR code (SVG). */
+  pairing() {
+    return this.request<{ url: string; link: string; svg: string; tailscale: boolean }>('GET', '/pairing');
+  }
   model() {
     return this.request<ModelStatus>('GET', '/model');
   }

@@ -1,12 +1,15 @@
 import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Sheet } from '../../components/Sheet';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Button, EmptyState, Fab, Field, IconButton, StatusBadge } from '../../components/ui';
+import { emit } from '../../lib/events';
+import { alert } from '../../components/Dialogs';
 import { describeError } from '../../lib/api';
+import { usePageStyle } from '../../lib/layout';
 import { useClient } from '../../lib/connection';
 import { relativeTime } from '../../lib/format';
 import type { Session } from '../../lib/types';
@@ -14,6 +17,7 @@ import type { Session } from '../../lib/types';
 const POLL_MS = 5000;
 
 export default function SessionsScreen() {
+  const page = usePageStyle();
   const client = useClient();
   const { id, name } = useLocalSearchParams<{ id: string; name?: string }>();
   const insets = useSafeAreaInsets();
@@ -62,22 +66,23 @@ export default function SessionsScreen() {
     setCreating(true);
     try {
       const s = await client.createSession(id);
+      emit('chats');
       router.push({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
     } catch (e) {
-      Alert.alert('Could not start a chat', describeError(e));
+      alert('Could not start a chat', describeError(e));
     } finally {
       setCreating(false);
     }
   };
 
   const actions = (s: Session) => {
-    Alert.alert(s.title, undefined, [
+    alert(s.title, undefined, [
       { text: 'Rename', onPress: () => setRenaming(s) },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: () =>
-          Alert.alert('Delete this chat?', 'Its messages are removed from Relay. Files on your PC are not touched.', [
+          alert('Delete this chat?', 'Its messages are removed from Relay. Files on your PC are not touched.', [
             { text: 'Cancel', style: 'cancel' },
             {
               text: 'Delete',
@@ -85,9 +90,10 @@ export default function SessionsScreen() {
               onPress: async () => {
                 try {
                   await client.deleteSession(s.id);
+                  emit('chats');
                   setSessions((list) => list?.filter((x) => x.id !== s.id) ?? null);
                 } catch (e) {
-                  Alert.alert('Could not delete', describeError(e));
+                  alert('Could not delete', describeError(e));
                 }
               },
             },
@@ -115,7 +121,7 @@ export default function SessionsScreen() {
       <FlatList
         data={sessions ?? []}
         keyExtractor={(s) => s.id}
-        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 112 }]}
+        contentContainerStyle={[styles.list, page, { paddingBottom: insets.bottom + 112 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -151,29 +157,31 @@ export default function SessionsScreen() {
           const sub = item.status === 'error' && item.error ? item.error : relativeTime(item.updated_at);
           return (
             <View style={[styles.itemWrap, first && styles.itemFirst, last && styles.itemLast]}>
-              <Pressable
-                onPress={() => router.push({ pathname: '/session/[id]', params: { id: item.id, title: item.title } })}
-                onLongPress={() => actions(item)}
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                accessibilityRole="button"
-                accessibilityLabel={item.title}
-                accessibilityHint="Opens the chat. Long press to rename or delete."
-              >
-                <View style={styles.grow}>
-                  <Text style={type.bodyLarge} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                  <Text style={type.bodyMedium} numberOfLines={1}>
-                    {sub}
-                  </Text>
-                </View>
-                {item.status !== 'idle' ? <StatusBadge status={item.status} /> : null}
+              <View style={styles.rowOuter}>
+                <Pressable
+                  onPress={() => router.push({ pathname: '/session/[id]', params: { id: item.id, title: item.title } })}
+                  onLongPress={() => actions(item)}
+                  style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.title}
+                  accessibilityHint="Opens the chat. Long press to rename or delete."
+                >
+                  <View style={styles.grow}>
+                    <Text style={type.bodyLarge} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    <Text style={type.bodyMedium} numberOfLines={1}>
+                      {sub}
+                    </Text>
+                  </View>
+                  {item.status !== 'idle' ? <StatusBadge status={item.status} /> : null}
+                </Pressable>
                 <IconButton
                   icon="dots-vertical"
                   label={`More actions for ${item.title}`}
                   onPress={() => actions(item)}
                 />
-              </Pressable>
+              </View>
               {!last ? <View style={styles.divider} /> : null}
             </View>
           );
@@ -191,6 +199,7 @@ export default function SessionsScreen() {
         onSave={async (title) => {
           if (!renaming) return;
           const s = await client.renameSession(renaming.id, title);
+          emit('chats');
           setSessions((list) => list?.map((x) => (x.id === s.id ? s : x)) ?? null);
           setRenaming(null);
         }}
@@ -263,6 +272,7 @@ const styles = StyleSheet.create({
     paddingLeft: space.xl,
     paddingRight: space.xs,
   },
+  rowOuter: { flexDirection: 'row', alignItems: 'center', paddingRight: space.xs },
   rowPressed: { backgroundColor: m3.pressed },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: space.xl },
   fab: { position: 'absolute', right: space.lg },

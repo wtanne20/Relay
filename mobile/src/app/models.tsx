@@ -5,12 +5,14 @@ import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Tex
 import { m3, radius, space, type } from '../components/theme';
 import { Banner, EmptyState, Icon } from '../components/ui';
 import { describeError } from '../lib/api';
+import { usePageStyle } from '../lib/layout';
 import { useConnection } from '../lib/connection';
 import { formatBytes } from '../lib/format';
 import type { ModelFile } from '../lib/types';
 
 /** GGUF models found on the PC (LM Studio's folder and Relay's models folder). */
 export default function ModelsScreen() {
+  const page = usePageStyle();
   const { client } = useConnection();
   const [data, setData] = useState<{ models: ModelFile[]; current: string; dirs: string[]; vram_mb: number } | null>(
     null,
@@ -56,7 +58,7 @@ export default function ModelsScreen() {
   return (
     <FlatList
       style={styles.flex}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, page]}
       data={data?.models ?? []}
       keyExtractor={(m) => m.path}
       refreshControl={

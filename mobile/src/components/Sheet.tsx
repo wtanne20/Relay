@@ -36,11 +36,7 @@ export function Sheet({
       >
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close" />
         <View
-          style={
-            wide
-              ? styles.dialog
-              : [styles.sheet, { paddingBottom: Math.max(insets.bottom, space.lg) + space.sm }]
-          }
+          style={wide ? styles.dialog : [styles.sheet, { paddingBottom: Math.max(insets.bottom, space.lg) + space.sm }]}
           accessibilityViewIsModal
         >
           {wide ? null : <View style={styles.handle} />}

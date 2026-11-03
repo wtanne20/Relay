@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useConnection } from '../lib/connection';
+import { emit, on } from '../lib/events';
 import type { ModelStatus, Project, Session } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
 import { m3, radius, space, statusColor, type } from './theme';
@@ -58,7 +59,13 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   }, [load, pathname, open]);
   useEffect(() => {
     const t = setInterval(load, POLL_MS);
-    return () => clearInterval(t);
+    const offProjects = on('projects', load);
+    const offChats = on('chats', load);
+    return () => {
+      clearInterval(t);
+      offProjects();
+      offChats();
+    };
   }, [load]);
 
   // When a chat is open, make sure its project is expanded.
@@ -200,7 +207,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
           const p = await client.createProject(name, path);
           setAdding(false);
           setOpen((o) => ({ ...o, [p.id]: true }));
-          await load();
+          emit('projects');
         }}
       />
     </View>
@@ -229,33 +236,36 @@ function Row({
   const busy = status === 'running';
   const flagged = status === 'error';
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-        styles.row,
-        small && styles.rowSmall,
-        (hovered || pressed) && styles.hover,
-        active && styles.active,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ selected: !!active }}
-    >
-      {icon ? <Icon name={icon} size={20} color={active ? m3.onSecondaryContainer : m3.onSurfaceVariant} /> : null}
-      <Text
-        style={[
-          small ? type.bodyMedium : type.labelLarge,
-          styles.grow,
-          { color: active ? m3.onSecondaryContainer : muted ? m3.outline : small ? m3.onSurfaceVariant : m3.onSurface },
+    <View style={[styles.rowWrap, active && styles.active]}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+          styles.row,
+          small && styles.rowSmall,
+          (hovered || pressed) && !active && styles.hover,
         ]}
-        numberOfLines={1}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ selected: !!active }}
       >
-        {label}
-      </Text>
-      {busy ? <ActivityIndicator size="small" color={statusColor.running} /> : null}
-      {flagged ? <View style={[styles.dot, { backgroundColor: m3.error }]} /> : null}
+        {icon ? <Icon name={icon} size={20} color={active ? m3.onSecondaryContainer : m3.onSurfaceVariant} /> : null}
+        <Text
+          style={[
+            small ? type.bodyMedium : type.labelLarge,
+            styles.grow,
+            {
+              color: active ? m3.onSecondaryContainer : muted ? m3.outline : small ? m3.onSurfaceVariant : m3.onSurface,
+            },
+          ]}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+        {busy ? <ActivityIndicator size="small" color={statusColor.running} /> : null}
+        {flagged ? <View style={[styles.dot, { backgroundColor: m3.error }]} /> : null}
+      </Pressable>
       {trailing}
-    </Pressable>
+    </View>
   );
 }
 
@@ -290,17 +300,26 @@ const styles = StyleSheet.create({
   section: { color: m3.onSurfaceVariant, letterSpacing: 1 },
   list: { paddingBottom: space.lg },
   empty: { paddingHorizontal: space.md, paddingVertical: space.sm },
+  rowWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: radius.md },
   row: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
     minHeight: 40,
     borderRadius: radius.md,
     paddingLeft: space.md,
-    paddingRight: space.xs,
+    paddingRight: space.sm,
   },
   rowSmall: { minHeight: 34, paddingRight: space.md },
-  chats: { marginLeft: 22, paddingLeft: space.sm, borderLeftWidth: 1, borderLeftColor: m3.outlineVariant, marginBottom: space.xs },
+  chats: {
+    marginLeft: 22,
+    paddingLeft: space.sm,
+    borderLeftWidth: 1,
+    borderLeftColor: m3.outlineVariant,
+    marginBottom: space.xs,
+  },
   noChats: { paddingHorizontal: space.md, paddingVertical: 6, color: m3.outline },
   hover: { backgroundColor: m3.hover },
   active: { backgroundColor: m3.secondaryContainer },

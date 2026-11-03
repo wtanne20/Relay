@@ -1,18 +1,61 @@
 import Constants from 'expo-constants';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Platform, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
 import { m3, space, type } from '../components/theme';
 import { Banner, Button, Icon, type IconName } from '../components/ui';
+import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
+import { desktop, isDesktop } from '../lib/desktop';
+import { usePageStyle } from '../lib/layout';
 import { formatDuration } from '../lib/format';
 import { disablePush, enablePush } from '../lib/push';
 import { loadPushPrefs } from '../lib/storage';
 import type { ServerInfo } from '../lib/types';
+
+/** Desktop: the QR code the phone app scans, straight from the local server. */
+function PairPhone() {
+  const { client } = useConnection();
+  const [pairing, setPairing] = useState<{ url: string; svg: string; tailscale: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client
+      ?.pairing()
+      .then(setPairing)
+      .catch((e) => setError(describeError(e)));
+  }, [client]);
+  if (error) return <Banner message={error} />;
+  if (!pairing) return <ActivityIndicator style={styles.pad} color={m3.primary} />;
+  // The SVG is plain ASCII, so btoa is safe; base64 data URIs render reliably on react-native-web.
+  const uri = `data:image/svg+xml;base64,${globalThis.btoa(pairing.svg)}`;
+  return (
+    <View style={styles.pair}>
+      <View style={styles.qr}>
+        <Image source={{ uri }} style={styles.qrImage} accessibilityLabel="Pairing QR code" />
+      </View>
+      <View style={styles.grow}>
+        <Text style={type.titleMedium}>Pair your phone</Text>
+        <Text style={[type.bodyMedium, styles.pairText]}>
+          1. Turn on Tailscale on this PC and your phone.{'\n'}2. Open Relay on the phone and tap Scan QR code.
+          {'\n'}3. Point it at this code.
+        </Text>
+        <Text style={type.bodySmall}>Address: {pairing.url}</Text>
+        {!pairing.tailscale ? (
+          <Text style={[type.bodySmall, { color: m3.warning, marginTop: space.xs }]}>
+            Tailscale was not found on this PC, so the phone can only connect on your home network.
+          </Text>
+        ) : null}
+        <Text style={[type.bodySmall, { marginTop: space.sm }]}>
+          The code contains your access token. Don&apos;t share it.
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 function InfoRow({ icon, label, value }: { icon: IconName; label: string; value: string }) {
   return (
@@ -40,6 +83,9 @@ export default function SettingsScreen() {
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const page = usePageStyle(760);
+  // Push notifications and pairing settings belong to the phone app.
+  const phone = Platform.OS !== 'web';
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -89,7 +135,7 @@ export default function SettingsScreen() {
   };
 
   const restartModel = () => {
-    Alert.alert(
+    alert(
       'Restart the model?',
       'llama-server will be stopped and started again. Running tasks wait until it is ready.',
       [
@@ -103,7 +149,7 @@ export default function SettingsScreen() {
               await client.restartModel();
               await load();
             } catch (e) {
-              Alert.alert('Restart failed', describeError(e));
+              alert('Restart failed', describeError(e));
             } finally {
               setRestarting(false);
             }
@@ -114,7 +160,7 @@ export default function SettingsScreen() {
   };
 
   const onDisconnect = () => {
-    Alert.alert('Disconnect?', 'The saved address and token are removed from this phone.', [
+    alert('Disconnect?', 'The saved address and token are removed from this phone.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Disconnect',
@@ -137,7 +183,7 @@ export default function SettingsScreen() {
   return (
     <ScrollView
       style={styles.flex}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, page]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -169,43 +215,73 @@ export default function SettingsScreen() {
         <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
       </Group>
 
-      <SectionTitle title="Notifications" />
-      <Group>
-        <ToggleRow
-          icon="bell-outline"
-          label="Notifications on this phone"
-          hint="When a task ends or needs your approval. Only the project name, chat title and status are sent."
-          value={push}
-          onChange={togglePush}
-          disabled={pushBusy}
-        />
-        {info && !info.push_enabled ? (
-          <View style={styles.note}>
-            <Icon name="alert-outline" size={18} color={m3.warning} />
-            <Text style={[type.bodyMedium, styles.grow]}>
-              Push is turned off on the PC. Turn it on in Agent settings, under Notifications.
-            </Text>
-          </View>
-        ) : null}
-      </Group>
-      {pushError ? <Banner message={pushError} /> : null}
+      {phone ? (
+        <>
+          <SectionTitle title="Notifications" />
+          <Group>
+            <ToggleRow
+              icon="bell-outline"
+              label="Notifications on this phone"
+              hint="When a task ends or needs your approval. Only the project name, chat title and status are sent."
+              value={push}
+              onChange={togglePush}
+              disabled={pushBusy}
+            />
+            {info && !info.push_enabled ? (
+              <View style={styles.note}>
+                <Icon name="alert-outline" size={18} color={m3.warning} />
+                <Text style={[type.bodyMedium, styles.grow]}>
+                  Push is turned off on the PC. Turn it on in Agent settings, under Notifications.
+                </Text>
+              </View>
+            ) : null}
+          </Group>
+          {pushError ? <Banner message={pushError} /> : null}
+        </>
+      ) : null}
 
-      <SectionTitle title="Connection" />
-      <Group>
-        <InfoRow icon="lan-connect" label="Address" value={creds.url} />
-        <InfoRow icon="key-outline" label="Token" value={maskedToken} />
-        <NavRow
-          icon="qrcode-scan"
-          label="Pair again"
-          value="Scan the QR code on your PC"
-          onPress={() => router.push('/scan')}
-        />
-        <NavRow
-          icon="pencil-outline"
-          label="Edit address or token"
-          onPress={() => router.push({ pathname: '/connect', params: { edit: '1' } })}
-        />
-      </Group>
+      {isDesktop ? (
+        <>
+          <SectionTitle title="Phone" />
+          <Group>
+            <PairPhone />
+          </Group>
+          <SectionTitle title="This PC" />
+          <Group>
+            <NavRow
+              icon="folder-cog-outline"
+              label="Open data folder"
+              value="Settings file, logs, models and chat history"
+              onPress={() => desktop.openDataFolder()}
+            />
+            <NavRow
+              icon="power"
+              label="Quit Relay"
+              value="Stops the agent and the model. The phone can't connect until you start Relay again."
+              onPress={() => desktop.quit()}
+            />
+          </Group>
+        </>
+      ) : (
+        <>
+          <SectionTitle title="Connection" />
+          <Group>
+            <InfoRow icon="lan-connect" label="Address" value={creds.url} />
+            <InfoRow icon="key-outline" label="Token" value={maskedToken} />
+            <NavRow
+              icon="qrcode-scan"
+              label="Pair again"
+              value="Scan the QR code on your PC"
+              onPress={() => router.push('/scan')}
+            />
+            <NavRow
+              icon="pencil-outline"
+              label="Edit address or token"
+              onPress={() => router.push({ pathname: '/connect', params: { edit: '1' } })}
+            />
+          </Group>
+        </>
+      )}
 
       <SectionTitle title="Your PC" />
       {infoError ? <Banner message={infoError} actionLabel="Retry" onAction={load} /> : null}
@@ -242,14 +318,18 @@ export default function SettingsScreen() {
         )}
       </Group>
 
-      <Button
-        title="Disconnect this phone"
-        icon="logout"
-        variant="outlined"
-        onPress={onDisconnect}
-        style={styles.disconnect}
-      />
-      <Text style={[type.bodySmall, styles.footer]}>Relay for phone {Constants.expoConfig?.version ?? ''}</Text>
+      {isDesktop ? null : (
+        <Button
+          title="Disconnect this phone"
+          icon="logout"
+          variant="outlined"
+          onPress={onDisconnect}
+          style={styles.disconnect}
+        />
+      )}
+      <Text style={[type.bodySmall, styles.footer]}>
+        Relay {isDesktop ? 'for Windows' : 'for phone'} {Constants.expoConfig?.version ?? ''}
+      </Text>
     </ScrollView>
   );
 }
@@ -258,6 +338,10 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 64 },
+  pair: { flexDirection: 'row', gap: space.xl, padding: space.lg, alignItems: 'center', flexWrap: 'wrap' },
+  qr: { backgroundColor: '#fff', borderRadius: 16, padding: space.sm },
+  qrImage: { width: 184, height: 184 },
+  pairText: { marginVertical: space.sm, lineHeight: 22 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

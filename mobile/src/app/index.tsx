@@ -1,14 +1,18 @@
 import { Redirect, Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DesktopHome } from '../components/DesktopHome';
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { m3, radius, space, type } from '../components/theme';
 import { AddProjectSheet } from '../components/AddProjectSheet';
 import { Avatar, Banner, Logo, Button, EmptyState, Fab, Field, IconButton, ListItem } from '../components/ui';
+import { emit } from '../lib/events';
+import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
+import { useWide } from '../lib/layout';
 import type { Project } from '../lib/types';
 
 function greeting(): string {
@@ -19,7 +23,15 @@ function greeting(): string {
   return 'Good evening';
 }
 
-export default function ProjectsScreen() {
+/** Phones get the projects list; the desktop app gets a Claude-style start page. */
+export default function Home() {
+  const { loading, client } = useConnection();
+  const wide = useWide();
+  if (!loading && client && wide) return <DesktopHome />;
+  return <ProjectsScreen />;
+}
+
+function ProjectsScreen() {
   const { loading, client } = useConnection();
   const insets = useSafeAreaInsets();
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -62,7 +74,7 @@ export default function ProjectsScreen() {
   };
 
   const confirmDelete = (p: Project) => {
-    Alert.alert(
+    alert(
       `Remove “${p.name}”?`,
       'This removes the project and its chats from Relay. The folder on your PC is not touched.',
       [
@@ -73,9 +85,10 @@ export default function ProjectsScreen() {
           onPress: async () => {
             try {
               await client.deleteProject(p.id);
+              emit('projects');
               setProjects((list) => list?.filter((x) => x.id !== p.id) ?? null);
             } catch (e) {
-              Alert.alert('Could not remove project', describeError(e));
+              alert('Could not remove project', describeError(e));
             }
           },
         },
@@ -156,6 +169,7 @@ export default function ProjectsScreen() {
         onClose={() => setAdding(false)}
         onCreate={async (name, path) => {
           const p = await client.createProject(name, path);
+          emit('projects');
           setProjects((list) => [...(list ?? []), p].sort((a, b) => a.name.localeCompare(b.name)));
           setAdding(false);
         }}

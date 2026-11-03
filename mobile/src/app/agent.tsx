@@ -1,21 +1,14 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Group, NavRow, NumberRow, SectionTitle, Segmented, TextRow, ToggleRow } from '../components/SettingsControls';
 import { m3, radius, space, type } from '../components/theme';
 import { Banner, Button, Icon, type IconName } from '../components/ui';
+import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
+import { usePageStyle } from '../lib/layout';
 import { useConnection } from '../lib/connection';
 import { basename } from '../lib/format';
 import type { ApprovalMode, Settings, SettingsResponse, SkillInfo } from '../lib/types';
@@ -48,6 +41,7 @@ function same(a: unknown, b: unknown) {
 
 /** Every agent and model setting, saved to the PC's config.toml. */
 export default function AgentSettingsScreen() {
+  const page = usePageStyle();
   const { client } = useConnection();
   const insets = useSafeAreaInsets();
   const [meta, setMeta] = useState<SettingsResponse | null>(null);
@@ -121,7 +115,7 @@ export default function AgentSettingsScreen() {
       setExtraArgs(res.settings.llama.extra_args.join(' '));
       setError(null);
       if (res.model_restarting) {
-        Alert.alert('Saved', 'The model is reloading with the new settings. This can take a minute.');
+        alert('Saved', 'The model is reloading with the new settings. This can take a minute.');
       }
     } catch (e) {
       setError(describeError(e));
@@ -150,7 +144,11 @@ export default function AgentSettingsScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={[styles.content, page]}
+        keyboardShouldPersistTaps="handled"
+      >
         {error ? <Banner message={error} /> : null}
 
         <SectionTitle title="Model" />
