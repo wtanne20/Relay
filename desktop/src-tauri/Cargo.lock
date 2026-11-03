@@ -3190,6 +3190,7 @@ dependencies = [
  "chrono",
  "clap",
  "dunce",
+ "libc",
  "qrcode",
  "rand 0.10.3",
  "reqwest 0.12.28",
