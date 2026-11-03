@@ -12,6 +12,13 @@ import { formatBytes } from '../lib/format';
 import type { ModelFile } from '../lib/types';
 
 /** GGUF models found on the PC (LM Studio's folder and Relay's models folder). */
+/** True when `path` isn't inside Relay's own models folder. */
+function outsideRelay(path: string, relayDir: string | undefined): boolean {
+  if (!path || !relayDir) return false;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return !norm(path).startsWith(`${norm(relayDir)}/`);
+}
+
 export default function ModelsScreen() {
   const page = usePageStyle();
   const { client } = useConnection();
@@ -83,6 +90,21 @@ export default function ModelsScreen() {
               the chat. Tap the tag icon to note what a model is good at. To get more models, use Download models in
               Settings.
             </Text>
+            {data && outsideRelay(data.current, data.dirs[0]) ? (
+              <Banner
+                kind="warning"
+                message="This model is in another app's folder. Copy it into Relay so Relay doesn't depend on that app. The original stays as it is."
+                actionLabel="Copy into Relay"
+                onAction={async () => {
+                  try {
+                    await client.importModel(data.current);
+                    router.push('/hub');
+                  } catch (e) {
+                    setError(describeError(e));
+                  }
+                }}
+              />
+            ) : null}
             {!data && !error ? <ActivityIndicator color={m3.primary} /> : null}
           </>
         }

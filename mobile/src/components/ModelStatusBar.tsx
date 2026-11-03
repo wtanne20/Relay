@@ -61,7 +61,7 @@ export function ModelStatusBar({
     if (status.state === 'ready') {
       tone = { bg: m3.successContainer, fg: m3.success };
       icon = 'check-circle-outline';
-      title = 'Model ready';
+      title = 'Selected model';
       detail = name;
     } else if (status.state === 'starting') {
       tone = { bg: m3.primaryContainer, fg: m3.onPrimaryContainer };

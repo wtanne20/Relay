@@ -922,6 +922,36 @@ async fn plain_chats_titles_and_models() {
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["project"]["model"], json!(model.to_string_lossy()));
 
+    // Copying a model from another app's folder lands in Relay's own folder
+    // and leaves the original alone.
+    std::fs::create_dir_all(h.dir.join("other-app/models")).expect("mkdir");
+    let outside = h.dir.join("other-app/models/Outside-Q4.gguf");
+    std::fs::write(&outside, b"GGUF-outside").expect("write");
+    let (st, _) = h
+        .post(
+            "/models/import",
+            json!({"path": h.dir.join("other-app").to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(st, 400, "folders are not model files");
+    let (st, v) = h
+        .post("/models/import", json!({"path": outside.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 202, "{v}");
+    let copy = h.dir.join("data/models/imported/Outside-Q4.gguf");
+    for _ in 0..100 {
+        if copy.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(std::fs::read(&copy).expect("copied"), b"GGUF-outside");
+    assert!(outside.is_file(), "the original stays where it was");
+    let (st, _) = h
+        .post("/models/import", json!({"path": copy.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 400, "already in Relay's folder");
+
     // Mockups: empty sources and unknown pictures are refused.
     let (st, _) = h.post("/mockups", json!({"source": "  "})).await;
     assert_eq!(st, 400);

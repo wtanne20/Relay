@@ -344,6 +344,105 @@ impl Downloads {
     }
 }
 
+impl Downloads {
+    /// Copies a GGUF file that's elsewhere on the PC (another app's folder)
+    /// into `<models_dir>/imported/`, so Relay owns its own copy. The source
+    /// is only read, never moved or changed. Shows in the downloads list.
+    pub fn import(self: &Arc<Self>, models_dir: &Path, source: &Path) -> Result<Download> {
+        let name = source
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("not a file: {}", source.display()))?;
+        let dir = models_dir.join("imported");
+        let dest = dir.join(&name);
+        if dest.exists() {
+            bail!("Relay already has a copy of {name}");
+        }
+        let total = source.metadata()?.len();
+        {
+            let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+            if l.iter()
+                .any(|d| d.dest == dest.to_string_lossy() && d.state == DownloadState::Downloading)
+            {
+                bail!("{name} is already being copied");
+            }
+        }
+        let d = Download {
+            id: uuid::Uuid::new_v4().to_string(),
+            repo: "this PC".into(),
+            file: name,
+            dest: dest.to_string_lossy().into_owned(),
+            total_bytes: total,
+            done_bytes: 0,
+            state: DownloadState::Downloading,
+            error: None,
+            cancel: CancellationToken::new(),
+        };
+        self.list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(0, d.clone());
+        let this = self.clone();
+        let (id, cancel, src) = (d.id.clone(), d.cancel.clone(), source.to_path_buf());
+        tokio::spawn(async move {
+            let tmp = part_path(&dest);
+            let r = tokio::select! {
+                r = this.copy(&id, &src, &dir, &tmp, &dest) => r,
+                _ = cancel.cancelled() => Err(anyhow!("cancelled")),
+            };
+            match r {
+                Ok(()) => this.update(&id, |d| d.state = DownloadState::Done),
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&tmp).await;
+                    let cancelled = cancel.is_cancelled();
+                    if !cancelled {
+                        tracing::warn!("copying {} failed: {e:#}", src.display());
+                    }
+                    this.update(&id, |d| {
+                        if cancelled {
+                            d.state = DownloadState::Cancelled;
+                        } else {
+                            d.state = DownloadState::Failed;
+                            d.error = Some(format!("{e:#}"));
+                        }
+                    });
+                }
+            }
+        });
+        Ok(d)
+    }
+
+    async fn copy(&self, id: &str, src: &Path, dir: &Path, tmp: &Path, dest: &Path) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        tokio::fs::create_dir_all(dir).await?;
+        let mut from = tokio::fs::File::open(src).await?;
+        let mut to = tokio::fs::File::create(tmp).await?;
+        let mut buf = vec![0u8; 8 * 1024 * 1024];
+        let mut done: u64 = 0;
+        loop {
+            let n = from.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            to.write_all(&buf[..n]).await?;
+            done += n as u64;
+            self.update(id, |d| d.done_bytes = done);
+        }
+        to.flush().await?;
+        drop(to);
+        tokio::fs::rename(tmp, dest).await?;
+        Ok(())
+    }
+
+    /// The finished copy of `source`, if one was imported this session.
+    pub fn imported_copy_done(&self, id: &str) -> Option<String> {
+        let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        l.iter()
+            .find(|d| d.id == id && d.state == DownloadState::Done)
+            .map(|d| d.dest.clone())
+    }
+}
+
 fn part_path(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".part");

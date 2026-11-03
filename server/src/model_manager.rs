@@ -432,7 +432,7 @@ impl Supervisor {
             let Some(pick) = setup::pick_model(&models, self.hardware.total_vram_mb()) else {
                 let data = self.data_dir.join("models");
                 bail!(
-                    "no GGUF model found. Download one in LM Studio, or copy a .gguf file into {}, then tap Restart model",
+                    "no model yet. Open Settings, then Download models to get one (or copy a .gguf file into {}), then tap Restart model",
                     data.display()
                 );
             };

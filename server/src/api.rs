@@ -165,6 +165,7 @@ pub fn router(state: AppState) -> Router {
         .route("/model/restart", post(model_restart))
         .route("/models", get(list_models))
         .route("/models/tags", axum::routing::put(set_model_tags))
+        .route("/models/import", post(import_model))
         .route("/hub/search", get(hub_search))
         .route("/hub/files", get(hub_files))
         .route("/hub/downloads", get(hub_downloads).post(hub_download))
@@ -697,11 +698,99 @@ async fn hub_download(
         .into_iter()
         .find(|f| f.file == body.file)
         .ok_or(ApiError::NotFound("model file"))?;
-    let models_dir = s.data_dir.join("models");
+    let models_dir = relay_models_dir(&s.data_dir);
     let d = s
         .downloads
         .start(&models_dir, &body.repo, model)
         .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
+}
+
+/// Where Relay saves every model it downloads or copies: its own data folder,
+/// never another app's (such as LM Studio's). Not configurable on purpose.
+pub fn relay_models_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("models")
+}
+
+#[derive(Deserialize)]
+struct ImportModel {
+    /// A .gguf file elsewhere on the PC, e.g. in another app's folder.
+    path: String,
+}
+
+/// Copies a model file into Relay's own models folder. When the copied file
+/// is the model in use, Relay switches to its copy once the copy is done
+/// (waiting for running chats to finish first). The original is never moved
+/// or changed.
+async fn import_model(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ImportModel>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let src = Path::new(body.path.trim().trim_matches('"')).to_path_buf();
+    let is_gguf = src
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !src.is_absolute() || !is_gguf || !src.is_file() {
+        return Err(ApiError::BadRequest(format!(
+            "not a .gguf file on the PC: {}",
+            src.display()
+        )));
+    }
+    let models_dir = relay_models_dir(&s.data_dir);
+    let canon_models = dunce::canonicalize(&models_dir).unwrap_or(models_dir.clone());
+    let canon_src = dunce::canonicalize(&src).unwrap_or(src.clone());
+    if canon_src.starts_with(&canon_models) {
+        return Err(ApiError::BadRequest(
+            "that model is already in Relay's models folder".into(),
+        ));
+    }
+    let d = s
+        .downloads
+        .import(&models_dir, &src)
+        .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+
+    let old = src.to_string_lossy().into_owned();
+    let id = d.id.clone();
+    let st = s.clone();
+    tokio::spawn(async move {
+        // Wait for the copy, then for any running chat, then switch.
+        let new = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(dest) = st.downloads.imported_copy_done(&id) {
+                break dest;
+            }
+            let still = st
+                .downloads
+                .list()
+                .iter()
+                .any(|d| d.id == id && d.state == crate::hub::DownloadState::Downloading);
+            if !still {
+                return;
+            }
+        };
+        let (o, n) = (old.clone(), new.clone());
+        if let Err(e) = st.db.call(move |c| db::replace_model_path(c, &o, &n)).await {
+            tracing::warn!("could not update chats to the copied model: {e:#}");
+        }
+        let in_use = |st: &AppState| st.cfg.get().llama.model_path.eq_ignore_ascii_case(&old);
+        if !in_use(&st) {
+            return;
+        }
+        while st.agent.any_running() {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        if !in_use(&st) {
+            return;
+        }
+        let path = new.clone();
+        match st.cfg.update(move |c| c.llama.model_path = path) {
+            Ok(_) => {
+                tracing::info!("switched to Relay's own copy of the model: {new}");
+                st.model.switch_to(&new).await;
+            }
+            Err(e) => tracing::warn!("could not switch to the copied model: {e:#}"),
+        }
+    });
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
 }
 

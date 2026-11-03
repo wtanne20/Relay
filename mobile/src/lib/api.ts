@@ -159,6 +159,10 @@ export class RelayClient {
   hubCancel(id: string) {
     return this.request<{ ok: boolean }>('DELETE', `/hub/downloads/${encodeURIComponent(id)}`);
   }
+  /** Copies a .gguf file from elsewhere on the PC into Relay's own models folder. */
+  importModel(path: string) {
+    return this.request<{ download: HubDownload }>('POST', '/models/import', { path });
+  }
   /** Sets a model's tags; null goes back to the tags guessed from its name. */
   setModelTags(name: string, tags: string[] | null) {
     return this.request<{ tags: string[] }>('PUT', '/models/tags', { name, tags });

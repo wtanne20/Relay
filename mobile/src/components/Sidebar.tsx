@@ -214,7 +214,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
               {!model
                 ? 'Server unreachable'
                 : model.state === 'ready'
-                  ? 'Model ready'
+                  ? 'Selected model'
                   : model.state === 'error'
                     ? 'Model error'
                     : 'Model loading…'}

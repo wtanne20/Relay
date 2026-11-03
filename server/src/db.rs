@@ -425,6 +425,20 @@ pub fn set_auto_title(c: &Connection, id: &str, title: &str) -> Result<bool> {
     )? > 0)
 }
 
+/// Points chats and projects that chose `old` at `new` (after a model is
+/// copied into Relay's own folder).
+pub fn replace_model_path(c: &Connection, old: &str, new: &str) -> Result<()> {
+    c.execute(
+        "UPDATE sessions SET model = ?1 WHERE model = ?2",
+        params![new, old],
+    )?;
+    c.execute(
+        "UPDATE projects SET model = ?1 WHERE model = ?2",
+        params![new, old],
+    )?;
+    Ok(())
+}
+
 pub fn set_session_model(c: &Connection, id: &str, model: Option<&str>) -> Result<Option<Session>> {
     c.execute(
         "UPDATE sessions SET model = ?1 WHERE id = ?2",

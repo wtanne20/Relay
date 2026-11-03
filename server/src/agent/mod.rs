@@ -232,6 +232,10 @@ impl AgentManager {
         Ok(())
     }
 
+    pub fn any_running(&self) -> bool {
+        !lock(&self.running).is_empty()
+    }
+
     pub fn is_running(&self, session_id: &str) -> bool {
         lock(&self.running).contains_key(session_id)
     }

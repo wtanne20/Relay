@@ -18,7 +18,7 @@ pub struct Config {
     pub system_prompt_path: String,
     /// Extra skill locations. Each entry may be a skill folder (containing
     /// SKILL.md) or a folder whose subfolders are skills. `skills/` next to
-    /// config.toml and LM Studio's skills folder are always included.
+    /// config.toml is always included.
     pub skills_paths: Vec<String>,
     /// Skill names turned off in the app.
     pub disabled_skills: Vec<String>,
@@ -145,8 +145,8 @@ pub struct LlamaConfig {
     pub llama_server_path: String,
     /// Path to the GGUF model file. Empty = pick one automatically.
     pub model_path: String,
-    /// Extra folders to look for GGUF models in (LM Studio's folder and
-    /// <data>/models are always searched).
+    /// Extra folders to look for GGUF models in (<data>/models is always
+    /// searched). Relay never looks in other apps' folders on its own.
     pub models_dirs: Vec<String>,
     /// Port llama-server listens on (always bound to 127.0.0.1).
     pub port: u16,
@@ -374,11 +374,6 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// LM Studio's data folder (%USERPROFILE%\.lmstudio).
-pub fn lmstudio_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".lmstudio"))
-}
-
 pub struct LoadedConfig {
     pub config: Config,
     pub path: PathBuf,
@@ -453,19 +448,12 @@ impl LoadedConfig {
         self.resolve(&self.config.system_prompt_path)
     }
 
-    /// All skill roots: `skills/` in the data folder, LM Studio's skills
-    /// folder (if present), then configured extra paths.
+    /// All skill roots: `skills/` in the data folder, then configured extra
+    /// paths.
     pub fn skill_roots(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.data_dir.join("skills")];
-        if let Some(lm) = lmstudio_dir() {
-            let d = lm.join("skills");
-            if d.is_dir() {
-                roots.push(d);
-            }
-        }
         for p in &self.config.skills_paths {
             let r = self.resolve(p);
-            // `relay migrate` may already have listed LM Studio's folder.
             let key = dunce::canonicalize(&r).unwrap_or_else(|_| r.clone());
             if !roots
                 .iter()
@@ -480,10 +468,6 @@ impl LoadedConfig {
     /// Folders searched for GGUF models.
     pub fn model_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.data_dir.join("models")];
-        if let Some(h) = home_dir() {
-            dirs.push(h.join(".lmstudio").join("models"));
-            dirs.push(h.join(".cache").join("lm-studio").join("models"));
-        }
         dirs.extend(
             self.config
                 .llama

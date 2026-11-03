@@ -15,18 +15,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
 import { alert } from '../components/Dialogs';
-import { ModelStatusBar } from '../components/ModelStatusBar';
+import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
 import { m3, radius, space, type } from '../components/theme';
-import { Avatar, Banner, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
+import { Avatar, Banner, Button, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
 import { enterToSend, useWide } from '../lib/layout';
-import { CHATS_ID, type Project, type RecentSession } from '../lib/types';
+import { CHATS_ID, type Project, type Session } from '../lib/types';
 
 const LAST_TARGET = 'relay.lastTarget';
-const RECENT_SHOWN = 12;
+const CHATS_SHOWN = 12;
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -61,23 +61,32 @@ export default function Home() {
   const wide = useWide();
   const insets = useSafeAreaInsets();
   const [projects, setProjects] = useState<Project[] | null>(null);
-  const [recent, setRecent] = useState<RecentSession[] | null>(null);
+  const [chats, setChats] = useState<Session[] | null>(null);
+  const [loaded, setLoaded] = useState<string | null>(null);
+  /** Model picked for the next chat; null follows the project or what's loaded. */
+  const [model, setModel] = useState<string | null>(null);
+  const [pickingModel, setPickingModel] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<string>(remembered());
   const [picking, setPicking] = useState(false);
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [focused, setFocused] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const input = useRef<React.ComponentRef<typeof TextInput>>(null);
 
   const load = useCallback(async () => {
     if (!client) return;
     try {
-      const [ps, rs] = await Promise.all([client.projects(), client.recent(RECENT_SHOWN)]);
+      const [ps, cs, m] = await Promise.all([
+        client.projects(),
+        client.sessions(CHATS_ID),
+        client.model().catch(() => null),
+      ]);
       setProjects(ps);
-      setRecent(rs);
+      setChats(cs);
+      setLoaded(m?.model_path || null);
       setTarget((cur) => (cur === CHATS_ID || ps.some((p) => p.id === cur) ? cur : CHATS_ID));
       setError(null);
     } catch (e) {
@@ -87,9 +96,7 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
-      setFocused(true);
       load();
-      return () => setFocused(false);
     }, [load]),
   );
   useEffect(() => {
@@ -122,7 +129,9 @@ export default function Home() {
       const prompt = text.trim();
       // No title: Relay names the chat after the first reply.
       const s = await client.createSession(project?.id ?? CHATS_ID);
+      if (model) await client.setSessionModel(s.id, model);
       await client.sendPrompt(s.id, prompt);
+      setModel(null);
       setText('');
       emit('chats');
       open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
@@ -130,6 +139,20 @@ export default function Home() {
       setError(describeError(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** An empty plain chat, opened right away. */
+  const newChat = async () => {
+    setStarting(true);
+    try {
+      const s = await client.createSession(CHATS_ID);
+      emit('chats');
+      open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -255,6 +278,7 @@ export default function Home() {
                 </Text>
                 <Icon name={picking ? 'chevron-up' : 'chevron-down'} size={18} color={m3.onSurfaceVariant} />
               </Pressable>
+              <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
               <View style={styles.grow} />
               <Pressable
                 onPress={send}
@@ -302,26 +326,21 @@ export default function Home() {
             {wide ? ' · Enter to send · Shift+Enter for a new line' : ''}
           </Text>
 
-          {!wide ? <ModelStatusBar client={client} active={focused} onPress={() => router.push('/settings')} /> : null}
           {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
 
           <View style={styles.sectionRow}>
-            <Text style={[type.titleSmall, styles.section]}>Recent chats</Text>
-            <Pressable
-              onPress={() => open({ pathname: '/project/[id]', params: { id: CHATS_ID, name: 'Chats' } })}
-              hitSlop={8}
-              accessibilityRole="button"
-            >
-              <Text style={[type.labelLarge, styles.link]}>All plain chats</Text>
-            </Pressable>
+            <Text style={[type.titleSmall, styles.section]}>Chats</Text>
+            <Button title="New chat" icon="plus" variant="tonal" onPress={newChat} loading={starting} />
           </View>
-          {recent === null && !error ? <ActivityIndicator color={m3.primary} /> : null}
-          {recent?.length === 0 ? (
-            <Text style={[type.bodyMedium, styles.empty]}>No chats yet. Ask something above to start one.</Text>
+          {chats === null && !error ? <ActivityIndicator color={m3.primary} /> : null}
+          {chats?.length === 0 ? (
+            <Text style={[type.bodyMedium, styles.empty]}>
+              No chats yet. Ask something above, or tap New chat. Plain chats can&apos;t see your files.
+            </Text>
           ) : null}
-          {recent?.length ? (
+          {chats?.length ? (
             <View style={styles.group}>
-              {recent.map((s, i) => (
+              {chats.slice(0, CHATS_SHOWN).map((s, i) => (
                 <View key={s.id}>
                   {i > 0 ? <View style={styles.divider} /> : null}
                   <Pressable
@@ -333,31 +352,40 @@ export default function Home() {
                     accessibilityRole="button"
                     accessibilityLabel={s.title}
                   >
-                    <Icon
-                      name={s.project_id === CHATS_ID ? 'chat-outline' : 'folder-outline'}
-                      size={20}
-                      color={m3.onSurfaceVariant}
-                    />
+                    <Icon name="chat-outline" size={20} color={m3.onSurfaceVariant} />
                     <View style={styles.grow}>
                       <Text style={type.bodyLarge} numberOfLines={1}>
                         {s.title}
                       </Text>
                       <Text style={type.bodySmall} numberOfLines={1}>
-                        {s.project_id === CHATS_ID ? 'Chat' : s.project_name} · {relativeTime(s.updated_at)}
+                        {relativeTime(s.updated_at)}
                       </Text>
                     </View>
                     {s.status === 'running' || s.status === 'error' ? <StatusBadge status={s.status} /> : null}
                   </Pressable>
                 </View>
               ))}
+              {chats.length > CHATS_SHOWN ? (
+                <>
+                  <View style={styles.divider} />
+                  <Pressable
+                    onPress={() => open({ pathname: '/project/[id]', params: { id: CHATS_ID, name: 'Chats' } })}
+                    style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                      styles.item,
+                      (hovered || pressed) && styles.hover,
+                    ]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={[type.labelLarge, styles.link, styles.moreText]}>All {chats.length} chats</Text>
+                  </Pressable>
+                </>
+              ) : null}
             </View>
           ) : null}
 
           <View style={styles.sectionRow}>
             <Text style={[type.titleSmall, styles.section]}>Projects</Text>
-            <Pressable onPress={() => setAdding(true)} hitSlop={8} accessibilityRole="button">
-              <Text style={[type.labelLarge, styles.link]}>New project</Text>
-            </Pressable>
+            <Button title="New project" icon="folder-plus-outline" variant="tonal" onPress={() => setAdding(true)} />
           </View>
           {projects?.length === 0 ? (
             <Text style={[type.bodyMedium, styles.empty]}>
@@ -398,6 +426,20 @@ export default function Home() {
         </View>
       </ScrollView>
 
+      <ModelSheet
+        visible={pickingModel}
+        onClose={() => setPickingModel(false)}
+        value={model}
+        defaultTitle={project?.model ? 'Same as the project' : 'Whichever model is loaded'}
+        defaultBody={
+          project?.model
+            ? `${project.name}: ${modelLabel(project.model)}`
+            : loaded
+              ? `Now: ${modelLabel(loaded)}`
+              : 'The model chosen in Settings'
+        }
+        onPick={async (path) => setModel(path || null)}
+      />
       <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
@@ -572,6 +614,7 @@ const styles = StyleSheet.create({
   },
   section: { color: m3.onSurfaceVariant },
   link: { color: m3.primary },
+  moreText: { marginLeft: 36 },
   empty: { color: m3.onSurfaceVariant, marginHorizontal: space.xs },
   group: { backgroundColor: m3.surfaceContainerLow, borderRadius: radius.xl, overflow: 'hidden' },
   item: {

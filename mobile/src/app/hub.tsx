@@ -159,7 +159,9 @@ function DownloadRow({ d, onCancel }: { d: HubDownload; onCancel: () => void }) 
     d.state === 'downloading'
       ? `${formatBytes(d.done_bytes)} of ${formatBytes(d.total_bytes)} · ${Math.round(pct * 100)}%`
       : d.state === 'done'
-        ? 'Downloaded. Pick it in Choose model.'
+        ? d.repo === 'this PC'
+          ? 'Copied into Relay. If it was the selected model, Relay now uses the copy.'
+          : 'Downloaded. Pick it in Choose model.'
         : d.state === 'cancelled'
           ? 'Cancelled'
           : `Failed: ${d.error ?? 'unknown error'}`;
