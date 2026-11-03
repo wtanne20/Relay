@@ -3,46 +3,52 @@ import { Platform } from 'react-native';
 import type { SessionStatus } from '../lib/types';
 
 /**
- * Material 3 dark color scheme built from a warm clay seed (in the spirit of
- * Claude's app): warm near-black surfaces with tonal elevation, a soft
- * terracotta primary, and high-contrast text.
+ * Material 3 dark color scheme built from an emerald seed: green-tinted
+ * near-black surfaces with tonal elevation, a soft green primary, and
+ * high-contrast text. Change the seed colours here and the whole app (phone
+ * and desktop) follows.
  */
 export const m3 = {
-  primary: '#F2B49B',
-  onPrimary: '#4F2412',
-  primaryContainer: '#6B3520',
-  onPrimaryContainer: '#FFDBCD',
-  secondary: '#E3BFB1',
-  secondaryContainer: '#4A3A33',
-  onSecondaryContainer: '#FFDBCD',
-  tertiary: '#CFC88E',
-  tertiaryContainer: '#4B4719',
-  onTertiaryContainer: '#ECE4A7',
+  primary: '#8DD7A8',
+  onPrimary: '#00391F',
+  primaryContainer: '#105233',
+  onPrimaryContainer: '#A9F4C3',
+  secondary: '#B4CCBA',
+  secondaryContainer: '#36493C',
+  onSecondaryContainer: '#D0E8D6',
+  tertiary: '#A3CDDB',
+  tertiaryContainer: '#214C58',
+  onTertiaryContainer: '#BFE9F8',
   error: '#FFB4AB',
   onError: '#690005',
   errorContainer: '#5C1A14',
   onErrorContainer: '#FFDAD6',
-  success: '#9BD49A',
-  successContainer: '#1F3A21',
+  success: '#9DDC9C',
+  successContainer: '#1C3A22',
   warning: '#F0C46C',
   warningContainer: '#3D2F10',
   onWarningContainer: '#FFE0A3',
 
-  surfaceDim: '#141211',
-  surface: '#161413',
-  surfaceContainerLowest: '#0F0D0C',
-  surfaceContainerLow: '#1D1A19',
-  surfaceContainer: '#221F1D',
-  surfaceContainerHigh: '#2C2826',
-  surfaceContainerHighest: '#373230',
-  onSurface: '#EDE5E1',
-  onSurfaceVariant: '#C5B9B3',
-  outline: '#8F837D',
-  outlineVariant: '#433C39',
-  inverseSurface: '#EDE5E1',
-  inverseOnSurface: '#33302E',
+  surfaceDim: '#0F1311',
+  surface: '#111412',
+  surfaceContainerLowest: '#0B0F0D',
+  surfaceContainerLow: '#191D1A',
+  surfaceContainer: '#1D211E',
+  surfaceContainerHigh: '#272B28',
+  surfaceContainerHighest: '#323633',
+  onSurface: '#E0E4DF',
+  onSurfaceVariant: '#BFC9C0',
+  outline: '#89938B',
+  outlineVariant: '#3F4942',
+  inverseSurface: '#E0E4DF',
+  inverseOnSurface: '#2E322F',
   scrim: 'rgba(0,0,0,0.6)',
-  code: '#110F0E',
+  code: '#0C100E',
+  /** State layers (onSurface at M3 opacities). */
+  hover: 'rgba(224,228,223,0.06)',
+  pressed: 'rgba(224,228,223,0.10)',
+  selected: 'rgba(141,215,168,0.12)',
+  disabled: 'rgba(224,228,223,0.12)',
 };
 
 /** Older names used across the app, mapped onto the M3 roles. */
@@ -55,7 +61,7 @@ export const colors = {
   textMuted: m3.onSurfaceVariant,
   textFaint: m3.outline,
   accent: m3.primary,
-  accentPressed: '#E59E83',
+  accentPressed: '#76C493',
   onAccent: m3.onPrimary,
   success: m3.success,
   warning: m3.warning,

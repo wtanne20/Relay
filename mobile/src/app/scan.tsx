@@ -116,7 +116,7 @@ const styles = StyleSheet.create({
   hint: {
     color: m3.onSurface,
     textAlign: 'center',
-    backgroundColor: 'rgba(22,20,19,0.85)',
+    backgroundColor: 'rgba(17,20,18,0.85)',
     paddingVertical: space.md,
     paddingHorizontal: space.lg,
     borderRadius: radius.xl,

@@ -375,10 +375,10 @@ const styles = StyleSheet.create({
   },
   buttonOutlined: { borderWidth: 1, borderColor: m3.outline },
   buttonText: { paddingHorizontal: space.md },
-  buttonDisabled: { backgroundColor: 'rgba(237,229,225,0.12)' },
+  buttonDisabled: { backgroundColor: m3.disabled },
   pressedOverlay: { opacity: 0.85 },
   iconButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  iconPressed: { backgroundColor: 'rgba(237,229,225,0.10)' },
+  iconPressed: { backgroundColor: m3.pressed },
   fab: {
     height: 56,
     borderRadius: radius.lg,
@@ -455,6 +455,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
   },
-  listPressed: { backgroundColor: 'rgba(237,229,225,0.08)' },
+  listPressed: { backgroundColor: m3.pressed },
   mono: { color: m3.onSurface, fontFamily: mono, fontSize: 13 },
 });

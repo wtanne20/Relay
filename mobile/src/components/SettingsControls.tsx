@@ -315,7 +315,7 @@ const styles = StyleSheet.create({
   },
   block: { gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md },
   blockHead: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
-  pressed: { backgroundColor: 'rgba(237,229,225,0.08)' },
+  pressed: { backgroundColor: m3.pressed },
   number: {
     width: 104,
     flexShrink: 0,

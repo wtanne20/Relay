@@ -263,7 +263,7 @@ const styles = StyleSheet.create({
     paddingLeft: space.xl,
     paddingRight: space.xs,
   },
-  rowPressed: { backgroundColor: 'rgba(237,229,225,0.08)' },
+  rowPressed: { backgroundColor: m3.pressed },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: space.xl },
   fab: { position: 'absolute', right: space.lg },
   sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { m3, radius, space, type } from '../components/theme';
-import { Sheet } from '../components/Sheet';
+import { AddProjectSheet } from '../components/AddProjectSheet';
 import { Avatar, Banner, Logo, Button, EmptyState, Fab, Field, IconButton, ListItem } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
@@ -164,61 +164,6 @@ export default function ProjectsScreen() {
   );
 }
 
-function AddProjectSheet({
-  visible,
-  onClose,
-  onCreate,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onCreate: (name: string, path: string) => Promise<void>;
-}) {
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await onCreate(name.trim(), path.trim());
-      setName('');
-      setPath('');
-    } catch (e) {
-      setError(describeError(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Sheet visible={visible} onClose={onClose} title="New project">
-      <Field
-        label="Folder on your PC"
-        icon="folder-outline"
-        placeholder="C:\Users\me\code\my-app"
-        value={path}
-        onChangeText={setPath}
-        hint="The agent can only read and change files inside this folder."
-        autoFocus
-      />
-      <Field
-        label="Name (optional)"
-        icon="tag-outline"
-        placeholder="Defaults to the folder name"
-        value={name}
-        onChangeText={setName}
-      />
-      {error ? <Banner message={error} /> : null}
-      <View style={styles.sheetActions}>
-        <Button title="Cancel" variant="text" onPress={onClose} />
-        <Button title="Add project" icon="check" onPress={submit} loading={busy} disabled={!path.trim()} />
-      </View>
-    </Sheet>
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: m3.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: m3.surface },
@@ -240,5 +185,4 @@ const styles = StyleSheet.create({
   itemLast: { borderBottomLeftRadius: radius.xl, borderBottomRightRadius: radius.xl, paddingBottom: space.xs },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: 72 },
   fab: { position: 'absolute', right: space.lg },
-  sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
 });
