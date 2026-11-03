@@ -187,12 +187,17 @@ async fn first_run_picks_a_model_and_saves_it() {
     };
     // No model configured: one is waiting in <data>/models.
     cfg.model_path = String::new();
-    std::fs::create_dir_all(dir.join("models/pub/Some-GGUF")).expect("mkdir");
-    let model = dir.join("models/pub/Some-GGUF/some-Q4_K_M.gguf");
+    let model_dir = dir.join("models").join("pub").join("Some-GGUF");
+    std::fs::create_dir_all(&model_dir).expect("mkdir");
+    let model = model_dir.join("some-Q4_K_M.gguf");
     std::fs::write(&model, b"GGUF").expect("write");
     let (m, shared) = start(cfg, &dir);
     assert!(wait_for(&m, ModelState::Ready, 20).await, "{:?}", m.status());
-    assert_eq!(shared.get().llama.model_path, model.to_string_lossy());
+    // Compare as paths so separators don't matter on Windows.
+    assert_eq!(
+        std::path::Path::new(&shared.get().llama.model_path).components().collect::<Vec<_>>(),
+        model.components().collect::<Vec<_>>()
+    );
     let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config saved");
     assert!(saved.contains("some-Q4_K_M.gguf"));
     m.shutdown().await;
