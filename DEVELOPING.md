@@ -21,7 +21,7 @@ Any change under `mobile/src` shows up on both the phone and the desktop app.
    ```
 
    It checks the tools, installs the npm packages, builds the mock model server and adds two firewall rules.
-   The rules let the phone reach the dev servers over **Tailscale only** (`100.64.0.0/10`), on ports 8081 (Metro) and 8766 (mock server).
+   The rules let the phone reach the dev servers over **Tailscale only** (`100.64.0.0/10`), on ports 8081 (Metro) and 8765/8766 (the dev server).
    It asks for administrator rights once, for the firewall.
 3. On the phone, install **Relay Dev** from the `Relay-Dev-android` artifact of the
    [Android app workflow](../../actions/workflows/android.yml). It installs next to the normal Relay app.

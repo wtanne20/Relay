@@ -6,7 +6,9 @@
   - Checks for Node.js, Rust, the Visual Studio C++ build tools and WebView2
   - Installs the npm packages for the app (mobile/) and the desktop shell
   - Adds Windows Firewall rules so the phone can reach the dev servers over
-    Tailscale ONLY (100.64.0.0/10): Metro on 8081 and the mock server on 8766
+    Tailscale ONLY (100.64.0.0/10): Metro on 8081, and the dev server on 8765 (real
+    settings) or 8766 (mock). The dev build of the app runs the server itself,
+    so the installed Relay's firewall rule (tied to relay.exe) doesn't cover it
   - Builds the mock llama-server used by `dev.ps1 -Mock`
 
   Run it from any PowerShell window: .\dev\setup.ps1
@@ -51,7 +53,7 @@ if (-not $SkipFirewall) {
 netsh advfirewall firewall delete rule name="Relay dev: Metro (Tailscale only)" | Out-Null
 netsh advfirewall firewall add rule name="Relay dev: Metro (Tailscale only)" dir=in action=allow protocol=TCP localport=8081 remoteip=100.64.0.0/10 program="$node" profile=any
 netsh advfirewall firewall delete rule name="Relay dev: server (Tailscale only)" | Out-Null
-netsh advfirewall firewall add rule name="Relay dev: server (Tailscale only)" dir=in action=allow protocol=TCP localport=8766 remoteip=100.64.0.0/10 profile=any
+netsh advfirewall firewall add rule name="Relay dev: server (Tailscale only)" dir=in action=allow protocol=TCP localport=8765,8766 remoteip=100.64.0.0/10 profile=any
 "@
   Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command', $rules
   Write-Host 'If Windows asks whether Node.js may use the network, click Cancel: the rules above already allow Tailscale.' -ForegroundColor Yellow
