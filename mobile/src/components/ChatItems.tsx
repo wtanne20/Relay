@@ -29,9 +29,42 @@ export function UserBubble({ message }: { message: Message }) {
   );
 }
 
-function Reasoning({ text, live }: { text: string; live?: boolean }) {
+const LIVE_TAIL_CHARS = 700;
+
+/**
+ * The model's thinking. `live` streams the latest part while the model is
+ * still thinking; `preview` shows the first lines with a tap to read all of
+ * it; otherwise it's a collapsed "Thought process" row.
+ */
+function Reasoning({ text, live, preview }: { text: string; live?: boolean; preview?: boolean }) {
   const [open, setOpen] = useState(false);
-  if (!text.trim()) return null;
+  const body = text.trim();
+  if (!body) return null;
+  if (live) {
+    const tail = body.length > LIVE_TAIL_CHARS ? `…${body.slice(-LIVE_TAIL_CHARS).replace(/^\S*\s/, '')}` : body;
+    return (
+      <View style={styles.reasoning}>
+        <Text selectable style={styles.thoughtText}>
+          {tail}
+        </Text>
+      </View>
+    );
+  }
+  if (preview) {
+    return (
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        style={styles.reasoning}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityHint={open ? 'Shows less of the thinking' : 'Shows all of the thinking'}
+      >
+        <Text selectable={open} style={styles.thoughtText} numberOfLines={open ? undefined : 3}>
+          {body}
+        </Text>
+      </Pressable>
+    );
+  }
   return (
     <View style={styles.reasoning}>
       <Pressable
@@ -42,12 +75,12 @@ function Reasoning({ text, live }: { text: string; live?: boolean }) {
         hitSlop={6}
       >
         <Icon name="lightbulb-outline" size={16} color={m3.onSurfaceVariant} />
-        <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]}>{live ? 'Thinking…' : 'Thought process'}</Text>
+        <Text style={[type.labelLarge, { color: m3.onSurfaceVariant }]}>Thought process</Text>
         <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
       </Pressable>
       {open ? (
         <Text selectable style={styles.reasoningText}>
-          {text.trim()}
+          {body}
         </Text>
       ) : null}
     </View>
@@ -140,7 +173,7 @@ export const AssistantBlock = memo(function AssistantBlock({
 
 type Step =
   | { kind: 'text'; key: string; text: string }
-  | { kind: 'thought'; key: string; text: string }
+  | { kind: 'thought'; key: string; text: string; live?: boolean }
   | { kind: 'tool'; key: string; call: ToolCall };
 
 /** "Ran 2 commands · read 3 files" style summary of a turn's tool use. */
@@ -174,7 +207,9 @@ export const AssistantTurn = memo(function AssistantTurn({
   running: boolean;
   draft?: { content: string; reasoning: string } | null;
 }) {
-  const [open, setOpen] = useState(false);
+  // Follows the run (open while working, folded once done) until tapped.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? running;
   const last = messages[messages.length - 1];
   const lastIsAnswer = !!last && !running && !last.tool_calls?.length && !!last.content.trim();
   const work = lastIsAnswer ? messages.slice(0, -1) : messages;
@@ -198,6 +233,10 @@ export const AssistantTurn = memo(function AssistantTurn({
         ? 'Thinking…'
         : 'Working…'
       : null;
+  // Thinking that's streaming right now, before any answer text.
+  if (running && draft?.reasoning?.trim() && !draft.content) {
+    steps.push({ kind: 'thought', key: 'live-r', text: draft.reasoning, live: true });
+  }
   const showSteps = calls.length > 0 || (steps.length > 0 && !answer);
   // One fold-out for all the work, including the thinking behind the answer.
   if (showSteps && answerReasoning?.trim()) steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning });
@@ -207,7 +246,7 @@ export const AssistantTurn = memo(function AssistantTurn({
       {showSteps ? (
         <View>
           <Pressable
-            onPress={() => setOpen((o) => !o)}
+            onPress={() => setUserOpen(!open)}
             style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
               styles.stepsHeader,
               (pressed || hovered) && { backgroundColor: m3.hover },
@@ -231,7 +270,7 @@ export const AssistantTurn = memo(function AssistantTurn({
                 st.kind === 'tool' ? (
                   <ToolActivityRow key={st.key} call={st.call} result={results.get(st.call.id)} running={running} />
                 ) : st.kind === 'thought' ? (
-                  <Reasoning key={st.key} text={st.text} />
+                  <Reasoning key={st.key} text={st.text} live={st.live} preview={!st.live} />
                 ) : (
                   <Text key={st.key} selectable style={[type.bodyMedium, styles.stepNote]}>
                     {st.text.trim()}
@@ -242,7 +281,7 @@ export const AssistantTurn = memo(function AssistantTurn({
           ) : null}
         </View>
       ) : null}
-      {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} /> : null}
+      {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} preview /> : null}
       {answer ? <Markdown text={answer} /> : null}
       {!showSteps && !answer && running ? (
         <View style={styles.typing}>
@@ -282,7 +321,8 @@ const styles = StyleSheet.create({
   },
   userText: { ...type.bodyLarge, color: m3.onSurface },
   assistant: { marginVertical: space.md, gap: space.sm },
-  reasoning: {},
+  reasoning: { paddingVertical: 4 },
+  thoughtText: { ...type.bodyMedium, color: m3.onSurfaceVariant, fontStyle: 'italic' },
   reasoningHeader: {
     alignSelf: 'flex-start',
     minHeight: 28,
