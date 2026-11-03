@@ -21,6 +21,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -63,18 +64,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Smoke test the installer
+        timeout-minutes: 10
         run: |
+          # Wait on the setup process itself (not its whole process tree) with a timeout,
+          # and keep Inno Setup's logs so a failure shows where it stopped.
+          function Run-Setup($exe, $argList, $log) {
+            Write-Host "Running $exe $argList"
+            $p = Start-Process $exe -ArgumentList ($argList + "/LOG=`"$log`"") -PassThru
+            $null = $p.Handle  # keep the handle so ExitCode is available after exit
+            if (-not $p.WaitForExit(300000)) {
+              if (Test-Path $log) { Get-Content $log }
+              throw "$exe did not finish within 5 minutes"
+            }
+            if ($p.ExitCode -ne 0) {
+              if (Test-Path $log) { Get-Content $log }
+              throw "$exe exited with $($p.ExitCode)"
+            }
+          }
           $setup = Get-ChildItem installer\Output\RelaySetup-*.exe | Select-Object -First 1
-          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          Run-Setup $setup.FullName @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""') "$env:RUNNER_TEMP\install.log"
           $exe = "$env:ProgramFiles\Relay\relay.exe"
           if (-not (Test-Path $exe)) { throw "relay.exe was not installed" }
+          Write-Host "Installed. Checking version"
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "relay.exe --version failed" }
+          Write-Host "Checking firewall rule"
           $rule = netsh advfirewall firewall show rule name="Relay (Tailscale only)" | Out-String
           if ($rule -notmatch '100\.64\.0\.0/10') { throw "firewall rule missing or not limited to Tailscale: $rule" }
-          $u = Start-Process "$env:ProgramFiles\Relay\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
-          if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
+          Write-Host "Uninstalling"
+          Run-Setup "$env:ProgramFiles\Relay\unins000.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') "$env:RUNNER_TEMP\uninstall.log"
+          # The uninstaller hands off to a temporary copy of itself; give it a moment to finish.
+          for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $exe) { throw "relay.exe is still installed after uninstall" }
+          Write-Host "Smoke test passed"
 
       - uses: actions/upload-artifact@v4
         with:
