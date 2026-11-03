@@ -18,6 +18,7 @@ const MAX_REDIRECTS: usize = 5;
 const DDG_GAP: Duration = Duration::from_millis(1500);
 /// After a DuckDuckGo captcha, go straight to the browser for a while.
 const DDG_COOL_OFF: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 Relay";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +142,11 @@ async fn browser_page(url: &str) -> Result<String> {
         .arg("--disable-extensions")
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--virtual-time-budget=4000")
+        // Headless browsers announce themselves, and Bing then answers only
+        // the first word of the query; look like a normal browser window.
+        .arg(format!("--user-agent={BROWSER_UA}"))
+        .arg("--window-size=1280,900")
+        .arg("--lang=en-US")
         .arg("--dump-dom")
         .arg(url)
         .stdin(std::process::Stdio::null())
@@ -163,15 +169,40 @@ async fn browser_search(query: &str, max: usize) -> Result<Vec<Hit>> {
     let q = percent_encode(query);
     let html = browser_page(&format!("https://www.bing.com/search?q={q}&setlang=en")).await?;
     let hits = parse_bing(&html, max);
-    if !hits.is_empty() {
+    if relevant(query, &hits) {
         return Ok(hits);
     }
     let html = browser_page(&format!("https://html.duckduckgo.com/html/?q={q}")).await?;
-    let hits = parse_ddg(&html, max);
-    if !hits.is_empty() {
-        return Ok(hits);
+    let ddg = parse_ddg(&html, max);
+    if relevant(query, &ddg) {
+        return Ok(ddg);
     }
-    bail!("no results came back")
+    bail!("the results didn't match the search")
+}
+
+/// Bing sometimes answers bots with results for the first word only. Results
+/// count as relevant when at least half mention a later word of the query.
+pub fn relevant(query: &str, hits: &[Hit]) -> bool {
+    if hits.is_empty() {
+        return false;
+    }
+    let words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 3)
+        .skip(1)
+        .map(str::to_lowercase)
+        .collect();
+    if words.is_empty() {
+        return true;
+    }
+    let matching = hits
+        .iter()
+        .filter(|h| {
+            let text = format!("{} {} {}", h.title, h.snippet, h.url).to_lowercase();
+            words.iter().any(|w| text.contains(w.as_str()))
+        })
+        .count();
+    matching * 2 >= hits.len()
 }
 
 fn percent_encode(s: &str) -> String {
@@ -742,6 +773,13 @@ mod tests {
         assert_eq!(hits[0].snippet, "Our picks for thick, coarse hair & more.");
         assert_eq!(hits[1].url, "https://www.allure.com/story/thick-hair");
         assert_eq!(percent_encode("thick hair & frizz"), "thick+hair+%26+frizz");
+        assert!(relevant("best shampoo for thick hair", &hits));
+        let junk = vec![Hit {
+            title: "Best Buy | Official Online Store".into(),
+            url: "https://www.bestbuy.com/".into(),
+            snippet: "Shop electronics".into(),
+        }];
+        assert!(!relevant("best shampoo for thick hair", &junk));
     }
 
     #[test]
