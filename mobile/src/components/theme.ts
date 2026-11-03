@@ -227,8 +227,7 @@ function recolor(v: unknown): unknown {
   return v;
 }
 
-if (Platform.OS !== 'web') {
-  // The web app reloads instead (see setAccent).
+{
   const create = StyleSheet.create.bind(StyleSheet);
   (StyleSheet as { create: typeof StyleSheet.create }).create = ((styles: Record<string, unknown>) => {
     const sheet = create(styles as never) as Record<string, unknown>;
@@ -270,11 +269,6 @@ export function setAccent(id: AccentId) {
     else Secure.setItem(ACCENT_KEY, id);
   } catch {
     // Still switch for this session.
-  }
-  if (Platform.OS === 'web') {
-    // The browser and desktop app simply reload with the new colours.
-    globalThis.location?.reload();
-    return;
   }
   const from = accentTokens(currentAccent);
   const to = accentTokens(id);
