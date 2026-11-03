@@ -103,11 +103,12 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpReady) and not TailscaleInstalled then
-    MsgBox('Tailscale was not found on this PC.' + #13#10#13#10 +
+  { Silent installs skip this; SuppressibleMsgBox also honours /SUPPRESSMSGBOXES. }
+  if (CurPageID = wpReady) and not WizardSilent and not TailscaleInstalled then
+    SuppressibleMsgBox('Tailscale was not found on this PC.' + #13#10#13#10 +
       'Relay only accepts connections over Tailscale, so install Tailscale on this PC and on your phone ' +
       'and sign in with the same account. You can do that after this setup finishes.',
-      mbInformation, MB_OK);
+      mbInformation, MB_OK, IDOK);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -118,10 +119,10 @@ begin
   begin
     DataDir := ExpandConstant('{localappdata}\Relay');
     if DirExists(DataDir) and not UninstallSilent then
-      if MsgBox('Also delete your Relay data?' + #13#10#13#10 + DataDir + #13#10#13#10 +
+      if SuppressibleMsgBox('Also delete your Relay data?' + #13#10#13#10 + DataDir + #13#10#13#10 +
           'This holds your settings, chat history, logs, the downloaded llama.cpp and anything you put in its models folder. ' +
           'Your project folders are never touched.',
-          mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+          mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
         DelTree(DataDir, True, True, True);
   end;
 end;
