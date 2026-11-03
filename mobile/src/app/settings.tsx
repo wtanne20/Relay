@@ -58,8 +58,22 @@ function PairPhone() {
   );
 }
 
-/** The folder new projects are created in, with a dialog to change it. */
-function ProjectsFolder() {
+/** A folder setting (projects or models) with a dialog to change it. */
+function FolderSetting({
+  setting,
+  icon,
+  label,
+  empty,
+  placeholder,
+  hint,
+}: {
+  setting: 'projects_folder' | 'models_folder';
+  icon: IconName;
+  label: string;
+  empty: string;
+  placeholder: string;
+  hint: string;
+}) {
   const { client } = useConnection();
   const [folder, setFolder] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -71,9 +85,9 @@ function ProjectsFolder() {
     useCallback(() => {
       client
         ?.settings()
-        .then((r) => setFolder(r.settings.projects_folder ?? ''))
+        .then((r) => setFolder(r.settings[setting] ?? ''))
         .catch(() => undefined);
-    }, [client]),
+    }, [client, setting]),
   );
 
   const save = async () => {
@@ -81,8 +95,8 @@ function ProjectsFolder() {
     setBusy(true);
     setError(null);
     try {
-      const r = await client.patchSettings({ projects_folder: draft.trim() });
-      setFolder(r.settings.projects_folder);
+      const r = await client.patchSettings({ [setting]: draft.trim() });
+      setFolder(r.settings[setting] ?? '');
       setOpen(false);
     } catch (e) {
       setError(describeError(e));
@@ -94,30 +108,36 @@ function ProjectsFolder() {
   return (
     <>
       <NavRow
-        icon="folder-home-outline"
-        label="Projects folder"
-        value={folder === null ? '…' : folder || 'Not set. New projects ask for one.'}
+        icon={icon}
+        label={label}
+        value={folder === null ? '…' : folder || empty}
         onPress={() => {
           setDraft(folder ?? '');
           setError(null);
           setOpen(true);
         }}
       />
-      <Sheet visible={open} onClose={() => setOpen(false)} title="Projects folder">
+      <Sheet visible={open} onClose={() => setOpen(false)} title={label}>
         <Field
           label="Folder on your PC"
-          icon="folder-home-outline"
-          placeholder="C:\Users\me\Projects"
+          icon={icon}
+          placeholder={placeholder}
           value={draft}
           onChangeText={setDraft}
-          hint="New projects get a folder named after them in here. It's created if it doesn't exist. Existing projects stay where they are."
+          hint={hint}
           autoFocus
           onSubmitEditing={save}
         />
         {error ? <Banner message={error} /> : null}
         <View style={styles.sheetActions}>
           <Button title="Cancel" variant="text" onPress={() => setOpen(false)} />
-          <Button title="Save" icon="check" onPress={save} loading={busy} disabled={!draft.trim()} />
+          <Button
+            title="Save"
+            icon="check"
+            onPress={save}
+            loading={busy}
+            disabled={setting === 'projects_folder' && !draft.trim()}
+          />
         </View>
       </Sheet>
     </>
@@ -273,6 +293,14 @@ export default function SettingsScreen() {
           value="The model Relay loads by default, and tags"
           onPress={() => router.push('/models')}
         />
+        <FolderSetting
+          setting="models_folder"
+          icon="folder-download-outline"
+          label="Models folder"
+          empty="Relay's data folder"
+          placeholder="W:\Relay\models"
+          hint="Where Relay saves the models it downloads or copies. Pick a drive with plenty of space. It's created if it doesn't exist. Models already saved stay where they are and keep working. Leave empty for Relay's data folder."
+        />
         <NavRow
           icon="download-outline"
           label="Download models"
@@ -300,7 +328,14 @@ export default function SettingsScreen() {
 
       <SectionTitle title="Projects" />
       <Group>
-        <ProjectsFolder />
+        <FolderSetting
+          setting="projects_folder"
+          icon="folder-home-outline"
+          label="Projects folder"
+          empty="Not set. New projects ask for one."
+          placeholder="C:\Users\me\Projects"
+          hint="New projects get a folder named after them in here. It's created if it doesn't exist. Existing projects stay where they are."
+        />
       </Group>
 
       {phone ? (

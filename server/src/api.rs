@@ -333,6 +333,7 @@ const EDITABLE_SECTIONS: &[&str] = &[
     "push",
     "disabled_skills",
     "projects_folder",
+    "models_folder",
 ];
 
 fn settings_view(c: &Config) -> Value {
@@ -343,6 +344,7 @@ fn settings_view(c: &Config) -> Value {
         "push": c.push,
         "disabled_skills": c.disabled_skills,
         "projects_folder": c.projects_folder,
+        "models_folder": c.models_folder,
     })
 }
 
@@ -417,6 +419,7 @@ async fn patch_settings(
         push: crate::config::PushConfig,
         disabled_skills: Vec<String>,
         projects_folder: String,
+        models_folder: String,
     }
     let next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
@@ -450,7 +453,14 @@ async fn patch_settings(
     } else if next.projects_folder == current.projects_folder {
         current.projects_folder.clone()
     } else {
-        prepare_projects_folder(&next.projects_folder).await?
+        prepare_folder(&next.projects_folder).await?
+    };
+    let models_folder = if next.models_folder.trim().is_empty() {
+        String::new()
+    } else if next.models_folder == current.models_folder {
+        current.models_folder.clone()
+    } else {
+        prepare_folder(&next.models_folder).await?
     };
     let restart = next.llama != current.llama;
     let updated = s.cfg.update(move |c| {
@@ -460,6 +470,7 @@ async fn patch_settings(
         c.push = next.push;
         c.disabled_skills = next.disabled_skills;
         c.projects_folder = projects_folder;
+        c.models_folder = models_folder;
     })?;
     if restart {
         s.model.restart().await;
@@ -698,7 +709,7 @@ async fn hub_download(
         .into_iter()
         .find(|f| f.file == body.file)
         .ok_or(ApiError::NotFound("model file"))?;
-    let models_dir = relay_models_dir(&s.data_dir);
+    let models_dir = relay_models_dir(&s);
     let d = s
         .downloads
         .start(&models_dir, &body.repo, model)
@@ -706,10 +717,10 @@ async fn hub_download(
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
 }
 
-/// Where Relay saves every model it downloads or copies: its own data folder,
-/// never another app's (such as LM Studio's). Not configurable on purpose.
-pub fn relay_models_dir(data_dir: &Path) -> std::path::PathBuf {
-    data_dir.join("models")
+/// Where Relay saves every model it downloads or copies: its own models
+/// folder (in its data folder unless moved in Settings), never another app's.
+fn relay_models_dir(s: &AppState) -> std::path::PathBuf {
+    s.cfg.read(|l| l.relay_models_dir())
 }
 
 #[derive(Deserialize)]
@@ -736,7 +747,7 @@ async fn import_model(
             src.display()
         )));
     }
-    let models_dir = relay_models_dir(&s.data_dir);
+    let models_dir = relay_models_dir(&s);
     let canon_models = dunce::canonicalize(&models_dir).unwrap_or(models_dir.clone());
     let canon_src = dunce::canonicalize(&src).unwrap_or(src.clone());
     if canon_src.starts_with(&canon_models) {
@@ -888,9 +899,9 @@ struct CreateProject {
     path: Option<String>,
 }
 
-/// Checks that a projects folder is an absolute path and creates it if it
+/// Checks that a folder setting is an absolute path and creates it if it
 /// doesn't exist yet. Returns the canonical path.
-async fn prepare_projects_folder(path: &str) -> ApiResult<String> {
+async fn prepare_folder(path: &str) -> ApiResult<String> {
     let trimmed = path.trim().trim_matches('"').to_string();
     if !Path::new(&trimmed).is_absolute() {
         return Err(ApiError::BadRequest(format!(

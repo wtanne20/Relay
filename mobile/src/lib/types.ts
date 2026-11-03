@@ -193,6 +193,8 @@ export interface Settings {
   disabled_skills: string[];
   /** Folder new projects are created in ("" = not set). */
   projects_folder: string;
+  /** Where Relay saves models; empty = its data folder. */
+  models_folder?: string;
 }
 
 export interface SettingsResponse {

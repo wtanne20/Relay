@@ -25,6 +25,10 @@ pub struct Config {
     /// Folder new projects are created in. When set, adding a project with
     /// just a name creates `<projects_folder>/<name>`. Empty = not set.
     pub projects_folder: String,
+    /// Folder Relay keeps its models in (downloads and copies go here).
+    /// Empty = `models` in the data folder. Always Relay's own folder, never
+    /// another app's.
+    pub models_folder: String,
     /// Tags shown next to each model (e.g. "code", "UI"), keyed by the model's
     /// file name. A model without an entry gets tags guessed from its name.
     pub model_tags: std::collections::BTreeMap<String, Vec<String>>,
@@ -186,6 +190,7 @@ impl Default for Config {
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
             projects_folder: String::new(),
+            models_folder: String::new(),
             model_tags: Default::default(),
             shell: if cfg!(windows) {
                 "powershell.exe".into()
@@ -466,8 +471,22 @@ impl LoadedConfig {
     }
 
     /// Folders searched for GGUF models.
+    /// Where Relay saves models it downloads or copies.
+    pub fn relay_models_dir(&self) -> PathBuf {
+        if self.config.models_folder.trim().is_empty() {
+            self.data_dir.join("models")
+        } else {
+            PathBuf::from(self.config.models_folder.trim())
+        }
+    }
+
     pub fn model_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.data_dir.join("models")];
+        let mut dirs = vec![self.relay_models_dir()];
+        // Models saved before the folder was moved stay usable.
+        let default = self.data_dir.join("models");
+        if !dirs.contains(&default) {
+            dirs.push(default);
+        }
         dirs.extend(
             self.config
                 .llama

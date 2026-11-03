@@ -93,8 +93,8 @@ export const type = {
   bodyLarge: { fontSize: 16, lineHeight: 24, letterSpacing: 0.15, color: m3.onSurface },
   bodyMedium: { fontSize: 14, lineHeight: 20, letterSpacing: 0.25, color: m3.onSurfaceVariant },
   bodySmall: { fontSize: 12, lineHeight: 16, letterSpacing: 0.4, color: m3.onSurfaceVariant },
-  labelLarge: { fontSize: 14, lineHeight: 20, fontWeight: '500' as const, letterSpacing: 0.1 },
-  labelMedium: { fontSize: 12, lineHeight: 16, fontWeight: '500' as const, letterSpacing: 0.5 },
+  labelLarge: { fontSize: 14, lineHeight: 20, fontWeight: '500' as const, letterSpacing: 0.1, color: m3.onSurface },
+  labelMedium: { fontSize: 12, lineHeight: 16, fontWeight: '500' as const, letterSpacing: 0.5, color: m3.onSurface },
 };
 
 export const statusColor: Record<SessionStatus, string> = {

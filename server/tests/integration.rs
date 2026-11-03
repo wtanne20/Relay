@@ -922,6 +922,27 @@ async fn plain_chats_titles_and_models() {
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["project"]["model"], json!(model.to_string_lossy()));
 
+    // Relay's models folder can live on another drive.
+    let big = h.dir.join("big-disk/Relay models");
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"models_folder": "relative"})),
+        )
+        .await;
+    assert_eq!(st, 400, "must be absolute");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"models_folder": big.to_string_lossy()})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert!(big.is_dir(), "created");
+    let big = dunce::canonicalize(&big).expect("canon");
+
     // Copying a model from another app's folder lands in Relay's own folder
     // and leaves the original alone.
     std::fs::create_dir_all(h.dir.join("other-app/models")).expect("mkdir");
@@ -938,7 +959,7 @@ async fn plain_chats_titles_and_models() {
         .post("/models/import", json!({"path": outside.to_string_lossy()}))
         .await;
     assert_eq!(st, 202, "{v}");
-    let copy = h.dir.join("data/models/imported/Outside-Q4.gguf");
+    let copy = big.join("imported/Outside-Q4.gguf");
     for _ in 0..100 {
         if copy.is_file() {
             break;
