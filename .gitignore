@@ -15,3 +15,11 @@ mobile/ios/
 mobile/android/
 *.log
 .DS_Store
+server/pairing.html
+server/models/
+server/llama.cpp/
+server/skills/*
+!server/skills/README.md
+# Installer output
+installer/Output/
+mobile/Relay.apk

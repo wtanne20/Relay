@@ -1,0 +1,89 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+    paths:
+      - "server/**"
+      - "installer/**"
+      - "README.md"
+      - ".github/workflows/windows.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "installer/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: windows-cargo-${{ hashFiles('server/Cargo.lock') }}
+
+      - name: Test
+        working-directory: server
+        run: cargo test --locked
+
+      - name: Build relay.exe
+        working-directory: server
+        run: cargo build --release --locked
+
+      - name: Read version
+        id: version
+        run: |
+          $v = (Select-String -Path server/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.version }}" installer\relay.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke test the installer
+        run: |
+          $setup = Get-ChildItem installer\Output\RelaySetup-*.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          $exe = "$env:ProgramFiles\Relay\relay.exe"
+          if (-not (Test-Path $exe)) { throw "relay.exe was not installed" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "relay.exe --version failed" }
+          $rule = netsh advfirewall firewall show rule name="Relay (Tailscale only)" | Out-String
+          if ($rule -notmatch '100\.64\.0\.0/10') { throw "firewall rule missing or not limited to Tailscale: $rule" }
+          $u = Start-Process "$env:ProgramFiles\Relay\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RelaySetup-${{ steps.version.outputs.version }}
+          path: installer/Output/RelaySetup-*.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/RelaySetup-*.exe

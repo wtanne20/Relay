@@ -1,222 +1,152 @@
 # Relay
 
-Relay is a personal coding agent you control from your phone.
+Relay runs coding agents on your own PC, with your own GPU, and lets you use them from your phone anywhere
+through Tailscale. Think of it as a Claude- or LM Studio Bionic-style agent chat, with the model running at home
+and the chat in your pocket.
 
-- **`server/`**: a Rust server (binary `relay`) that runs on your Windows PC. It starts and supervises
-  llama.cpp's `llama-server` with your local model, runs an agent loop with file and PowerShell tools
-  restricted to each project folder, stores everything in SQLite, and exposes a token-protected REST +
-  WebSocket API.
-- **`mobile/`**: an Expo (React Native) app for iOS and Android. You manage projects and sessions, send
-  prompts, watch the agent stream its work, stop it, and get a push notification when a task ends.
+- **PC app (`server/`)**: a Windows program (`relay.exe`) that sets up and supervises llama.cpp's
+  `llama-server` with a local model, runs an agent loop with file and PowerShell tools restricted to each project
+  folder, keeps everything in SQLite, and serves a token-protected REST + WebSocket API.
+- **Phone app (`mobile/`)**: an Expo (React Native) app for Android and iOS. Pair by scanning a QR code, manage
+  projects and sessions, chat with the agent and watch it work live, approve its commands, stop it, tune every
+  agent setting, and get a push notification when a task finishes or needs you.
 
-Your phone reaches the PC over **Tailscale only**. Nothing is exposed to the public internet:
-llama-server listens on `127.0.0.1`, and Relay should only be reachable through your tailnet.
+Your phone reaches the PC **only over Tailscale**. llama-server listens on `127.0.0.1`, and the installer opens
+Relay's port only to Tailscale addresses. Nothing is exposed to the internet.
 
 ```
- Phone (Expo app) ──Tailscale──▶ Relay :8765 (REST + WebSocket, bearer token)
-                                   │
-                                   ├─ agent loop ─▶ llama-server 127.0.0.1:8080 (/v1/chat/completions, streaming)
-                                   ├─ tools: list_dir, read_file, write_file, edit_file, run_command (PowerShell)
-                                   ├─ SQLite: projects, sessions, messages, push tokens
-                                   └─ Expo Push API (project name, session title, status only)
+ Phone app ──Tailscale──▶ Relay :8765 (REST + WebSocket, bearer token)
+                            │
+                            ├─ agent loop ─▶ llama-server 127.0.0.1:8080 (OpenAI-compatible, streaming)
+                            ├─ tools: list_dir, read_file, write_file, edit_file, run_command (PowerShell)
+                            ├─ SQLite: projects, sessions, messages, push tokens
+                            └─ Expo Push API (project name, session title, status only)
 ```
-
-The full API is documented in [API.md](API.md).
-
-## Contents
-
-1. [Install Rust](#1-install-rust)
-2. [Install llama.cpp](#2-install-llamacpp)
-3. [Build Relay](#3-build-relay)
-4. [Migrate from LM Studio Bionic](#4-migrate-from-lm-studio-bionic-relay-migrate)
-5. [Start the server](#5-start-the-server)
-6. [Run at Windows startup](#6-run-relay-at-windows-startup)
-7. [Tailscale on the PC and phone](#7-tailscale-on-the-pc-and-phone)
-8. [The mobile app with Expo Go](#8-the-mobile-app-with-expo-go-development)
-9. [Installable apps with EAS Build](#9-installable-apps-with-eas-build)
-10. [Push notifications](#10-push-notifications)
-11. [Configuration reference](#configuration-reference)
-12. [Instructions, AGENTS.md and skills](#instructions-agentsmd-and-skills)
-13. [Testing without a GPU](#testing-without-a-gpu)
-14. [Security notes](#security-notes) and [known limitations](#known-limitations)
 
 ---
 
-## 1. Install Rust
+## Quick start
 
-1. Install **Visual Studio Build Tools** (the MSVC linker and Windows SDK Rust needs):
-   - Download "Build Tools for Visual Studio" from <https://visualstudio.microsoft.com/downloads/>
-     (under *Tools for Visual Studio*).
-   - In the installer, tick the **Desktop development with C++** workload. Make sure *MSVC … C++ x64/x86 build
-     tools* and a *Windows 11 SDK* (or 10) are selected. Install.
-2. Install Rust with **rustup** from <https://rustup.rs> (run `rustup-init.exe`, accept the defaults,
-   which select the `x86_64-pc-windows-msvc` toolchain).
-3. Open a new terminal and check:
+You need a Windows 10/11 PC (an NVIDIA GPU is best; other GPUs work through Vulkan), a phone, and a free
+[Tailscale](https://tailscale.com) account.
 
-   ```powershell
-   rustc --version
-   cargo --version
-   ```
+1. **Tailscale.** Install it on the PC (<https://tailscale.com/download/windows>) and on the phone (App Store or
+   Play Store), and sign in to both with the same account.
+2. **A model.** If you use LM Studio, you're done: Relay uses the models LM Studio downloaded. Otherwise download a
+   coding model in GGUF format (for example a Qwen coder model, Q4_K_M or larger) and put the `.gguf` file in
+   `%LOCALAPPDATA%\Relay\models` after step 3.
+3. **PC app.** Download `RelaySetup-<version>.exe` (see [Downloads](#downloads)) and run it. Windows may say it
+   protected your PC because the installer isn't code-signed: click **More info → Run anyway**. Keep the defaults
+   and finish with **Start Relay now**.
+4. **First start.** The Relay window finds your GPU, downloads the right llama.cpp build for it, picks the largest
+   model that fits in your VRAM, loads it, and shows a **QR code** (also opened in your browser).
+5. **Phone app.** Install Relay on the phone (see [Downloads](#downloads)), open it and tap **Scan QR code**. That's
+   the whole connection setup. Pointing the phone's own camera app at the QR code works too.
+6. **Use it.** Tap **Add project** and enter a folder path on the PC (for example `C:\code\my-app`), start a
+   session, and ask for something.
 
-## 2. Install llama.cpp
+Keep the Relay window open (minimized is fine); closing it stops Relay and the model. To pair another phone or
+see the code again: **Start menu → Relay → Pair phone**.
 
-1. Open <https://github.com/ggml-org/llama.cpp/releases> and download, from the latest release:
-   - `llama-<build>-bin-win-cuda-<version>-x64.zip` (the CUDA build), and
-   - `cudart-llama-bin-win-cuda-<version>-x64.zip` (the CUDA runtime DLLs), with the **same CUDA version**.
+### What the installer does
 
-   Pick the CUDA version your NVIDIA driver supports (`nvidia-smi` shows the highest supported CUDA version
-   top right). You do not need the full CUDA Toolkit.
-2. Extract **both** zips into the same folder, for example `C:\llama.cpp`. It should contain
-   `llama-server.exe` next to `ggml-cuda.dll`, `cudart64_*.dll` and `cublas64_*.dll`.
-3. Optional check:
+- Installs `relay.exe` into `Program Files\Relay` with Start menu shortcuts: **Relay**, **Pair phone**,
+  **Relay data folder** and **Uninstall Relay**.
+- Optionally starts Relay (minimized) when you sign in, on by default, and adds a desktop shortcut.
+- Adds a Windows Firewall rule, *Relay (Tailscale only)*, allowing port 8765 **only from `100.64.0.0/10`**
+  (Tailscale's address range). Uninstalling removes it.
+- Tells you if Tailscale is missing and offers the download page.
+- Uninstalling keeps your data (`%LOCALAPPDATA%\Relay`) unless you choose to delete it. Your project folders are
+  never touched.
 
-   ```powershell
-   C:\llama.cpp\llama-server.exe --version
-   ```
+### What happens on first start
 
-Relay launches llama-server itself with `-m <model_path> --port <port>` plus these defaults (editable in
-`config.toml`):
+Relay keeps its settings and data in `%LOCALAPPDATA%\Relay`: `config.toml`, `relay.db`, `logs\`, `skills\`,
+`models\`, `system_prompt.md`, `pairing.html` and the downloaded `llama.cpp\`.
 
-```
---jinja -ngl 99 -c 65536 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
---temp 0.6 --top-k 20 --top-p 0.95 --host 127.0.0.1
-```
+| Step | How |
+| --- | --- |
+| GPU | `nvidia-smi` reports the GPU name, VRAM and the CUDA version the driver supports. |
+| llama.cpp | Uses `llama_server_path` if set; else an existing `llama-server.exe` (Relay's folder, `PATH`, `%USERPROFILE%\llama.cpp`, `C:\llama.cpp`, `Program Files\llama.cpp`); else downloads the latest official release from github.com/ggml-org/llama.cpp: the CUDA build matching your driver (plus its CUDA runtime) on NVIDIA, otherwise the Vulkan build. Progress shows in the app. |
+| Model | Uses `model_path` if set; else scans `%USERPROFILE%\.lmstudio\models`, LM Studio's older cache folder and `%LOCALAPPDATA%\Relay\models` for `.gguf` files (skipping vision projectors and extra split parts) and picks the largest that fits in VRAM minus 2.5 GB. Change it any time in the app. |
+| Skills | Reads skills from `%LOCALAPPDATA%\Relay\skills` and LM Studio's `%USERPROFILE%\.lmstudio\skills`. |
+| Tailscale | `tailscale status` gives the PC's Tailscale IP, which goes into the QR code. |
+| Token | A random 256-bit API token is generated and saved in `config.toml`. |
 
-`--jinja` is required for tool calling. Relay always forces `--host 127.0.0.1`.
+The choices are saved to `config.toml`, so later starts are quick. If something can't be set up automatically
+(no model found, download blocked), the model bar in the app says what to do, and **Restart model** retries.
+llama-server's output goes to `logs\llama-server.log`.
 
-## 3. Build Relay
+---
+
+## Agent settings (from the phone)
+
+**Settings → Agent settings** changes everything Relay and llama-server use, similar to LM Studio's model settings
+and Bionic's agent settings. Edits are saved to `config.toml` on the PC when you tap **Save changes**.
+
+| Section | Settings | Applies |
+| --- | --- | --- |
+| Model | Pick any GGUF found on the PC (with its size, and a warning if it may not fit in VRAM) | Reloads the model |
+| Behaviour | **Ask before acting**: never, before commands, or before commands and file changes; **Thinking** on/off (reasoning models such as Qwen3); max steps per prompt; default command timeout | Next prompt |
+| Tools | Turn each tool on or off: list folders, read files, write files, edit files, run PowerShell | Next prompt |
+| Sampling | Temperature, Top P, Top K, Min P, repeat penalty, presence penalty, max reply tokens, with **Reset** to defaults | Next prompt |
+| Model loading | Context length, GPU layers, flash attention (on/auto/off), KV cache type for K and V, extra llama-server arguments, with **Reset** | Reloads the model |
+| Prompt and skills | Edit the global **system prompt** (with reset to default); turn individual **skills** on or off | Next prompt |
+| Notifications | Push notifications on or off for the PC | Immediately |
+
+Each project also has **Instructions** (top right of a project's sessions list): notes added to the system prompt
+for that project only, on top of the project's own `AGENTS.md`.
+
+### Approvals
+
+With **Ask before acting** set to *Commands* or *All changes*, the agent pauses before those tool calls. The chat
+shows the exact command (or the file and the change) with **Allow**, **Deny** and **Allow everything for this
+task**, and you get a push notification ("… needs your approval"). Denied calls are reported to the model, which
+then tries another approach or asks you. Stopping the task while it waits cancels it.
+
+---
+
+## Downloads
+
+Both apps are built by GitHub Actions in this repository:
+
+- **PC installer**: *Actions → Windows installer* → the latest run → artifact **RelaySetup-&lt;version&gt;**. The
+  workflow runs the test suite on Windows, builds `relay.exe` (statically linked, no Visual C++ runtime needed),
+  builds the installer with Inno Setup, and installs and uninstalls it once as a check.
+- **Android app**: *Actions → Android app* → artifact **Relay-android** (`Relay.apk`). Open it on the phone and
+  allow installing from that source when asked. It is signed with a development key, which is fine for your own
+  phone.
+- **Releases**: pushing a tag like `v0.1.0` attaches both files to a GitHub Release.
+- **iPhone**: Apple doesn't allow installing apps from a file. Build it with EAS (below) using a paid Apple
+  Developer account, or run it in Expo Go.
+
+---
+
+## Building from source
+
+### PC app
+
+Install Rust (<https://rustup.rs>; accept the Visual Studio C++ Build Tools when rustup asks), then:
 
 ```powershell
-git clone https://github.com/wtanne20/Relay.git
 cd Relay\server
 cargo build --release
-```
-
-The binary is `server\target\release\relay.exe`. Relay keeps its data next to `config.toml`
-(by default the folder you run it from, so `server\`):
-
-| File | Purpose |
-|---|---|
-| `config.toml` | settings and the API token (created on first run) |
-| `relay.db` | projects, sessions, messages, push tokens |
-| `logs\llama-server.log` | llama-server output |
-| `system_prompt.md` | global system prompt (created on first run) |
-| `skills\` | your SKILL.md folders |
-
-Run the tests any time with `cargo test` (they use a mock llama-server, no GPU needed).
-
-## 4. Migrate from LM Studio Bionic (`relay migrate`)
-
-`relay migrate` imports your setup without deleting, moving or modifying any original files.
-Bionic chat history is not migrated.
-
-```powershell
-cd Relay\server
-
-# Import specific project folders, point Relay at llama.cpp, use your Bionic system prompt,
-# and pick the model from the GGUF files under %USERPROFILE%\.lmstudio\models:
-.\target\release\relay.exe migrate C:\code\app1 C:\code\app2 `
-    --llama-server C:\llama.cpp `
-    --system-prompt C:\Users\me\Documents\bionic-prompt.txt
-
-# Or scan a parent folder and confirm each subfolder (y/N):
-.\target\release\relay.exe migrate --scan C:\code
-```
-
-What it does:
-
-1. **Projects**: each folder becomes a project named after the folder (already-imported folders are skipped).
-2. **Skills**: every folder containing `SKILL.md` under `%USERPROFILE%\.lmstudio\skills` (and any
-   `--skills <path>`) is **referenced** in `skills_paths` in config.toml. Nothing is copied.
-3. **System prompt**: with `--system-prompt <file>`, the text becomes `system_prompt.md`
-   (an existing one is backed up to `system_prompt.md.bak`).
-4. **Model**: lists the GGUF files under `%USERPROFILE%\.lmstudio\models` with sizes and asks which one to use
-   (press Enter to keep the current choice). The file stays where LM Studio keeps it.
-5. Prints a summary.
-
-Other options: `--lmstudio <dir>` if LM Studio's folder is elsewhere, `--yes` to accept every scanned
-folder, `--skip-model` to skip the model picker. `relay migrate --help` lists everything.
-
-## 5. Start the server
-
-```powershell
-cd Relay\server
 .\target\release\relay.exe          # same as: relay.exe serve
 ```
 
-On first run Relay creates `config.toml`, generates a random API token and prints it:
+`relay.exe` uses `%LOCALAPPDATA%\Relay\config.toml`, unless there is a `config.toml` in the current folder or you
+pass `--config <path>`. Commands:
 
-```
-  Relay 0.1.0 listening on 0.0.0.0:8765
-  API token: 3f9c…e1a7
-  Connect from your phone over Tailscale: http://<this PC's Tailscale name or IP>:8765
-```
+- `relay serve`: run the server (default).
+- `relay pair`: show the pairing QR code and open the pairing page.
+- `relay migrate`: import from LM Studio Bionic (below).
 
-Then it starts llama-server (or reuses one already answering on the port), waits for `/health`, and
-reports the model as ready. Loading a 27B model takes a little while; the app shows "Model loading…".
+To build the installer yourself, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run
+`iscc installer\relay.iss` after `cargo build --release`.
 
-- If llama-server exits unexpectedly, Relay restarts it (at most 3 times in 5 minutes, then it reports an error
-  until you press **Restart model** in the app or call `POST /model/restart`).
-- **Ctrl+C** (or closing the window) stops running tasks and llama-server cleanly.
+### Phone app
 
-When Windows Firewall asks, allow Relay on **private** networks only. Better, allow port 8765 only from
-Tailscale addresses (run PowerShell as administrator):
-
-```powershell
-New-NetFirewallRule -DisplayName "Relay (Tailscale only)" -Direction Inbound -Protocol TCP `
-  -LocalPort 8765 -RemoteAddress 100.64.0.0/10 -Action Allow
-```
-
-Quick check from the PC:
-
-```powershell
-$t = (Select-String -Path config.toml -Pattern '^token = "(.*)"').Matches[0].Groups[1].Value
-Invoke-RestMethod http://127.0.0.1:8765/info -Headers @{ Authorization = "Bearer $t" }
-```
-
-There is also a small command-line client that sends a prompt and prints the streamed events:
-
-```powershell
-cargo run --release --example relay_cli -- --project C:\code\app1 "list the files and summarize the project"
-```
-
-## 6. Run Relay at Windows startup
-
-`server\start_relay.bat` starts the release build with the config in `server\`:
-
-```bat
-cd /d "%~dp0"
-"target\release\relay.exe" serve --config "%~dp0config.toml"
-```
-
-To start it automatically when you log in, either:
-
-- **Startup folder** (simplest): press `Win+R`, type `shell:startup`, and put a shortcut to `start_relay.bat`
-  there. Set the shortcut to *Run: Minimized* if you like.
-- **Task Scheduler** (starts even if you forget to open anything): *Create Task…* → Triggers: *At log on* (your
-  user) → Actions: *Start a program* → `C:\path\to\Relay\server\start_relay.bat`, *Start in*:
-  `C:\path\to\Relay\server` → Conditions: untick *Start the task only if the computer is on AC power*.
-
-The PC must stay awake while you use Relay from your phone (Settings → System → Power → Sleep: Never, or use
-a tool such as PowerToys Awake).
-
-## 7. Tailscale on the PC and phone
-
-1. Install Tailscale on the PC (<https://tailscale.com/download/windows>) and sign in.
-2. Install the Tailscale app on your phone (App Store / Play Store) and sign in with the **same account**.
-3. In the Tailscale admin console (<https://login.tailscale.com/admin/machines>) find the PC's address:
-   a `100.x.y.z` IP, or a MagicDNS name like `my-pc.tail1234.ts.net` (enable MagicDNS under *DNS*).
-4. In the app's Connect screen, enter `my-pc.tail1234.ts.net` (port 8765 is added automatically) or
-   `100.x.y.z:8765`, paste the token, tap **Test connection**, then **Save**.
-
-Do not use Tailscale Funnel or router port forwarding for Relay; the API should never be public.
-
-Traffic between the phone and PC is plain HTTP inside Tailscale's encrypted WireGuard tunnel. The app
-therefore allows cleartext HTTP (Android `usesCleartextTraffic`, iOS ATS exception in `app.json`).
-
-## 8. The mobile app with Expo Go (development)
-
-Requirements: Node.js LTS on the PC and the **Expo Go** app on your phone (it must support Expo SDK 58).
+For development with Expo Go (Node.js LTS on the PC, Expo Go on the phone):
 
 ```powershell
 cd Relay\mobile
@@ -224,117 +154,84 @@ npm install
 npx expo start
 ```
 
-Scan the QR code with the camera (iOS) or Expo Go (Android). The phone needs to reach the dev server: with
-both on the same Wi-Fi it just works; over Tailscale only, use `npx expo start --tunnel` or set
-`REACT_NATIVE_PACKAGER_HOSTNAME=<PC's Tailscale IP>` before `npx expo start`.
-
-Screens:
-
-- **Connect**: server address + token, test, save (stored in the secure keychain/keystore).
-- **Projects**: model status at the top (tap it for Settings), add a project (name + folder path on the PC),
-  long-press or ✕ to remove (only from Relay; the folder is never touched).
-- **Sessions**: title, status badge and last activity; **New session** at the bottom; long-press to rename/delete.
-- **Chat**: your prompts, the agent's answers in Markdown with code blocks, collapsible tool rows such as
-  "Ran: cargo build — exit 0" (tap for arguments and output), and the model's thought process (collapsed).
-  The input stays above the keyboard; **Send** becomes **Stop** while the agent runs. Updates arrive live over
-  WebSocket, and the app reconnects and catches up when it returns to the foreground or the network comes back.
-- **Settings**: server address and token, push toggle, restart model, server info, disconnect.
-
-Checks: `npm run typecheck` (TypeScript) and `npx expo-doctor`.
-
-## 9. Installable apps with EAS Build
-
-Expo Go is for development. To install Relay as a normal app:
+For installable builds use EAS. Change `ios.bundleIdentifier` and `android.package` in `app.json`
+(`com.example.relay`) to your own first.
 
 ```powershell
-cd Relay\mobile
 npx eas-cli@latest login
-npx eas-cli@latest init            # creates the EAS project and writes extra.eas.projectId to app.json
+npx eas-cli@latest init                                        # writes extra.eas.projectId to app.json
+npx eas-cli@latest build --platform android --profile preview  # APK
+npx eas-cli@latest device:create                               # iPhone: register the device (ad hoc)
+npx eas-cli@latest build --platform ios --profile preview      # needs a paid Apple Developer account
 ```
 
-Change `ios.bundleIdentifier` and `android.package` in `app.json` (`com.example.relay`) to something of your own.
+Checks: `npm run typecheck`.
 
-- **Android (APK you can sideload)**:
+---
 
-  ```powershell
-  npx eas-cli@latest build --platform android --profile preview
-  ```
+## Migrate from LM Studio Bionic (`relay migrate`)
 
-  Open the link EAS prints on your phone, download the `.apk`, and install it (allow "install unknown apps").
-- **iOS**: a permanent install needs a paid **Apple Developer account** (USD 99/year).
+Relay already reads LM Studio's models and skills automatically. `relay migrate` also imports project folders and
+your Bionic system prompt, without deleting, moving or modifying any original files. Bionic chat history is not
+migrated. Run it while Relay is stopped.
 
-  ```powershell
-  npx eas-cli@latest device:create                       # register your iPhone (ad hoc builds)
-  npx eas-cli@latest build --platform ios --profile preview
-  ```
+```powershell
+& "$env:ProgramFiles\Relay\relay.exe" migrate C:\code\app1 C:\code\app2 `
+    --system-prompt C:\Users\me\Documents\bionic-prompt.txt
 
-  Without a paid account you can only run the app through Expo Go or a 7-day free provisioning build from Xcode
-  on a Mac.
+# Or scan a parent folder and confirm each subfolder (y/N):
+& "$env:ProgramFiles\Relay\relay.exe" migrate --scan C:\code
+```
 
-## 10. Push notifications
+1. **Projects**: each folder becomes a project named after the folder (already-imported folders are skipped).
+2. **Skills**: skill folders under LM Studio's skills folder and any `--skills <path>` are referenced, never copied.
+3. **System prompt**: with `--system-prompt <file>`, the text becomes `system_prompt.md` (an existing one is backed
+   up to `system_prompt.md.bak`).
+4. **Model**: lists the GGUF files LM Studio has and asks which one to use (Enter keeps the current one).
 
-When a task finishes, errors or is stopped, Relay sends a push through Expo's push service containing only the
-**project name, session title and status** (and ids so tapping it opens the session). Never code, file contents
-or prompt text. Session titles default to the creation time for that reason; rename them freely.
+Other options: `--lmstudio <dir>`, `--llama-server <path>`, `--yes`, `--skip-model`. See `relay migrate --help`.
 
-To enable:
+---
 
-1. Run `npx eas-cli@latest init` in `mobile/` (push tokens need the EAS project id) and install an EAS build
-   (section 9). Expo Go on Android does not support push notifications.
-2. For Android builds, add Firebase Cloud Messaging credentials once:
-   `npx eas-cli@latest credentials` → Android → Google Service Account / FCM V1 (follow the prompts).
-   iOS push credentials are set up automatically by EAS.
-3. In the app: **Settings → Notify when a task ends**. The app asks for permission and registers its token with Relay.
+## Push notifications
 
-Turn it off server-wide with `[push] enabled = false` in config.toml.
+When a task finishes, fails, is stopped or needs approval, Relay sends a push through Expo's push service with
+only the **project name, session title and status** (plus ids so tapping it opens the session). Never code, file
+contents or prompt text. Session titles default to the creation time for that reason.
+
+Push needs an app built with EAS, because it needs the EAS project id (the GitHub-built APK and Expo Go don't
+receive pushes):
+
+1. `npx eas-cli@latest init` in `mobile/`, then build with EAS (above).
+2. Android: add Firebase Cloud Messaging credentials once with `npx eas-cli@latest credentials`. iOS credentials
+   are handled by EAS.
+3. In the app: **Settings → Notifications on this phone**.
 
 ---
 
 ## Configuration reference
 
-`server/config.toml` (see `server/config.example.toml`):
+All settings live in `%LOCALAPPDATA%\Relay\config.toml`. [`server/config.example.toml`](server/config.example.toml)
+lists every key with comments. Everything except `token`, `bind`, `shell` and `skills_paths` can be changed from
+the app; edit the file only while Relay is stopped. `RUST_LOG=relay=debug` gives more logging. The HTTP API is
+documented in [API.md](API.md).
 
-```toml
-token = "…"                 # API token; delete the line and restart to generate a new one
-bind = "0.0.0.0:8765"       # reach only through Tailscale
-system_prompt_path = "system_prompt.md"
-skills_paths = []           # extra skill folders (added by `relay migrate`)
-max_steps = 50              # model round-trips per prompt
-shell = "powershell.exe"    # or "pwsh" for PowerShell 7
+## How the agent's instructions are built
 
-[llama]
-llama_server_path = 'C:\llama.cpp'   # the folder or llama-server.exe itself
-model_path = 'C:\Users\me\.lmstudio\models\…\model-Q6_K.gguf'
-port = 8080
-args = ["--jinja", "-ngl", "99", "-c", "65536", "--flash-attn", "on", "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0", "--temp", "0.6", "--top-k", "20", "--top-p", "0.95", "--host", "127.0.0.1"]
-health_timeout_seconds = 600
-model_name = "local"
+For each task the system prompt is:
 
-[push]
-enabled = true
-```
-
-Edit it while Relay is stopped. Set `RUST_LOG=relay=debug` for more logging.
-
-## Instructions, AGENTS.md and skills
-
-The system prompt for each task is built from:
-
-1. `system_prompt.md` (global; edit freely),
+1. `system_prompt.md` (editable in the app),
 2. an environment section (project name and folder, OS, date),
-3. the project's `AGENTS.md`, if the project folder has one,
-4. a list of available skills: each skill's `name` and `description` from its SKILL.md frontmatter and the path
-   to its SKILL.md. The model reads the full file with `read_file` when a skill is relevant. Skill folders are
-   readable but never writable by the agent.
-
-Skills are discovered in `server\skills\` and every entry of `skills_paths` (a skill folder, or a folder of skill
-folders). Changes are picked up on the next prompt.
+3. the project's `AGENTS.md`, if the folder has one,
+4. the project's **Instructions** from the app,
+5. the enabled skills: each skill's `name` and `description` from its `SKILL.md` frontmatter and the path to it.
+   The model reads the full `SKILL.md` with `read_file` when relevant. Skill folders are readable but never
+   writable by the agent.
 
 ## Testing without a GPU
 
-`server/examples/mock_llama.rs` is a scripted stand-in for llama-server (it streams text and tool-call deltas
-like the real thing). The test suite uses it; you can also run it to try the whole stack:
+`server/examples/mock_llama.rs` is a scripted stand-in for llama-server that streams text and tool-call deltas
+like the real thing. The test suite uses it, and you can run it to try the whole stack:
 
 ```powershell
 cd Relay\server
@@ -342,28 +239,29 @@ cargo run --example mock_llama -- --port 8080      # terminal 1
 cargo run -- serve                                 # terminal 2: finds the "model" already on 8080
 ```
 
-Prompts mentioning `hello.txt` make it call `write_file`, `run: <command>` calls `run_command`, and anything
-else is echoed.
+Prompts mentioning `hello.txt` make it call `write_file`, `run: <command>` calls `run_command`, and anything else
+is echoed. `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
 
 ## Security notes
 
-- Every request and WebSocket needs the bearer token; tokens are compared in constant time.
-- llama-server only listens on `127.0.0.1`. Relay listens on all interfaces so Tailscale can reach it: keep it off
-  the public internet and restrict the firewall rule to `100.64.0.0/10`.
+- Every request and WebSocket needs the bearer token; tokens are compared in constant time. The pairing QR code
+  and `pairing.html` contain the token, so don't share them. To revoke it, delete the `token` line in
+  `config.toml`, restart Relay and pair again.
+- llama-server only listens on `127.0.0.1`. Relay listens on all interfaces so Tailscale can reach it, and the
+  installer's firewall rule only admits Tailscale addresses. Never use Tailscale Funnel or port forwarding for it.
+- Traffic is plain HTTP inside Tailscale's encrypted WireGuard tunnel, so the app allows cleartext HTTP.
 - File tools canonicalize every path (resolving `..`, symlinks and junctions) and refuse anything outside the
-  project folder (skill folders are read-only).
+  project folder; skill folders are read-only.
 - `run_command` refuses obviously destructive commands (formatting, `shutdown`, `rm -rf /`, deleting outside the
-  project, …). This blocklist catches mistakes; it is **not** a sandbox. A command can still do anything your
-  Windows user can, so only point Relay at projects you are happy for the agent to run code in.
-- Push notifications contain only project name, session title and status.
+  project, …). This blocklist catches mistakes; it is **not** a sandbox. Use **Ask before acting** if you want to
+  review commands, and only point Relay at projects you're happy for the agent to run code in.
 
 ## Known limitations
 
-- Long sessions can exceed the model's context window (65,536 tokens by default); llama-server then returns an
-  error, which Relay shows. Start a new session, or raise `-c` if VRAM allows.
-- If Relay is killed abruptly (Task Manager, power loss), llama-server may keep running; the next start detects it
-  on the port and reuses it. Tasks that were running are marked `stopped`.
-- The command blocklist is string-based and best effort (see Security notes).
-- The app is built for phones in portrait; tablets work but are not optimized.
-- This repository was built and tested on Linux with a mock llama-server (the server was also type-checked for
-  the Windows MSVC target); the first run on your PC with the real model is the end-to-end check.
+- Long sessions can exceed the context window; llama-server then returns an error, which Relay shows. Start a new
+  session or raise **Context length** if VRAM allows.
+- If Relay is killed abruptly, llama-server may keep running; the next start reuses it. Interrupted tasks are
+  marked `stopped`.
+- The PC must stay awake while you use Relay from your phone.
+- Relay was developed against a mock llama-server on Linux and is built and tested on Windows by the CI workflow;
+  the first run on your PC with a real model is the end-to-end check.

@@ -396,7 +396,14 @@ impl LoadedConfig {
                 roots.push(d);
             }
         }
-        roots.extend(self.config.skills_paths.iter().map(|p| self.resolve(p)));
+        for p in &self.config.skills_paths {
+            let r = self.resolve(p);
+            // `relay migrate` may already have listed LM Studio's folder.
+            let key = dunce::canonicalize(&r).unwrap_or_else(|_| r.clone());
+            if !roots.iter().any(|x| dunce::canonicalize(x).unwrap_or_else(|_| x.clone()) == key) {
+                roots.push(r);
+            }
+        }
         roots
     }
 

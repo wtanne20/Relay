@@ -18,9 +18,10 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 ## Contents
 
 - [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`
+- [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
-- [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`
+- [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
 - [WebSocket](#websocket-get-sessionsidws): `GET /sessions/{id}/ws` and every event type
 - [Objects](#objects): Project, Session, Message, ModelStatus
@@ -44,9 +45,13 @@ Server and model overview.
   "projects": 3,
   "push_enabled": true,
   "max_steps": 50,
-  "model": { "...": "see ModelStatus" }
+  "model": { "...": "see ModelStatus" },
+  "gpus": [ { "name": "NVIDIA GeForce RTX 5090", "vram_mb": 32607 } ],
+  "tailscale": { "dns_name": "my-pc.tail1234.ts.net", "ip": "100.101.102.103" }
 }
 ```
+
+`gpus` is empty without an NVIDIA GPU; `tailscale` is `null` when Tailscale isn't running on the PC.
 
 ### `GET /model`
 
@@ -75,6 +80,108 @@ Stops llama-server (if Relay launched it) and starts it again; also clears the
 ```json
 { "ok": true }
 ```
+
+---
+
+## Agent settings
+
+Everything here is saved to `config.toml` on the PC.
+
+### `GET /settings`
+
+```json
+{
+  "settings": {
+    "agent": {
+      "max_steps": 50,
+      "command_timeout_seconds": 120,
+      "approval": "never",
+      "thinking": true,
+      "tools": { "list_dir": true, "read_file": true, "write_file": true, "edit_file": true, "run_command": true }
+    },
+    "sampling": {
+      "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+      "repeat_penalty": 1.0, "presence_penalty": 0.0, "max_tokens": 0
+    },
+    "llama": {
+      "llama_server_path": "C:\\Users\\me\\AppData\\Local\\Relay\\llama.cpp\\b7000\\llama-server.exe",
+      "model_path": "C:\\Users\\me\\.lmstudio\\models\\…\\model-Q6_K.gguf",
+      "models_dirs": [], "port": 8080, "context_size": 65536, "gpu_layers": 99,
+      "flash_attn": "on", "cache_type_k": "q8_0", "cache_type_v": "q8_0", "extra_args": [],
+      "health_timeout_seconds": 600, "model_name": "local", "auto_setup": true
+    },
+    "push": { "enabled": true },
+    "disabled_skills": []
+  },
+  "defaults": { "...": "the same shape with default values" },
+  "tools": [ { "name": "run_command", "description": "Run PowerShell commands" } ],
+  "cache_types": ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0"],
+  "gpus": [ { "name": "NVIDIA GeForce RTX 5090", "vram_mb": 32607 } ]
+}
+```
+
+- `agent.approval`: `never`, `commands` (ask before `run_command`) or `all_changes` (also before `write_file` and
+  `edit_file`).
+- `agent.thinking` is sent as `chat_template_kwargs.enable_thinking`.
+- `sampling.max_tokens`: `0` means no limit.
+- `llama.*` become llama-server arguments: `-m <model_path> --port <port> --jinja -ngl <gpu_layers>
+  -c <context_size> --flash-attn <flash_attn> --cache-type-k <cache_type_k> --cache-type-v <cache_type_v>
+  <extra_args…> --host 127.0.0.1`.
+
+The token, bind address, shell and extra skill folders are not exposed and can't be changed through the API.
+
+### `PATCH /settings`
+
+A partial update: send only what changes, nested by section.
+
+```json
+{ "sampling": { "temperature": 0.2 }, "agent": { "approval": "commands" } }
+```
+
+```json
+{ "settings": { "...": "all settings after the change" }, "model_restarting": false }
+```
+
+Changes to the `llama` section restart llama-server (`model_restarting: true`); everything else applies from the
+next prompt. Unknown keys, wrong types, `null`, out-of-range values (for example temperature outside 0–2),
+`--host`/`--port`/`-m` in `extra_args`, a `model_path` that isn't an existing `.gguf` file, and a
+`llama_server_path` that doesn't exist are rejected with `400` and nothing is saved.
+
+### `GET /models`
+
+GGUF files found on the PC (LM Studio's folders, Relay's `models` folder, `llama.models_dirs`), plus the configured
+model if it lives elsewhere. Select one with `PATCH /settings` `{"llama": {"model_path": "…"}}`.
+
+```json
+{
+  "models": [ { "path": "C:\\…\\model-Q6_K.gguf", "name": "model-Q6_K.gguf", "size_bytes": 22548578304 } ],
+  "current": "C:\\…\\model-Q6_K.gguf",
+  "dirs": ["C:\\Users\\me\\AppData\\Local\\Relay\\models", "C:\\Users\\me\\.lmstudio\\models"],
+  "vram_mb": 32607
+}
+```
+
+### `GET /system-prompt`
+
+```json
+{ "content": "You are Relay, …", "default": "You are Relay, …", "path": "C:\\…\\system_prompt.md" }
+```
+
+### `PUT /system-prompt`
+
+`{"content": "…"}` replaces `system_prompt.md` (max 200,000 bytes). Empty or whitespace-only content restores the
+default. Returns `{"content": "…"}`.
+
+### `GET /skills`
+
+```json
+{
+  "skills": [ { "name": "pdf", "description": "Read PDFs", "path": "C:\\…\\pdf\\SKILL.md", "enabled": true } ],
+  "roots": ["C:\\…\\Relay\\skills", "C:\\Users\\me\\.lmstudio\\skills"]
+}
+```
+
+Turn skills off with `PATCH /settings` `{"disabled_skills": ["pdf"]}`.
 
 ---
 
@@ -109,15 +216,15 @@ A project is a name plus an absolute folder path on the PC. The agent's tools ar
 ### `GET /projects/{id}`
 
 ```json
-{ "project": { "id": "8f1c…", "name": "My app", "path": "C:\\code\\my-app", "created_at": "…" } }
+{ "project": { "id": "8f1c…", "name": "My app", "path": "C:\\code\\my-app", "instructions": "", "created_at": "…" } }
 ```
 
 ### `PATCH /projects/{id}`
 
-Both fields optional.
+All fields optional. `instructions` (max 50,000 bytes) is added to the system prompt for this project's sessions.
 
 ```json
-{ "name": "Renamed", "path": "D:\\work\\my-app" }
+{ "name": "Renamed", "path": "D:\\work\\my-app", "instructions": "Run npm test before finishing." }
 ```
 
 ```json
@@ -266,6 +373,18 @@ Cancels the running task, including killing a running command and its child proc
 
 ---
 
+### `POST /sessions/{id}/approval`
+
+Answers the tool call the agent is waiting on (see `approval_request` below).
+
+```json
+{ "tool_call_id": "call_3", "decision": "approve", "note": null }
+```
+
+`decision` is `approve`, `approve_all` (this call and every later one in the current task) or `deny`. With
+`deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if nothing is
+waiting or the id doesn't match.
+
 ## Push tokens
 
 Expo push tokens to notify when a task finishes, errors or is stopped. Notifications contain only the
@@ -338,11 +457,13 @@ The `hello` event carries the current status and, if a task is running, the part
   "running": true,
   "error": null,
   "last_message_id": 44,
-  "draft": { "content": "Looking at the failing", "reasoning": "The tests fail because…" }
+  "draft": { "content": "Looking at the failing", "reasoning": "The tests fail because…" },
+  "pending_approval": null
 }
 ```
 
-`draft` is `null` when no task is running.
+`draft` is `null` when no task is running. `pending_approval` is the waiting tool call (same shape as in
+`approval_request`) or `null`.
 
 #### `status`
 
@@ -428,6 +549,23 @@ The client fell behind and `dropped` events were skipped; refetch history with `
 { "type": "resync", "dropped": 120 }
 ```
 
+#### `approval_request`
+
+The agent is waiting for permission to run a tool call. Answer with `POST /sessions/{id}/approval`.
+
+```json
+{
+  "type": "approval_request",
+  "approval": { "tool_call_id": "call_3", "name": "run_command", "arguments": "{\"command\":\"npm test\"}", "requested_at": "…" }
+}
+```
+
+#### `approval_resolved`
+
+```json
+{ "type": "approval_resolved", "tool_call_id": "call_3", "approved": true }
+```
+
 ### Typical sequence
 
 ```
@@ -445,9 +583,9 @@ hello → status(running) → message(user) → reasoning_delta… → text_delt
 | `read_file` | `path`, optional `start_line`, `end_line` | Up to 50,000 characters. Also reads SKILL.md files (read-only). |
 | `write_file` | `path`, `content` | Creates parent folders. |
 | `edit_file` | `path`, `old_text`, `new_text` | Exact match; error if not found or not unique. |
-| `run_command` | `command`, `timeout_seconds` = 120 | PowerShell in the project folder; killed on timeout or stop; exit code + stdout + stderr, truncated to 20,000 characters. |
+| `run_command` | `command`, `timeout_seconds` (default from settings, 120) | PowerShell in the project folder; killed on timeout or stop; exit code + stdout + stderr, truncated to 20,000 characters. |
 
-Paths are resolved against the project folder, canonicalized (following symlinks and junctions) and rejected
+Tools can be turned off in the settings; disabled tools aren't offered to the model. Paths are resolved against the project folder, canonicalized (following symlinks and junctions) and rejected
 if they end up outside it. Obviously destructive commands (formatting disks, `shutdown`, `rm -rf /`,
 `Remove-Item` outside the project, …) are refused. That blocklist is a safety net against model mistakes,
 not a sandbox.
@@ -461,6 +599,7 @@ not a sandbox.
 | `id` | string (UUID) |
 | `name` | string |
 | `path` | string, absolute |
+| `instructions` | string, extra system prompt text for this project |
 | `created_at` | string |
 
 ### Session
@@ -499,3 +638,4 @@ not a sandbox.
 | `model_path` | string |
 | `recent_restarts` | unexpected exits in the last 5 minutes (gives up at 3) |
 | `since` | when the state last changed |
+| `progress` | 0–1 while llama.cpp is downloading on first run, else null |
