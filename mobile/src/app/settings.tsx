@@ -6,7 +6,8 @@ import { ActivityIndicator, Image, Platform, RefreshControl, ScrollView, StyleSh
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
 import { m3, space, type } from '../components/theme';
-import { Banner, Button, Icon, type IconName } from '../components/ui';
+import { Sheet } from '../components/Sheet';
+import { Banner, Button, Field, Icon, type IconName } from '../components/ui';
 import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
@@ -54,6 +55,72 @@ function PairPhone() {
         </Text>
       </View>
     </View>
+  );
+}
+
+/** The folder new projects are created in, with a dialog to change it. */
+function ProjectsFolder() {
+  const { client } = useConnection();
+  const [folder, setFolder] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      client
+        ?.settings()
+        .then((r) => setFolder(r.settings.projects_folder ?? ''))
+        .catch(() => undefined);
+    }, [client]),
+  );
+
+  const save = async () => {
+    if (!client) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await client.patchSettings({ projects_folder: draft.trim() });
+      setFolder(r.settings.projects_folder);
+      setOpen(false);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <NavRow
+        icon="folder-home-outline"
+        label="Projects folder"
+        value={folder === null ? '…' : folder || 'Not set. New projects ask for one.'}
+        onPress={() => {
+          setDraft(folder ?? '');
+          setError(null);
+          setOpen(true);
+        }}
+      />
+      <Sheet visible={open} onClose={() => setOpen(false)} title="Projects folder">
+        <Field
+          label="Folder on your PC"
+          icon="folder-home-outline"
+          placeholder="C:\Users\me\Projects"
+          value={draft}
+          onChangeText={setDraft}
+          hint="New projects get a folder named after them in here. It's created if it doesn't exist. Existing projects stay where they are."
+          autoFocus
+          onSubmitEditing={save}
+        />
+        {error ? <Banner message={error} /> : null}
+        <View style={styles.sheetActions}>
+          <Button title="Cancel" variant="text" onPress={() => setOpen(false)} />
+          <Button title="Save" icon="check" onPress={save} loading={busy} disabled={!draft.trim()} />
+        </View>
+      </Sheet>
+    </>
   );
 }
 
@@ -215,6 +282,11 @@ export default function SettingsScreen() {
         <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
       </Group>
 
+      <SectionTitle title="Projects" />
+      <Group>
+        <ProjectsFolder />
+      </Group>
+
       {phone ? (
         <>
           <SectionTitle title="Notifications" />
@@ -336,6 +408,7 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: m3.surface },
+  sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
   grow: { flex: 1, minWidth: 0 },
   content: { padding: space.lg, paddingBottom: 64 },
   pair: { flexDirection: 'row', gap: space.xl, padding: space.lg, alignItems: 'center', flexWrap: 'wrap' },

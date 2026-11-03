@@ -22,6 +22,9 @@ pub struct Config {
     pub skills_paths: Vec<String>,
     /// Skill names turned off in the app.
     pub disabled_skills: Vec<String>,
+    /// Folder new projects are created in. When set, adding a project with
+    /// just a name creates `<projects_folder>/<name>`. Empty = not set.
+    pub projects_folder: String,
     /// Shell used by run_command ("powershell.exe" or "pwsh" on Windows).
     pub shell: String,
     pub agent: AgentConfig,
@@ -179,6 +182,7 @@ impl Default for Config {
             system_prompt_path: "system_prompt.md".into(),
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
+            projects_folder: String::new(),
             shell: if cfg!(windows) {
                 "powershell.exe".into()
             } else {

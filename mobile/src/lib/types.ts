@@ -175,6 +175,8 @@ export interface Settings {
   llama: LlamaSettings;
   push: { enabled: boolean };
   disabled_skills: string[];
+  /** Folder new projects are created in ("" = not set). */
+  projects_folder: string;
 }
 
 export interface SettingsResponse {

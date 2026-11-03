@@ -751,3 +751,46 @@ async fn pairing_and_cors() {
         .expect("info");
     assert_eq!(r.status(), 401);
 }
+
+#[tokio::test]
+async fn projects_folder_creates_named_folders() {
+    let h = Harness::start().await;
+    let patch = |body: Value| h.req(reqwest::Method::PATCH, "/settings", Some(body));
+
+    // Without a projects folder, a name alone is not enough.
+    let (st, v) = h.post("/projects", json!({"name": "Alpha"})).await;
+    assert_eq!(st, 400, "{v}");
+
+    let (st, _) = patch(json!({"projects_folder": "relative/dir"})).await;
+    assert_eq!(st, 400);
+    let root = h.dir.join("My Projects");
+    let (st, v) = patch(json!({"projects_folder": root.to_string_lossy()})).await;
+    assert_eq!(st, 200, "{v}");
+    assert!(root.is_dir(), "projects folder is created");
+    assert_eq!(
+        h.get("/settings").await["settings"]["projects_folder"],
+        json!(dunce::canonicalize(&root).expect("canon").to_string_lossy())
+    );
+
+    let (st, v) = h
+        .post("/projects", json!({"name": "Mileage: tracker?"}))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let made = root.join("Mileage- tracker-");
+    assert!(made.is_dir(), "project folder created");
+    assert_eq!(v["project"]["name"], "Mileage: tracker?");
+
+    // An existing folder is reused, never replaced.
+    std::fs::create_dir_all(root.join("Beta")).expect("mkdir");
+    std::fs::write(root.join("Beta/keep.txt"), "x").expect("write");
+    let (st, _) = h
+        .post("/projects", json!({"name": "Beta", "path": ""}))
+        .await;
+    assert_eq!(st, 201);
+    assert!(root.join("Beta/keep.txt").is_file());
+    let (st, _) = h.post("/projects", json!({"name": "Beta"})).await;
+    assert_eq!(st, 409, "same folder twice");
+    let (st, _) = h.post("/projects", json!({"name": "CON"})).await;
+    assert_eq!(st, 400, "reserved Windows name");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

@@ -157,6 +157,7 @@ export class RelayClient {
   async projects(): Promise<Project[]> {
     return (await this.request<{ projects: Project[] }>('GET', '/projects')).projects;
   }
+  /** With an empty path, the server creates a folder named after the project in the projects folder. */
   async createProject(name: string, path: string): Promise<Project> {
     return (await this.request<{ project: Project }>('POST', '/projects', { name, path })).project;
   }

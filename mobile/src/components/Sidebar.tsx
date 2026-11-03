@@ -109,7 +109,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       <ScrollView style={styles.grow} contentContainerStyle={styles.list}>
         {projects === null ? <ActivityIndicator color={m3.primary} style={{ marginTop: space.lg }} /> : null}
         {projects?.length === 0 ? (
-          <Text style={[type.bodyMedium, styles.empty]}>Add a folder on this PC to start.</Text>
+          <Text style={[type.bodyMedium, styles.empty]}>Add a project to start.</Text>
         ) : null}
         {projects?.map((p) => {
           const expanded = !!open[p.id];

@@ -274,7 +274,14 @@ async fn pairing(State(s): State<AppState>) -> ApiResult<Json<Value>> {
 
 /// Top-level config sections the app may change. The token, bind address
 /// and shell stay config.toml-only.
-const EDITABLE_SECTIONS: &[&str] = &["agent", "sampling", "llama", "push", "disabled_skills"];
+const EDITABLE_SECTIONS: &[&str] = &[
+    "agent",
+    "sampling",
+    "llama",
+    "push",
+    "disabled_skills",
+    "projects_folder",
+];
 
 fn settings_view(c: &Config) -> Value {
     json!({
@@ -283,6 +290,7 @@ fn settings_view(c: &Config) -> Value {
         "llama": c.llama,
         "push": c.push,
         "disabled_skills": c.disabled_skills,
+        "projects_folder": c.projects_folder,
     })
 }
 
@@ -356,6 +364,7 @@ async fn patch_settings(
         llama: crate::config::LlamaConfig,
         push: crate::config::PushConfig,
         disabled_skills: Vec<String>,
+        projects_folder: String,
     }
     let next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
@@ -384,6 +393,13 @@ async fn patch_settings(
             )));
         }
     }
+    let projects_folder = if next.projects_folder.trim().is_empty() {
+        String::new()
+    } else if next.projects_folder == current.projects_folder {
+        current.projects_folder.clone()
+    } else {
+        prepare_projects_folder(&next.projects_folder).await?
+    };
     let restart = next.llama != current.llama;
     let updated = s.cfg.update(move |c| {
         c.agent = next.agent;
@@ -391,6 +407,7 @@ async fn patch_settings(
         c.llama = next.llama;
         c.push = next.push;
         c.disabled_skills = next.disabled_skills;
+        c.projects_folder = projects_folder;
     })?;
     if restart {
         s.model.restart().await;
@@ -519,7 +536,54 @@ async fn model_restart(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
 #[derive(Deserialize)]
 struct CreateProject {
     name: Option<String>,
-    path: String,
+    /// An existing folder. When empty, a folder named after the project is
+    /// created inside the projects folder from the settings.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Checks that a projects folder is an absolute path and creates it if it
+/// doesn't exist yet. Returns the canonical path.
+async fn prepare_projects_folder(path: &str) -> ApiResult<String> {
+    let trimmed = path.trim().trim_matches('"').to_string();
+    if !Path::new(&trimmed).is_absolute() {
+        return Err(ApiError::BadRequest(format!(
+            "projects folder must be a full path (for example C:\\Users\\me\\Projects): {trimmed}"
+        )));
+    }
+    tokio::fs::create_dir_all(&trimmed)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("could not create {trimmed}: {e}")))?;
+    validate_folder(&trimmed)
+}
+
+/// Turns a project name into a folder name that is valid on Windows.
+fn folder_name(name: &str) -> ApiResult<String> {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).to_string();
+    let stem = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." || reserved {
+        return Err(ApiError::BadRequest(format!(
+            "'{name}' can't be used as a folder name; pick another project name"
+        )));
+    }
+    Ok(cleaned)
 }
 
 #[derive(Deserialize)]
@@ -560,7 +624,29 @@ async fn create_project(
     State(s): State<AppState>,
     JsonBody(body): JsonBody<CreateProject>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let path = validate_folder(&body.path)?;
+    let given = body.path.as_deref().map(str::trim).unwrap_or_default();
+    let path = if given.is_empty() {
+        let name = body.name.as_deref().map(str::trim).unwrap_or_default();
+        if name.is_empty() {
+            return Err(ApiError::BadRequest(
+                "a project name or folder is required".into(),
+            ));
+        }
+        let root = s.cfg.get().projects_folder.clone();
+        if root.trim().is_empty() {
+            return Err(ApiError::BadRequest(
+                "set a projects folder in Settings first, or choose an existing folder".into(),
+            ));
+        }
+        let dir = Path::new(&root).join(folder_name(name)?);
+        // Reuses the folder if it already exists; never removes or moves anything.
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            ApiError::BadRequest(format!("could not create {}: {e}", dir.display()))
+        })?;
+        validate_folder(&dir.to_string_lossy())?
+    } else {
+        validate_folder(given)?
+    };
     let name = match body.name.as_deref().map(str::trim) {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => Path::new(&path)
