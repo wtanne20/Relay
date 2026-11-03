@@ -1,18 +1,103 @@
-import { Platform } from 'react-native';
+import * as Secure from 'expo-secure-store';
+import { Platform, StyleSheet } from 'react-native';
 
 import type { SessionStatus } from '../lib/types';
 
+/** Accent colours the user can pick (Settings, Appearance). Tones follow M3 dark. */
+export const ACCENTS = {
+  green: {
+    name: 'Green',
+    primary: '#8DD7A8',
+    onPrimary: '#00391F',
+    container: '#105233',
+    onContainer: '#A9F4C3',
+    pressed: '#76C493',
+  },
+  blue: {
+    name: 'Blue',
+    primary: '#A8C7FA',
+    onPrimary: '#062E6F',
+    container: '#0842A0',
+    onContainer: '#D3E3FD',
+    pressed: '#8AB4F8',
+  },
+  purple: {
+    name: 'Purple',
+    primary: '#CFBCFF',
+    onPrimary: '#381E72',
+    container: '#4F378B',
+    onContainer: '#E9DDFF',
+    pressed: '#B69DF8',
+  },
+  orange: {
+    name: 'Orange',
+    primary: '#FFB77C',
+    onPrimary: '#4E2600',
+    container: '#6F3800',
+    onContainer: '#FFDCC2',
+    pressed: '#F59E5B',
+  },
+  pink: {
+    name: 'Pink',
+    primary: '#FFB0CD',
+    onPrimary: '#5E1133',
+    container: '#7B2949',
+    onContainer: '#FFD9E2',
+    pressed: '#F48FB4',
+  },
+  teal: {
+    name: 'Teal',
+    primary: '#80D5D0',
+    onPrimary: '#003735',
+    container: '#00504D',
+    onContainer: '#9CF2EC',
+    pressed: '#66BDB8',
+  },
+} as const;
+export type AccentId = keyof typeof ACCENTS;
+
+const ACCENT_KEY = 'relay.accent';
+
+function storedAccent(): AccentId {
+  try {
+    const v = Platform.OS === 'web' ? globalThis.localStorage?.getItem(ACCENT_KEY) : Secure.getItem(ACCENT_KEY);
+    if (v && v in ACCENTS) return v as AccentId;
+  } catch {
+    // No stored choice yet, or storage unavailable: use the default.
+  }
+  return 'green';
+}
+
+function rgba(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/** The accent-coloured tokens for one accent. */
+function accentTokens(id: AccentId) {
+  const a = ACCENTS[id];
+  return {
+    primary: a.primary,
+    onPrimary: a.onPrimary,
+    primaryContainer: a.container,
+    onPrimaryContainer: a.onContainer,
+    primaryPressed: a.pressed,
+    primaryBorder: rgba(a.primary, 0.35),
+    selected: rgba(a.primary, 0.12),
+  };
+}
+
+/** The accent the app started with; styles created at startup use it. */
+const bootAccent = storedAccent();
+let currentAccent: AccentId = bootAccent;
+
 /**
  * Material 3 dark color scheme: neutral grey surfaces with tonal elevation,
- * and green (emerald seed) only for accents: primary actions, highlights,
- * focus and status. Change the seed colours here and the whole app (phone
- * and desktop) follows.
+ * and the user's accent colour (green by default) only for accents: primary
+ * actions, highlights, focus and status.
  */
 export const m3 = {
-  primary: '#8DD7A8',
-  onPrimary: '#00391F',
-  primaryContainer: '#105233',
-  onPrimaryContainer: '#A9F4C3',
+  ...accentTokens(bootAccent),
   secondary: '#C6C6C6',
   secondaryContainer: '#383838',
   onSecondaryContainer: '#EDEDED',
@@ -47,7 +132,6 @@ export const m3 = {
   /** State layers (onSurface at M3 opacities). */
   hover: 'rgba(230,230,230,0.06)',
   pressed: 'rgba(230,230,230,0.10)',
-  selected: 'rgba(141,215,168,0.12)',
   disabled: 'rgba(230,230,230,0.12)',
 };
 
@@ -61,7 +145,7 @@ export const colors = {
   textMuted: m3.onSurfaceVariant,
   textFaint: m3.outline,
   accent: m3.primary,
-  accentPressed: '#76C493',
+  accentPressed: m3.primaryPressed,
   onAccent: m3.onPrimary,
   success: m3.success,
   warning: m3.warning,
@@ -120,3 +204,94 @@ export const statusLabel: Record<SessionStatus, string> = {
   error: 'Error',
   stopped: 'Stopped',
 };
+
+// ---------- switching the accent while the app runs ----------
+
+/**
+ * Styles are made once, at startup, with the accent of that moment. To switch
+ * accents without restarting, every StyleSheet hands out its styles through
+ * getters that swap the startup accent's colours for the current ones.
+ */
+let swap: Map<string, string> | null = null;
+const caches = new Set<Map<string, unknown>>();
+
+function recolor(v: unknown): unknown {
+  if (!swap) return v;
+  if (typeof v === 'string') return swap.get(v.toLowerCase()) ?? v;
+  if (Array.isArray(v)) return v.map(recolor);
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) out[k] = recolor(x);
+    return out;
+  }
+  return v;
+}
+
+if (Platform.OS !== 'web') {
+  // The web app reloads instead (see setAccent).
+  const create = StyleSheet.create.bind(StyleSheet);
+  (StyleSheet as { create: typeof StyleSheet.create }).create = ((styles: Record<string, unknown>) => {
+    const sheet = create(styles as never) as Record<string, unknown>;
+    const cache = new Map<string, unknown>();
+    caches.add(cache);
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(sheet)) {
+      Object.defineProperty(out, key, {
+        enumerable: true,
+        get() {
+          if (!swap) return sheet[key];
+          if (!cache.has(key)) cache.set(key, recolor(sheet[key]));
+          return cache.get(key);
+        },
+      });
+    }
+    return out;
+  }) as typeof StyleSheet.create;
+}
+
+const listeners = new Set<() => void>();
+
+export function accent(): AccentId {
+  return currentAccent;
+}
+
+export function onAccentChange(f: () => void): () => void {
+  listeners.add(f);
+  return () => {
+    listeners.delete(f);
+  };
+}
+
+/** Saves the accent and recolours the app. */
+export function setAccent(id: AccentId) {
+  if (id === currentAccent) return;
+  try {
+    if (Platform.OS === 'web') globalThis.localStorage?.setItem(ACCENT_KEY, id);
+    else Secure.setItem(ACCENT_KEY, id);
+  } catch {
+    // Still switch for this session.
+  }
+  if (Platform.OS === 'web') {
+    // The browser and desktop app simply reload with the new colours.
+    globalThis.location?.reload();
+    return;
+  }
+  const from = accentTokens(currentAccent);
+  const to = accentTokens(id);
+  const boot = accentTokens(bootAccent);
+  swap = new Map(Object.entries(boot).map(([k, v]) => [v.toLowerCase(), to[k as keyof typeof to]]));
+  caches.forEach((c) => c.clear());
+  // Plain objects made from the tokens are updated in place.
+  Object.assign(m3, to);
+  const re = (o: Record<string, string>) => {
+    for (const [k, v] of Object.entries(o)) {
+      const hit = Object.entries(from).find(([, fv]) => fv.toLowerCase() === v.toLowerCase());
+      if (hit) o[k] = to[hit[0] as keyof typeof to];
+    }
+  };
+  re(colors);
+  re(statusColor);
+  re(statusContainer);
+  currentAccent = id;
+  listeners.forEach((f) => f());
+}

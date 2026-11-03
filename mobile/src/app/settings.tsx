@@ -1,11 +1,21 @@
 import Constants from 'expo-constants';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Platform, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
-import { m3, space, type } from '../components/theme';
+import { ACCENTS, type AccentId, accent, m3, onAccentChange, setAccent, space, type } from '../components/theme';
 import { Sheet } from '../components/Sheet';
 import { Banner, Button, Field, Icon, type IconName } from '../components/ui';
 import { alert } from '../components/Dialogs';
@@ -53,6 +63,42 @@ function PairPhone() {
         <Text style={[type.bodySmall, { marginTop: space.sm }]}>
           The code contains your access token. Don&apos;t share it.
         </Text>
+      </View>
+    </View>
+  );
+}
+
+/** Swatches for the accent colour used across the app. */
+function AccentPicker() {
+  const current = useSyncExternalStore(onAccentChange, accent, accent);
+  return (
+    <View style={styles.accentRow}>
+      <View style={styles.accentText}>
+        <Text style={type.bodyLarge}>Accent colour</Text>
+        <Text style={type.bodySmall}>{ACCENTS[current].name}</Text>
+      </View>
+      <View style={styles.swatches}>
+        {(Object.keys(ACCENTS) as AccentId[]).map((id) => {
+          const on = id === current;
+          return (
+            <Pressable
+              key={id}
+              onPress={() => setAccent(id)}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={ACCENTS[id].name}
+              style={({ hovered }: { pressed: boolean; hovered?: boolean }) => [
+                styles.swatchRing,
+                on && { borderColor: ACCENTS[id].primary },
+                hovered && !on && { borderColor: m3.outline },
+              ]}
+            >
+              <View style={[styles.swatch, { backgroundColor: ACCENTS[id].primary }]}>
+                {on ? <Icon name="check" size={18} color={ACCENTS[id].onPrimary} /> : null}
+              </View>
+            </Pressable>
+          );
+        })}
       </View>
     </View>
   );
@@ -285,6 +331,11 @@ export default function SettingsScreen() {
     >
       <ModelStatusBar client={client} active={focused} />
 
+      <SectionTitle title="Appearance" />
+      <Group>
+        <AccentPicker />
+      </Group>
+
       <SectionTitle title="Models" />
       <Group>
         <NavRow
@@ -456,6 +507,18 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  accentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+  },
+  accentText: { flexGrow: 1, minWidth: 120 },
+  swatches: { flexDirection: 'row', gap: space.xs, flexWrap: 'wrap' },
+  swatchRing: { padding: 3, borderRadius: 999, borderWidth: 2, borderColor: 'transparent' },
+  swatch: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   flex: { flex: 1, backgroundColor: m3.surface },
   sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
   grow: { flex: 1, minWidth: 0 },

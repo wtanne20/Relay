@@ -1,13 +1,13 @@
 import * as Notifications from 'expo-notifications';
 import { DarkTheme, Stack, ThemeProvider, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { DialogHost } from '../components/Dialogs';
 import { Sidebar } from '../components/Sidebar';
-import { m3, space } from '../components/theme';
+import { accent, m3, onAccentChange, space } from '../components/theme';
 import { IconButton } from '../components/ui';
 import { useWide } from '../lib/layout';
 import { ConnectionProvider, useConnection } from '../lib/connection';
@@ -117,6 +117,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 export default function RootLayout() {
+  // A new accent colour remounts the app so every screen picks it up.
+  const accentId = useSyncExternalStore(onAccentChange, accent, accent);
   return (
     <SafeAreaProvider>
       <ConnectionProvider>
@@ -124,7 +126,7 @@ export default function RootLayout() {
           <StatusBar style="light" />
           {Platform.OS !== 'web' ? <PushBridge /> : <WebStyles />}
           {Platform.OS === 'web' ? <DialogHost /> : null}
-          <Shell>
+          <Shell key={accentId}>
             <Stack
               screenOptions={{
                 headerStyle: { backgroundColor: m3.surface },

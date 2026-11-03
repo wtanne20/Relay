@@ -21,7 +21,7 @@ export type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const LOGO = require('../../assets/logo.png');
 
-/** The Relay brain mark on a rounded clay tile. */
+/** The Relay brain mark on a rounded tile, in the accent colour. */
 export function Logo({ size = 32 }: { size?: number }) {
   return (
     <View
@@ -35,7 +35,7 @@ export function Logo({ size = 32 }: { size?: number }) {
       }}
       accessibilityLabel="Relay"
     >
-      <Image source={LOGO} style={{ width: size * 0.72, height: size * 0.72 }} />
+      <Image source={LOGO} style={{ width: size * 0.72, height: size * 0.72, tintColor: m3.primary }} />
     </View>
   );
 }
