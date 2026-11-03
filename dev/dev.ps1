@@ -66,5 +66,5 @@ if (-not $NoPhone) {
 if (-not $NoDesktop) {
   Write-Host 'Starting the desktop app in dev mode (first build takes a few minutes)...' -ForegroundColor Cyan
   Push-Location "$root\desktop"
-  try { npx tauri dev } finally { Pop-Location }
+  try { npx tauri dev --additional-watch-folders ../server/src } finally { Pop-Location }
 }
