@@ -1,6 +1,8 @@
 import type { Credentials } from './storage';
 import type {
   HubDownload,
+  InstallState,
+  UpdateInfo,
   ModelLibrary,
   HubFile,
   HubRepo,
@@ -286,6 +288,13 @@ export class RelayClient {
       { content, images },
       images.length ? 120000 : undefined,
     );
+  }
+  // ----- updates -----
+  updates(refresh = false) {
+    return this.request<UpdateInfo>('GET', `/updates${refresh ? '?refresh=true' : ''}`, undefined, 40000);
+  }
+  installUpdate() {
+    return this.request<{ version: string; install: InstallState }>('POST', '/updates/install', {}, 60000);
   }
   /** A picture attached to a message (needs the token). */
   attachmentUrl(name: string): string {

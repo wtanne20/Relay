@@ -17,6 +17,7 @@ import { ModelStatusBar } from '../components/ModelStatusBar';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
 import { ACCENTS, type AccentId, accent, m3, onAccentChange, setAccent, space, type } from '../components/theme';
 import { Sheet } from '../components/Sheet';
+import { UpdateCard } from '../components/UpdateCard';
 import { Banner, Button, Field, Icon, type IconName } from '../components/ui';
 import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
@@ -454,6 +455,9 @@ export default function SettingsScreen() {
           </Group>
         </>
       )}
+
+      <SectionTitle title="Updates" />
+      <UpdateCard client={client} />
 
       <SectionTitle title="Your PC" />
       {infoError ? <Banner message={infoError} actionLabel="Retry" onAction={load} /> : null}

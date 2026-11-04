@@ -25,6 +25,7 @@
     },
     "android": {
       "package": "com.example.relay",
+      "permissions": ["android.permission.REQUEST_INSTALL_PACKAGES"],
       "adaptiveIcon": {
         "backgroundColor": "#141414",
         "foregroundImage": "./assets/android-icon-foreground.png",

@@ -87,6 +87,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{
 Filename: "https://go.microsoft.com/fwlink/p/?LinkId=2124703"; Description: "Get Microsoft Edge WebView2 (needed by the Relay app)"; Flags: postinstall shellexec skipifsilent runasoriginaluser; Check: not WebView2Installed
 Filename: "https://tailscale.com/download/windows"; Description: "Get Tailscale (needed to reach Relay from your phone)"; Flags: postinstall shellexec skipifsilent runasoriginaluser; Check: not TailscaleInstalled
 Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Description: "Open Relay now"; Flags: postinstall nowait skipifsilent runasoriginaluser
+; Updates started from the app run silently with /RELAUNCH=1: open Relay again afterwards.
+Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: ShouldRelaunch
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM relay-desktop.exe /T /F"; Flags: runhidden; RunOnceId: "StopRelayApp"
@@ -111,6 +113,11 @@ begin
 end;
 
 { Stop a running Relay (and its llama-server) so the exe can be replaced. }
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;

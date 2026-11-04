@@ -17,6 +17,7 @@ import { AddProjectSheet } from '../components/AddProjectSheet';
 import { alert } from '../components/Dialogs';
 import { AttachButtons, AttachmentStrip, useAttachments } from '../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
+import { UpdateCard } from '../components/UpdateCard';
 import { m3, radius, space, type } from '../components/theme';
 import { Avatar, Banner, Button, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
 import { describeError } from '../lib/api';
@@ -422,6 +423,7 @@ export default function Home() {
           </Text>
 
           {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
+          <UpdateCard client={client} onlyWhenAvailable />
           {pics.error ? <Banner kind="warning" message={pics.error} actionLabel="Dismiss" onAction={() => pics.setError(null)} /> : null}
 
           <View style={styles.sectionRow}>

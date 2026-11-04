@@ -43,6 +43,8 @@ pub struct AppInner {
     pub data_dir: std::path::PathBuf,
     /// Model downloads from Hugging Face.
     pub downloads: Arc<crate::hub::Downloads>,
+    /// New versions from GitHub releases.
+    pub updates: Arc<crate::updates::Updater>,
 }
 
 /// Reads the persisted "phone last seen" time.
@@ -207,6 +209,8 @@ pub fn router(state: AppState) -> Router {
             post(send_prompt).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
         )
         .route("/attachments/{name}", get(get_attachment))
+        .route("/updates", get(check_updates))
+        .route("/updates/install", post(install_update))
         .route("/sessions/{id}/stop", post(stop_task))
         .route("/sessions/{id}/approval", post(answer_approval))
         .route("/sessions/{id}/ws", get(ws_upgrade))
@@ -1196,6 +1200,46 @@ async fn create_mockup(
         .await
         .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
     Ok(Json(json!({ "id": id, "width": size.0, "height": size.1 })))
+}
+
+// ---------- updates ----------
+
+#[derive(Deserialize)]
+struct UpdateQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// The latest release and whether it's newer than this Relay. A failed
+/// check isn't an error: the answer says why instead.
+async fn check_updates(State(s): State<AppState>, Query(q): Query<UpdateQuery>) -> Json<Value> {
+    let current = crate::updates::CURRENT;
+    let (latest, error) = match s.updates.latest(q.refresh).await {
+        Ok(r) => (Some(r), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    Json(json!({
+        "current": current,
+        "available": latest.as_ref().is_some_and(|r| crate::updates::newer(&r.version, current)),
+        "latest": latest,
+        "error": error,
+        "can_install": cfg!(windows),
+        "install": s.updates.install_state(),
+    }))
+}
+
+/// Downloads the new Windows installer, checks it and runs it.
+async fn install_update(State(s): State<AppState>) -> ApiResult<(StatusCode, Json<Value>)> {
+    let dir = s.data_dir.join("updates");
+    let release = s
+        .updates
+        .install(dir)
+        .await
+        .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({ "version": release.version, "install": s.updates.install_state() })),
+    ))
 }
 
 /// Room for a prompt with a few large pictures as base64.

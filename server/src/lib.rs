@@ -15,6 +15,7 @@ pub mod push;
 pub mod setup;
 pub mod skills;
 pub mod tools;
+pub mod updates;
 pub mod web;
 pub mod ws;
 
@@ -76,6 +77,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         started_at: chrono::Utc::now(),
         phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
         downloads: Default::default(),
+        updates: Default::default(),
         data_dir,
     });
     Ok((api::router(state.clone()), state))

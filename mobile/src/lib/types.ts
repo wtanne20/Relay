@@ -290,3 +290,39 @@ export interface ModelLibrary {
   models: { path: string; name: string; size_bytes: number }[];
   size_bytes: number;
 }
+
+export interface ReleaseAsset {
+  name: string;
+  url: string;
+  size: number;
+  sha256: string | null;
+}
+
+export interface Release {
+  version: string;
+  notes: string;
+  page: string;
+  published_at: string;
+  windows: ReleaseAsset | null;
+  android: ReleaseAsset | null;
+  android_dev: ReleaseAsset | null;
+}
+
+export type InstallState =
+  | { state: 'idle' }
+  | { state: 'downloading'; done_bytes: number; total_bytes: number }
+  | { state: 'installing' }
+  | { state: 'failed'; error: string };
+
+/** GET /updates */
+export interface UpdateInfo {
+  /** The Relay version running on the PC. */
+  current: string;
+  /** The PC's Relay is older than the latest release. */
+  available: boolean;
+  latest: Release | null;
+  error: string | null;
+  /** The PC can install updates itself (Windows). */
+  can_install: boolean;
+  install: InstallState;
+}
