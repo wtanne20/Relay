@@ -25,7 +25,7 @@ import { useConnection } from '../lib/connection';
 import { desktop, isDesktop } from '../lib/desktop';
 import { usePageStyle } from '../lib/layout';
 import { formatDuration } from '../lib/format';
-import { disablePush, enablePush } from '../lib/push';
+import { disablePush, enablePush, pushSupported } from '../lib/push';
 import { loadPushPrefs } from '../lib/storage';
 import type { ServerInfo } from '../lib/types';
 
@@ -398,8 +398,17 @@ export default function SettingsScreen() {
               hint="When a task ends or needs your approval. Only the project name, chat title and status are sent."
               value={push}
               onChange={togglePush}
-              disabled={pushBusy}
+              disabled={pushBusy || !pushSupported()}
             />
+            {!pushSupported() ? (
+              <View style={styles.note}>
+                <Icon name="information-outline" size={18} color={m3.onSurfaceVariant} />
+                <Text style={[type.bodyMedium, styles.grow]}>
+                  Notifications aren't set up for this version of the app yet. They need the app to be registered with a
+                  push service, which comes in a later update.
+                </Text>
+              </View>
+            ) : null}
             {info && !info.push_enabled ? (
               <View style={styles.note}>
                 <Icon name="alert-outline" size={18} color={m3.warning} />

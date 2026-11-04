@@ -189,7 +189,10 @@ export default function ChatScreen() {
       // Older messages loading at the top don't move what's in view.
       const olderLoaded = oldestKey.current !== oldest;
       oldestKey.current = oldest;
-      if (!detachedRef.current || grew === 0 || olderLoaded) return;
+      // On phones the list keeps its place natively (see
+      // maintainVisibleContentPosition below); moving it by hand there lags a
+      // frame behind and makes the text flicker.
+      if (Platform.OS !== 'web' || !detachedRef.current || grew === 0 || olderLoaded) return;
       const max = Math.max(0, h - viewHeight.current);
       const next = Math.min(max, Math.max(0, offset.current + grew));
       offset.current = next;
@@ -269,6 +272,12 @@ export default function ChatScreen() {
               scrollEventThrottle={16}
               onContentSizeChange={onContentSizeChange}
               onLayout={onListLayout}
+            // Scrolled up: keep the newest older message where it is, so the
+            // reply growing below (index 0, the list is inverted) doesn't move
+            // what's being read. At the bottom: none, so new text is followed.
+            maintainVisibleContentPosition={
+              Platform.OS !== 'web' && detached ? { minIndexForVisible: 1 } : undefined
+            }
               data={items}
               extraData={[stream.draft, results, running]}
               keyExtractor={(it) => it.key}

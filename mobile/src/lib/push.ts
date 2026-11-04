@@ -18,6 +18,11 @@ export function configureNotificationHandler() {
   });
 }
 
+/** Whether this build can get push tokens (it needs an Expo project id). */
+export function pushSupported(): boolean {
+  return !!projectId();
+}
+
 function projectId(): string | undefined {
   const extra = Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined;
   return extra?.eas?.projectId ?? Constants.easConfig?.projectId ?? undefined;
@@ -49,7 +54,7 @@ export async function enablePush(client: RelayClient): Promise<string> {
   const pid = projectId();
   if (!pid) {
     throw new Error(
-      'This build has no EAS project id. Run `npx eas-cli@latest init` in mobile/ and rebuild (see README → Push notifications).',
+      "Notifications aren't set up for this version of the app yet.",
     );
   }
   let token: string;
