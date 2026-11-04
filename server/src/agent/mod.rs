@@ -408,7 +408,14 @@ impl AgentManager {
             let loaded = self.cfg.get().llama.model_path;
             if !same_path(&w, &loaded) && !self.model.status().external {
                 let path = w.clone();
-                match self.cfg.update(move |c| c.llama.model_path = path) {
+                match self.cfg.update(move |c| {
+                    // Older settings have no default yet: keep the model
+                    // that was loaded as the default before switching away.
+                    if c.llama.default_model.trim().is_empty() {
+                        c.llama.default_model = c.llama.model_path.clone();
+                    }
+                    c.llama.model_path = path;
+                }) {
                     Ok(_) => self.model.switch_to(&w).await,
                     Err(e) => tracing::error!("could not switch model: {e:#}"),
                 }
