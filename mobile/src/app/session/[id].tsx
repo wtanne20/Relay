@@ -1,9 +1,13 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
+  type LayoutChangeEvent,
+  Platform,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Pressable,
   StyleSheet,
   Text,
@@ -120,12 +124,7 @@ export default function ChatScreen() {
     setSending(true);
     setSendError(null);
     try {
-      const res = await client.sendPrompt(
-        id,
-        text,
-        pics.images,
-        pics.files,
-      );
+      const res = await client.sendPrompt(id, text, pics.images, pics.files);
       stream.applyMessages([res.message]);
       stream.markRunning();
       setInput('');
@@ -158,6 +157,59 @@ export default function ChatScreen() {
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
   const canSend = (!!input.trim() || pics.items.length > 0) && !sending;
+
+  // Scrolling while the agent writes. The list is inverted, so offset 0 is
+  // the bottom: at the bottom, new text pushes older text up and the view
+  // follows it. Scrolled up, new text grows below the view; the offset is
+  // moved by the same amount so what's being read stays exactly still.
+  const list = useRef<FlatList<Item>>(null);
+  const offset = useRef(0);
+  const contentHeight = useRef(0);
+  const viewHeight = useRef(0);
+  const oldestKey = useRef<string | undefined>(undefined);
+  const detachedRef = useRef(false);
+  const [detached, setDetached] = useState(false);
+  const setDetachedBoth = useCallback((d: boolean) => {
+    if (detachedRef.current === d) return;
+    detachedRef.current = d;
+    setDetached(d);
+  }, []);
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      offset.current = e.nativeEvent.contentOffset.y;
+      setDetachedBoth(offset.current > 48);
+    },
+    [setDetachedBoth],
+  );
+  const oldest = items[items.length - 1]?.key;
+  const onContentSizeChange = useCallback(
+    (_w: number, h: number) => {
+      const grew = h - contentHeight.current;
+      contentHeight.current = h;
+      // Older messages loading at the top don't move what's in view.
+      const olderLoaded = oldestKey.current !== oldest;
+      oldestKey.current = oldest;
+      if (!detachedRef.current || grew === 0 || olderLoaded) return;
+      const max = Math.max(0, h - viewHeight.current);
+      const next = Math.min(max, Math.max(0, offset.current + grew));
+      offset.current = next;
+      list.current?.scrollToOffset({ offset: next, animated: false });
+    },
+    [oldest],
+  );
+  const onListLayout = useCallback((e: LayoutChangeEvent) => {
+    viewHeight.current = e.nativeEvent.layout.height;
+    // The browser's own scroll anchoring loses its place when streamed
+    // text re-renders; the offset is kept by hand instead.
+    if (Platform.OS === 'web') {
+      const node = (list.current as unknown as { getScrollableNode?: () => HTMLElement | null })?.getScrollableNode?.();
+      if (node) node.style.overflowAnchor = 'none';
+    }
+  }, []);
+  const jumpToLatest = useCallback(() => {
+    setDetachedBoth(false);
+    list.current?.scrollToOffset({ offset: 0, animated: true });
+  }, [setDetachedBoth]);
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
@@ -209,35 +261,56 @@ export default function ChatScreen() {
             )}
           </View>
         ) : (
-          <FlatList
-            inverted
-            data={items}
-            extraData={[stream.draft, results, running]}
-            keyExtractor={(it) => it.key}
-            contentContainerStyle={[styles.list, page]}
-            keyboardDismissMode="interactive"
-            keyboardShouldPersistTaps="handled"
-            onEndReached={stream.loadOlder}
-            onEndReachedThreshold={0.3}
-            ListFooterComponent={
-              stream.loadingOlder ? (
-                <ActivityIndicator style={{ margin: space.md }} color={m3.onSurfaceVariant} />
-              ) : undefined
-            }
-            renderItem={({ item }) => {
-              if (item.kind === 'user') return <UserBubble message={item.message} />;
-              if (item.kind === 'summary') return <SummaryDivider message={item.message} />;
-              if (item.kind === 'compacting') return <CompactingRow />;
-              return (
-                <AssistantTurn
-                  messages={item.messages}
-                  results={results}
-                  running={running && item.latest}
-                  draft={item.latest ? stream.draft : null}
-                />
-              );
-            }}
-          />
+          <View style={styles.flex}>
+            <FlatList
+              ref={list}
+              inverted
+              onScroll={onScroll}
+              scrollEventThrottle={16}
+              onContentSizeChange={onContentSizeChange}
+              onLayout={onListLayout}
+              data={items}
+              extraData={[stream.draft, results, running]}
+              keyExtractor={(it) => it.key}
+              contentContainerStyle={[styles.list, page]}
+              keyboardDismissMode="interactive"
+              keyboardShouldPersistTaps="handled"
+              onEndReached={stream.loadOlder}
+              onEndReachedThreshold={0.3}
+              ListFooterComponent={
+                stream.loadingOlder ? (
+                  <ActivityIndicator style={{ margin: space.md }} color={m3.onSurfaceVariant} />
+                ) : undefined
+              }
+              renderItem={({ item }) => {
+                if (item.kind === 'user') return <UserBubble message={item.message} />;
+                if (item.kind === 'summary') return <SummaryDivider message={item.message} />;
+                if (item.kind === 'compacting') return <CompactingRow />;
+                return (
+                  <AssistantTurn
+                    messages={item.messages}
+                    results={results}
+                    running={running && item.latest}
+                    draft={item.latest ? stream.draft : null}
+                  />
+                );
+              }}
+            />
+            {detached ? (
+              <Pressable
+                onPress={jumpToLatest}
+                style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                  styles.jump,
+                  (hovered || pressed) && { backgroundColor: m3.surfaceContainerHighest },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Jump to latest"
+              >
+                <Icon name="arrow-down" size={16} color={m3.onSurface} />
+                <Text style={[type.labelLarge, { color: m3.onSurface }]}>{running ? 'New text' : 'Latest'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         )}
 
         <View style={page}>
@@ -246,7 +319,9 @@ export default function ChatScreen() {
           ) : null}
           {stream.status === 'error' && stream.taskError ? <Banner message={stream.taskError} /> : null}
           {sendError ? <Banner message={sendError} actionLabel="Dismiss" onAction={() => setSendError(null)} /> : null}
-          {pics.error ? <Banner kind="warning" message={pics.error} actionLabel="Dismiss" onAction={() => pics.setError(null)} /> : null}
+          {pics.error ? (
+            <Banner kind="warning" message={pics.error} actionLabel="Dismiss" onAction={() => pics.setError(null)} />
+          ) : null}
           {stream.approval ? (
             <ApprovalCard
               key={stream.approval.tool_call_id}
@@ -376,6 +451,25 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0, paddingHorizontal: space.xs },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   list: { paddingHorizontal: space.lg, paddingVertical: space.md },
+  jump: {
+    position: 'absolute',
+    bottom: space.md,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 36,
+    paddingHorizontal: space.lg,
+    borderRadius: 18,
+    backgroundColor: m3.surfaceContainerHigh,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
   emptyOuter: { justifyContent: 'center' },
   emptyWrap: { alignItems: 'center', paddingHorizontal: space.xl, gap: space.md },
   spark: {
