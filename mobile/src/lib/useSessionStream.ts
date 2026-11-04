@@ -82,12 +82,37 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
     setInitialLoaded(true);
   }, [client, sessionId, applyMessages]);
 
+  const pendingArgs = useRef<{ index: number; name: string; text: string }[]>([]);
+  const argsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushArgs = useCallback(() => {
+    argsTimer.current = null;
+    const batch = pendingArgs.current;
+    pendingArgs.current = [];
+    if (!batch.length || !aliveRef.current) return;
+    setDraft((d) => {
+      const calls = [...(d?.tool_calls ?? [])];
+      for (const p of batch) {
+        while (calls.length <= p.index) calls.push({ name: '', arguments: '' });
+        const c = calls[p.index];
+        calls[p.index] = { name: p.name, arguments: c.arguments + p.text };
+      }
+      return { content: d?.content ?? '', reasoning: d?.reasoning ?? '', tool_calls: calls };
+    });
+  }, []);
+  const dropArgs = useCallback(() => {
+    if (argsTimer.current) clearTimeout(argsTimer.current);
+    argsTimer.current = null;
+    pendingArgs.current = [];
+  }, []);
+  useEffect(() => dropArgs, [dropArgs]);
+
   const handleEvent = useCallback(
     (ev: ServerEvent) => {
       switch (ev.type) {
         case 'hello':
           setStatus(ev.status);
           setTaskError(ev.status === 'error' ? ev.error : null);
+          dropArgs();
           setDraft(ev.running && ev.draft ? ev.draft : null);
           setApproval(ev.running ? (ev.pending_approval ?? null) : null);
           if (ev.last_message_id !== null && ev.last_message_id !== lastId()) {
@@ -100,19 +125,29 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           if (ev.status === 'error') setTaskError(ev.error);
           if (ev.status !== 'running') {
             setCompacting(false);
+            dropArgs();
             setDraft(null);
             setApproval(null);
           }
           break;
         case 'text_delta':
-          setDraft((d) => ({ content: (d?.content ?? '') + ev.text, reasoning: d?.reasoning ?? '' }));
+          setDraft((d) => ({ ...d, content: (d?.content ?? '') + ev.text, reasoning: d?.reasoning ?? '' }));
           break;
         case 'reasoning_delta':
-          setDraft((d) => ({ content: d?.content ?? '', reasoning: (d?.reasoning ?? '') + ev.text }));
+          setDraft((d) => ({ ...d, content: d?.content ?? '', reasoning: (d?.reasoning ?? '') + ev.text }));
+          break;
+        case 'tool_call_delta':
+          // Arguments arrive a token at a time; drawing every one would be
+          // slow for a long file, so they're applied in batches.
+          pendingArgs.current.push(ev);
+          if (!argsTimer.current) argsTimer.current = setTimeout(flushArgs, 60);
           break;
         case 'message':
           applyMessages([ev.message]);
-          if (ev.message.role === 'assistant') setDraft(null);
+          if (ev.message.role === 'assistant') {
+            dropArgs();
+            setDraft(null);
+          }
           break;
         case 'error':
           setTaskError(ev.message);
@@ -140,7 +175,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           break;
       }
     },
-    [applyMessages, catchUp],
+    [applyMessages, catchUp, flushArgs, dropArgs],
   );
 
   const scheduleReconnect = useCallback(() => {

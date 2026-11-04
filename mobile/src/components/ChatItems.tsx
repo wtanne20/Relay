@@ -2,8 +2,10 @@ import { memo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { toolDetails, toolSummary } from '../lib/format';
-import type { Message, ToolCall } from '../lib/types';
+import { fileChange, partialArgs, readArgs, type FileChange } from '../lib/liveCode';
+import type { Draft, Message, ToolCall } from '../lib/types';
 import { MessagePicture } from './Attachments';
+import { ChangesLine, CodeChange } from './CodeChange';
 import { Markdown } from './Markdown';
 import { m3, mono as monoFont, radius, space, type } from './theme';
 import { Icon, type IconName } from './ui';
@@ -163,6 +165,7 @@ export const ToolActivityRow = memo(function ToolActivityRow({
   const iconColor = pending ? m3.primary : failed ? m3.error : m3.success;
   const content = result?.content ?? '';
   const shown = content.length > MAX_RESULT_CHARS ? `${content.slice(0, MAX_RESULT_CHARS)}\n… (truncated)` : content;
+  const change = open ? fileChange(call.name, readArgs(call.arguments)) : null;
   return (
     <View>
       <Pressable
@@ -188,12 +191,18 @@ export const ToolActivityRow = memo(function ToolActivityRow({
       </Pressable>
       {open ? (
         <View style={styles.toolBody}>
-          <Text style={styles.toolSection}>{call.name}</Text>
-          <ScrollView horizontal nestedScrollEnabled>
-            <Text selectable style={styles.toolMono}>
-              {toolDetails(call)}
-            </Text>
-          </ScrollView>
+          {change ? (
+            <CodeChange change={change} />
+          ) : (
+            <>
+              <Text style={styles.toolSection}>{call.name}</Text>
+              <ScrollView horizontal nestedScrollEnabled>
+                <Text selectable style={styles.toolMono}>
+                  {toolDetails(call)}
+                </Text>
+              </ScrollView>
+            </>
+          )}
           {result ? (
             <>
               <Text style={styles.toolSection}>Result</Text>
@@ -279,7 +288,7 @@ export const AssistantTurn = memo(function AssistantTurn({
   messages: Message[];
   results: Map<string, Message>;
   running: boolean;
-  draft?: { content: string; reasoning: string } | null;
+  draft?: Draft | null;
 }) {
   // Follows the run (open while working, folded once done) until tapped.
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -299,9 +308,28 @@ export const AssistantTurn = memo(function AssistantTurn({
     }
   }
   const pendingCall = running ? calls.find((c) => !results.get(c.id)) : undefined;
-  const answer = lastIsAnswer ? last.content : running && draft?.content ? draft.content : '';
+  // The file the model is writing right now, or the one waiting to be saved.
+  let live: FileChange | null = null;
+  if (running) {
+    const writing = (draft?.tool_calls ?? []).filter((c) => c.name === 'write_file' || c.name === 'edit_file');
+    const cur = writing[writing.length - 1];
+    if (cur) live = fileChange(cur.name, partialArgs(cur.arguments));
+    else if (pendingCall) live = fileChange(pendingCall.name, readArgs(pendingCall.arguments));
+  }
+  const liveWriting = !!live && !pendingCall;
+  const changes = running
+    ? []
+    : calls
+        .filter((c) => results.get(c.id) && !results.get(c.id)?.is_error)
+        .map((c) => fileChange(c.name, readArgs(c.arguments)))
+        .filter((c): c is FileChange => !!c);
+  // While a file is being written, the words before it are a note, not the answer.
+  const liveNote = running && live && draft?.content?.trim() ? draft.content.trim() : '';
+  const answer = lastIsAnswer ? last.content : running && draft?.content && !liveNote ? draft.content : '';
   const answerReasoning = lastIsAnswer ? last.reasoning : running && draft?.content ? draft.reasoning : '';
-  const liveStatus = pendingCall
+  const liveStatus = liveWriting && live
+    ? `${live.tool === 'write_file' ? 'Writing' : 'Editing'} ${live.path ? live.path.split(/[\\/]/).pop() : 'a file'}…`
+    : pendingCall
     ? toolSummary(pendingCall, undefined, true)
     : running && !draft?.content
       ? draft?.reasoning
@@ -309,7 +337,7 @@ export const AssistantTurn = memo(function AssistantTurn({
         : 'Working…'
       : null;
   const answerSeconds = lastIsAnswer ? secondsBefore(last) : undefined;
-  const showSteps = calls.length > 0 || (steps.length > 0 && !answer);
+  const showSteps = calls.length > 0 || !!live || (steps.length > 0 && !answer);
   // One fold-out for all the work, including the thinking behind the answer.
   if (showSteps && answerReasoning?.trim())
     steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning, seconds: answerSeconds });
@@ -352,10 +380,13 @@ export const AssistantTurn = memo(function AssistantTurn({
               )}
             </View>
           ) : null}
+          {liveNote ? <Text style={[type.bodyMedium, styles.stepNote]}>{liveNote}</Text> : null}
+          {live ? <CodeChange change={live} live={liveWriting} /> : null}
         </View>
       ) : null}
       {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} seconds={answerSeconds} /> : null}
       {answer ? <Markdown text={answer} /> : null}
+      {changes.length ? <ChangesLine changes={changes} /> : null}
       {!showSteps && !answer && running ? (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />

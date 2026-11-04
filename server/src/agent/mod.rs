@@ -39,6 +39,13 @@ pub enum Event {
     ReasoningDelta {
         text: String,
     },
+    /// More of a tool call's arguments while the model is still writing
+    /// them (for showing file edits live).
+    ToolCallDelta {
+        index: usize,
+        name: String,
+        text: String,
+    },
     ToolCall {
         id: String,
         name: String,
@@ -105,6 +112,15 @@ struct ApprovalSlot {
 pub struct Draft {
     pub content: String,
     pub reasoning: String,
+    /// Tool calls being written: name and arguments so far.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<DraftCall>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DraftCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 struct RunningTask {
@@ -628,6 +644,17 @@ impl AgentManager {
                 llm::Delta::Reasoning(t) => {
                     lock(draft).reasoning.push_str(&t);
                     self.emit(&sid, Event::ReasoningDelta { text: t });
+                }
+                llm::Delta::ToolArgs { index, name, text } => {
+                    {
+                        let mut d = lock(draft);
+                        while d.tool_calls.len() <= index {
+                            d.tool_calls.push(DraftCall::default());
+                        }
+                        d.tool_calls[index].name = name.clone();
+                        d.tool_calls[index].arguments.push_str(&text);
+                    }
+                    self.emit(&sid, Event::ToolCallDelta { index, name, text });
                 }
             })
             .await;

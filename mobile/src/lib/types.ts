@@ -106,9 +106,16 @@ export interface Message {
   images?: string[];
 }
 
+export interface DraftCall {
+  name: string;
+  arguments: string;
+}
+
 export interface Draft {
   content: string;
   reasoning: string;
+  /** Tool calls the model is still writing (for showing file edits live). */
+  tool_calls?: DraftCall[];
 }
 
 export type ServerEvent =
@@ -125,6 +132,7 @@ export type ServerEvent =
   | { type: 'status'; status: SessionStatus; error: string | null }
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
+  | { type: 'tool_call_delta'; index: number; name: string; text: string }
   | { type: 'tool_call'; id: string; name: string; arguments: string }
   | {
       type: 'tool_result';

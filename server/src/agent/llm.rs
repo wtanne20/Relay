@@ -17,6 +17,13 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub enum Delta {
     Content(String),
     Reasoning(String),
+    /// A piece of a tool call's arguments as the model writes them, so the
+    /// app can show a file being written live.
+    ToolArgs {
+        index: usize,
+        name: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Default, Clone)]
@@ -143,11 +150,18 @@ impl TurnBuilder {
                     if let Some(n) = f.get("name").and_then(Value::as_str) {
                         call.name.push_str(n);
                     }
-                    if let Some(a) = f.get("arguments") {
-                        match a {
-                            Value::String(s) => call.arguments.push_str(s),
-                            other => call.arguments.push_str(&other.to_string()),
-                        }
+                    let piece = match f.get("arguments") {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(Value::Null) | None => String::new(),
+                        Some(other) => other.to_string(),
+                    };
+                    call.arguments.push_str(&piece);
+                    if !piece.is_empty() && !call.name.is_empty() {
+                        deltas.push(Delta::ToolArgs {
+                            index,
+                            name: call.name.clone(),
+                            text: piece,
+                        });
                     }
                 }
             }
@@ -332,12 +346,24 @@ mod tests {
         }
         let t = b.finish();
         assert_eq!(
-            deltas,
-            vec![
+            deltas[..2],
+            [
                 Delta::Reasoning("think".into()),
                 Delta::Content("I'll write it.".into())
             ]
         );
+        let args: String = deltas
+            .iter()
+            .filter_map(|d| match d {
+                Delta::ToolArgs {
+                    index: 0,
+                    name,
+                    text,
+                } if name == "write_file" => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(args, "{\"path\":\"hello.txt\",\"content\":\"hi\"}");
         assert_eq!(t.tool_calls.len(), 2);
         assert_eq!(t.tool_calls[0].name, "write_file");
         assert_eq!(

@@ -276,6 +276,13 @@ async fn end_to_end() {
         serde_json::from_str::<Value>(call["arguments"].as_str().unwrap_or("")).ok(),
         Some(json!({"path": "hello.txt", "content": "hi"}))
     );
+    // The arguments also arrive piece by piece while they're written.
+    let streamed: String = events
+        .iter()
+        .filter(|e| e["type"] == "tool_call_delta" && e["name"] == "write_file")
+        .filter_map(|e| e["text"].as_str())
+        .collect();
+    assert_eq!(streamed, call["arguments"].as_str().unwrap_or(""));
     let result = events
         .iter()
         .find(|e| e["type"] == "tool_result")

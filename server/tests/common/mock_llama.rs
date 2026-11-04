@@ -9,6 +9,8 @@
 //! - user text mentioning "hello.txt" -> write_file(hello.txt, "hi")
 //! - user text starting with "run:"   -> run_command(<rest>)
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
+//! - user text containing "write code" -> slowly writes a longer app.py
+//! - user text containing "edit code"  -> slowly edits app.py
 //! - anything else                    -> echoes the prompt
 //! - a non-streaming request          -> a chat title, or a summary when
 //!   Relay asks for one
@@ -220,6 +222,42 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "run_command",
                 &json!({"command": cmd.trim()}),
             ));
+        } else if lower.contains("write code") || lower.contains("edit code") {
+            delay = Duration::from_millis(30);
+            let (name, args) = if lower.contains("edit code") {
+                (
+                    "edit_file",
+                    json!({"path": "app.py", "old_text": "def greet(name):\n    return f\"Hello, {name}!\"\n", "new_text": "def greet(name, excited=False):\n    mark = \"!\" if excited else \".\"\n    return f\"Hello, {name}{mark}\"\n"}),
+                )
+            } else {
+                let body: String = (1..=40)
+                    .map(|i| format!("def step_{i}(x):\n    \"\"\"Step {i} of the pipeline.\"\"\"\n    return x + {i}\n\n"))
+                    .collect();
+                (
+                    "write_file",
+                    json!({"path": "app.py", "content": format!("def greet(name):\n    return f\"Hello, {{name}}!\"\n\n{body}")}),
+                )
+            };
+            chunks.push(chunk(json!({"content": "Writing the code now."}), None));
+            chunks.push(chunk(
+                json!({"tool_calls": [{"index": 0, "id": format!("call_{n}"), "type": "function", "function": {"name": name, "arguments": ""}}]}),
+                None,
+            ));
+            let text = args.to_string();
+            let mut piece = String::new();
+            for c in text.chars() {
+                piece.push(c);
+                if piece.len() >= 12 {
+                    chunks.push(chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": std::mem::take(&mut piece)}}]}), None));
+                }
+            }
+            if !piece.is_empty() {
+                chunks.push(chunk(
+                    json!({"tool_calls": [{"index": 0, "function": {"arguments": piece}}]}),
+                    None,
+                ));
+            }
+            chunks.push(chunk(json!({}), Some("tool_calls")));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));
