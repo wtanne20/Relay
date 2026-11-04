@@ -24,7 +24,7 @@ Write the updated summary in Markdown with these sections:\n\
 ## Work done\nFiles created or changed (with paths), commands run and what they showed, key names, APIs, versions and settings.\n\
 ## Current state\nWhere things stand now, including anything broken, failing or unverified.\n\
 ## Next steps\nWhat's left to do, in order.\n\n\
-Keep facts exact: paths, names, numbers and error messages. Merge the summary so far with the new messages, drop chit-chat and anything that was later undone or replaced, and keep it concise without losing anything the agent will need. Reply with the summary only.";
+Keep facts exact: paths, names, numbers and error messages. Merge the summary so far with the new messages, drop chit-chat and anything that was later undone or replaced, and keep it concise without losing anything the agent will need. Make sure the Goal agrees with the rest. Reply with the summary only.";
 
 /// The latest summary in a history, and the messages after the point it
 /// covers (summaries themselves left out).
@@ -176,6 +176,8 @@ pub fn summary_request(
     part: &str,
     max_tokens: u64,
 ) -> Value {
+    // About 0.6 words per token leaves room under the reply limit.
+    let words = max_tokens * 6 / 10;
     let so_far = previous
         .filter(|p| !p.trim().is_empty())
         .unwrap_or("(none yet: this is the start of the session)");
@@ -184,7 +186,7 @@ pub fn summary_request(
         "messages": [
             {"role": "system", "content": SUMMARY_PROMPT},
             {"role": "user", "content": format!(
-                "SUMMARY SO FAR:\n{so_far}\n\nNEW MESSAGES TO FOLD IN:\n{part}\n\nWrite the updated summary."
+                "SUMMARY SO FAR:\n{so_far}\n\nNEW MESSAGES TO FOLD IN:\n{part}\n\nWrite the updated summary in at most {words} words. If it would be longer, shorten the oldest items under Work done into one-line notes first."
             )},
         ],
         "stream": false,
