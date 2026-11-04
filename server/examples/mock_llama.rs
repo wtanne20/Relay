@@ -36,5 +36,12 @@ async fn main() {
         }
     };
     println!("mock llama-server listening on 127.0.0.1:{port} (load {load_ms} ms)");
-    mock_llama::serve(listener, mock_llama::MockOptions { load_ms }).await;
+    mock_llama::serve(
+        listener,
+        mock_llama::MockOptions {
+            load_ms,
+            ..Default::default()
+        },
+    )
+    .await;
 }

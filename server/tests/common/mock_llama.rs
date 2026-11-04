@@ -10,7 +10,12 @@
 //! - user text starting with "run:"   -> run_command(<rest>)
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
 //! - anything else                    -> echoes the prompt
-//! - a non-streaming request          -> a chat title
+//! - a non-streaming request          -> a chat title, or a summary when
+//!   Relay asks for one
+//!
+//! Streams end with a usage chunk counting a token per 3 bytes of messages,
+//! and with `ctx_tokens` set, longer requests are refused the way
+//! llama-server refuses them.
 
 #![allow(dead_code)]
 
@@ -30,12 +35,15 @@ use serde_json::{Value, json};
 pub struct MockOptions {
     /// /health returns 503 for this long after start (simulates model load).
     pub load_ms: u64,
+    /// Refuse prompts longer than this many tokens (0 = no limit).
+    pub ctx_tokens: u64,
 }
 
 struct MockState {
     started: Instant,
     load: Duration,
     requests: AtomicU64,
+    ctx: u64,
 }
 
 pub fn router(opts: MockOptions) -> Router {
@@ -43,6 +51,7 @@ pub fn router(opts: MockOptions) -> Router {
         started: Instant::now(),
         load: Duration::from_millis(opts.load_ms),
         requests: AtomicU64::new(0),
+        ctx: opts.ctx_tokens,
     });
     Router::new()
         .route("/health", get(health))
@@ -110,6 +119,26 @@ fn text_chunks(text: &str) -> Vec<String> {
 
 async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Value>) -> Response {
     let n = s.requests.fetch_add(1, Ordering::SeqCst);
+    let tokens = serde_json::to_string(&body["messages"])
+        .map(|t| t.len())
+        .unwrap_or(0) as u64
+        / 3;
+    if s.ctx > 0 && tokens > s.ctx {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": {"code": 400, "message": format!("request ({tokens} tokens) exceeds the available context size ({} tokens), try increasing it", s.ctx), "type": "exceed_context_size_error"}})),
+        )
+            .into_response();
+    }
+    let system = body["messages"][0]["content"].as_str().unwrap_or("");
+    if system.starts_with("You keep the running summary") {
+        let input = body["messages"][1]["content"].as_str().unwrap_or("");
+        let users = input.matches("USER:").count();
+        return axum::Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": format!("## Goal\nMock summary covering {users} user messages.")}}]
+        }))
+        .into_response();
+    }
     if body.get("stream").and_then(Value::as_bool) != Some(true) {
         // Relay's only non-streaming request is the chat title.
         return axum::Json(json!({
@@ -175,6 +204,10 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
             chunks.extend(text_chunks(&format!("You said: {content}")));
         }
     }
+    chunks.push(format!(
+        "data: {}\n\n",
+        json!({"choices": [], "usage": {"prompt_tokens": tokens, "completion_tokens": 10}})
+    ));
     chunks.push("data: [DONE]\n\n".to_string());
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(4);

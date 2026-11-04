@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AssistantTurn, noteStart, UserBubble } from '../../components/ChatItems';
+import { AssistantTurn, CompactingRow, noteStart, SummaryDivider, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
@@ -26,7 +26,9 @@ import { useSessionStream } from '../../lib/useSessionStream';
 
 type Item =
   | { key: string; kind: 'user'; message: Message }
-  | { key: string; kind: 'turn'; messages: Message[]; latest: boolean };
+  | { key: string; kind: 'turn'; messages: Message[]; latest: boolean }
+  | { key: string; kind: 'summary'; message: Message }
+  | { key: string; kind: 'compacting' };
 
 export default function ChatScreen() {
   const client = useClient();
@@ -94,6 +96,7 @@ export default function ChatScreen() {
     });
     for (const m of stream.messages) {
       if (m.role === 'user') out.push({ key: `m${m.id}`, kind: 'user', message: m });
+      else if (m.role === 'summary') out.push({ key: `s${m.id}`, kind: 'summary', message: m });
       else if (m.role === 'assistant') {
         const prev = out[out.length - 1];
         if (prev?.kind === 'turn') prev.messages.push(m);
@@ -102,9 +105,10 @@ export default function ChatScreen() {
     }
     const tail = out[out.length - 1];
     if (tail?.kind === 'turn') tail.latest = true;
-    else if (running) out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
+    else if (running && !stream.compacting) out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
+    if (running && stream.compacting) out.push({ key: 'compacting', kind: 'compacting' });
     return out.reverse();
-  }, [stream.messages, running]);
+  }, [stream.messages, running, stream.compacting]);
 
   if (!client) return null;
 
@@ -214,6 +218,8 @@ export default function ChatScreen() {
             }
             renderItem={({ item }) => {
               if (item.kind === 'user') return <UserBubble message={item.message} />;
+              if (item.kind === 'summary') return <SummaryDivider message={item.message} />;
+              if (item.kind === 'compacting') return <CompactingRow />;
               return (
                 <AssistantTurn
                   messages={item.messages}

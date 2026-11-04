@@ -21,11 +21,15 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
+        Self::start_with(Default::default(), "").await
+    }
+
+    async fn start_with(mock_opts: common::mock_llama::MockOptions, llama_extra: &str) -> Self {
         let mock = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock");
         let mock_port = mock.local_addr().expect("addr").port();
-        tokio::spawn(common::mock_llama::serve(mock, Default::default()));
+        tokio::spawn(common::mock_llama::serve(mock, mock_opts));
 
         let dir = std::env::temp_dir().join(format!("relay-it-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("data/skills/greeting")).expect("mkdir");
@@ -38,7 +42,7 @@ impl Harness {
         std::fs::write(
             &cfg_path,
             format!(
-                "bind = \"127.0.0.1:0\"\n[llama]\nport = {mock_port}\n[push]\nenabled = false\n"
+                "bind = \"127.0.0.1:0\"\n[llama]\nport = {mock_port}\n{llama_extra}\n[push]\nenabled = false\n"
             ),
         )
         .expect("config");
@@ -1137,5 +1141,71 @@ async fn model_libraries_add_move_and_remove() {
     let libs = v["libraries"].as_array().expect("list").clone();
     assert_eq!(libs.len(), 1);
     assert_eq!(libs[0]["default"], true, "built-in is the default again");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// Sends `n` long prompts to a new plain chat; returns the session id and
+/// whether every task finished cleanly.
+async fn long_chat(h: &Harness, n: usize) -> (String, Vec<Value>) {
+    let (st, v) = h
+        .post("/projects/chats/sessions", json!({"title": "Long"}))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    let mut all = Vec::new();
+    for i in 0..n {
+        let text = format!("part {i}: {}", "lorem ipsum dolor sit amet ".repeat(120));
+        let (st, v) = h
+            .post(&format!("/sessions/{sid}/prompt"), json!({"content": text}))
+            .await;
+        assert_eq!(st, 202, "{v}");
+        let events = ws.until_status(&["done", "error", "stopped"]).await;
+        let last = events.last().cloned().unwrap_or(Value::Null);
+        assert_eq!(last["status"], "done", "prompt {i}: {events:?}");
+        all.extend(events);
+    }
+    (sid, all)
+}
+
+#[tokio::test]
+async fn long_chats_are_summarized_before_they_overflow() {
+    // Each prompt is about 1,100 tokens; the context fits about six.
+    let h = Harness::start_with(Default::default(), "context_size = 8192").await;
+    let (sid, events) = long_chat(&h, 14).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "compacting" && e["active"] == true),
+        "Relay said it was summarizing"
+    );
+    let msgs = h.get(&format!("/sessions/{sid}/messages?limit=200")).await;
+    let list = msgs["messages"].as_array().expect("messages");
+    let summaries: Vec<&Value> = list.iter().filter(|m| m["role"] == "summary").collect();
+    assert!(!summaries.is_empty(), "a summary was stored");
+    let s = summaries[summaries.len() - 1];
+    assert!(s["content"].as_str().unwrap_or("").starts_with("## Goal"));
+    assert!(s["covers_upto"].as_i64().is_some());
+    // Nothing is deleted: every prompt and answer is still there.
+    assert_eq!(list.iter().filter(|m| m["role"] == "user").count(), 14);
+    assert_eq!(list.iter().filter(|m| m["role"] == "assistant").count(), 14);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
+async fn an_overflowing_prompt_is_summarized_and_retried() {
+    // Relay thinks the context is huge, but the model refuses past 6,000.
+    let opts = common::mock_llama::MockOptions {
+        ctx_tokens: 6000,
+        ..Default::default()
+    };
+    let h = Harness::start_with(opts, "context_size = 1000000").await;
+    let (sid, _) = long_chat(&h, 9).await;
+    let msgs = h.get(&format!("/sessions/{sid}/messages?limit=200")).await;
+    let list = msgs["messages"].as_array().expect("messages");
+    assert!(
+        list.iter().any(|m| m["role"] == "summary"),
+        "the refused prompt was summarized and retried"
+    );
     let _ = std::fs::remove_dir_all(&h.dir);
 }

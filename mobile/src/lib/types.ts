@@ -88,7 +88,7 @@ export interface ToolCall {
 export interface Message {
   id: number;
   session_id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'summary';
   content: string;
   reasoning?: string;
   tool_calls?: ToolCall[];
@@ -96,6 +96,8 @@ export interface Message {
   tool_name?: string;
   is_error?: boolean;
   created_at: string;
+  /** On a summary: the newest message it replaces in the model's context. */
+  covers_upto?: number;
 }
 
 export interface Draft {
@@ -132,7 +134,8 @@ export type ServerEvent =
   | { type: 'resync'; dropped: number }
   | { type: 'approval_request'; approval: PendingApproval }
   | { type: 'approval_resolved'; tool_call_id: string; approved: boolean }
-  | { type: 'title'; title: string };
+  | { type: 'title'; title: string }
+  | { type: 'compacting'; active: boolean };
 
 export interface PendingApproval {
   tool_call_id: string;

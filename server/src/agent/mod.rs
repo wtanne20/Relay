@@ -1,6 +1,7 @@
 //! The agent: background tasks that run the model/tool loop for a session,
 //! independent of any connected client, with per-session event broadcast.
 
+pub mod compact;
 pub mod llm;
 
 use std::collections::{HashMap, HashSet};
@@ -70,6 +71,11 @@ pub enum Event {
     /// Relay named the chat after its first reply.
     Title {
         title: String,
+    },
+    /// Relay is summarizing older messages to fit the context (true), or
+    /// has finished (false).
+    Compacting {
+        active: bool,
     },
 }
 
@@ -508,8 +514,13 @@ impl AgentManager {
         }
         let url = format!("{}/v1/chat/completions", self.model.base_url());
         let mut approval_mode = conf.agent.approval;
+        let mut ctx_tokens = u64::from(conf.llama.context_size);
+        // Learned from llama-server's own counts as the task goes.
+        let mut tokens_per_byte = compact::START_TOKENS_PER_BYTE;
 
-        for _step in 0..conf.agent.max_steps {
+        let mut step = 0;
+        let mut retried = false;
+        while step < conf.agent.max_steps {
             if cancel.is_cancelled() {
                 return Ok(LoopEnd::Stopped);
             }
@@ -518,8 +529,37 @@ impl AgentManager {
             }
 
             let sid = session.id.clone();
-            let history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
-            let body = request_body(&conf, &system, &history, &tool_defs);
+            let mut history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
+            let mut body = request_body(&conf, &system, &history, &tool_defs);
+            let mut bytes = compact::prompt_bytes(&body);
+            let reserve = if conf.sampling.max_tokens > 0 {
+                u64::from(conf.sampling.max_tokens)
+            } else {
+                0
+            };
+            let room = ctx_tokens.saturating_sub(reserve) as f64;
+            if bytes as f64 * tokens_per_byte > room * compact::TRIGGER {
+                let keep = (ctx_tokens as f64 * compact::KEEP / tokens_per_byte) as usize;
+                if self
+                    .compact(
+                        &session.id,
+                        &conf,
+                        ctx_tokens,
+                        tokens_per_byte,
+                        keep,
+                        cancel,
+                    )
+                    .await?
+                {
+                    let sid = session.id.clone();
+                    history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
+                    body = request_body(&conf, &system, &history, &tool_defs);
+                    bytes = compact::prompt_bytes(&body);
+                }
+                if cancel.is_cancelled() {
+                    return Ok(LoopEnd::Stopped);
+                }
+            }
 
             *lock(draft) = Draft::default();
             let sid = session.id.clone();
@@ -533,12 +573,56 @@ impl AgentManager {
                     self.emit(&sid, Event::ReasoningDelta { text: t });
                 }
             })
-            .await?;
+            .await;
+            let result = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    // Too long after all: summarize harder and try once more.
+                    let Some((used, size)) = llm::context_overflow(&format!("{e:#}")) else {
+                        return Err(e);
+                    };
+                    if retried {
+                        return Err(e);
+                    }
+                    retried = true;
+                    if let Some(size) = size.filter(|n| *n > 0) {
+                        ctx_tokens = size;
+                    }
+                    if used > 0 && bytes > 0 {
+                        tokens_per_byte = (used as f64 / bytes as f64).clamp(0.05, 1.0);
+                    }
+                    let keep = (ctx_tokens as f64 * compact::KEEP_AFTER_OVERFLOW / tokens_per_byte)
+                        as usize;
+                    if !self
+                        .compact(
+                            &session.id,
+                            &conf,
+                            ctx_tokens,
+                            tokens_per_byte,
+                            keep,
+                            cancel,
+                        )
+                        .await?
+                    {
+                        return Err(e.context(
+                            "the latest messages alone are too long for the model's context. Raise Context length in Agent settings",
+                        ));
+                    }
+                    continue;
+                }
+            };
+            retried = false;
+            step += 1;
 
             let (turn, stopped) = match result {
                 llm::StreamResult::Complete(t) => (t, false),
                 llm::StreamResult::Cancelled(t) => (t, true),
             };
+            if let Some(n) = turn.prompt_tokens.filter(|n| *n > 0)
+                && bytes > 0
+            {
+                tokens_per_byte = (n as f64 / bytes as f64).clamp(0.05, 1.0);
+            }
             if stopped && turn.content.is_empty() && turn.reasoning.is_empty() {
                 return Ok(LoopEnd::Stopped);
             }
@@ -750,6 +834,103 @@ impl AgentManager {
         Some(title)
     }
 
+    /// Folds older messages into a summary so the rest fits in `keep_bytes`.
+    /// Ok(false) when there's nothing left that can be summarized.
+    async fn compact(
+        &self,
+        session_id: &str,
+        conf: &Config,
+        ctx_tokens: u64,
+        tokens_per_byte: f64,
+        keep_bytes: usize,
+        cancel: &CancellationToken,
+    ) -> Result<bool> {
+        let sid = session_id.to_string();
+        let history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
+        let (previous, rest) = compact::view(&history);
+        let Some(cut) = compact::choose_cut(&rest, keep_bytes) else {
+            return Ok(false);
+        };
+        let covers_upto = rest[cut - 1].id;
+        let rendered: Vec<String> = rest[..cut].iter().map(|m| compact::render(m)).collect();
+        let max_tokens = compact::summary_tokens(ctx_tokens);
+        // Room for the summary so far, the new part and the reply.
+        let input_tokens = ((ctx_tokens as f64 * 0.9) as u64)
+            .saturating_sub(max_tokens.min(ctx_tokens / 2) * 2)
+            .saturating_sub(1500);
+        let part_bytes = ((input_tokens as f64 / tokens_per_byte) as usize).max(2000);
+
+        tracing::info!(session = %session_id, messages = cut, "summarizing older messages");
+        self.emit(session_id, Event::Compacting { active: true });
+        let url = format!("{}/v1/chat/completions", self.model.base_url());
+        let mut summary = previous.map(|p| p.content.clone());
+        let mut result = Ok(());
+        for part in compact::chunks(&rendered, part_bytes) {
+            let body = compact::summary_request(conf, summary.as_deref(), &part, max_tokens);
+            let reply = tokio::select! {
+                r = self.summarize(&url, &body) => r,
+                _ = cancel.cancelled() => { result = Err(None); break; }
+            };
+            match reply {
+                Ok(s) => summary = Some(s),
+                Err(e) => {
+                    result = Err(Some(e));
+                    break;
+                }
+            }
+        }
+        self.emit(session_id, Event::Compacting { active: false });
+        match result {
+            Ok(()) => {}
+            Err(None) => return Ok(false),
+            Err(Some(e)) => return Err(e.context("could not summarize the older messages")),
+        }
+        let Some(content) = summary else {
+            return Ok(false);
+        };
+        let saved = self
+            .save(
+                session_id,
+                NewMessage {
+                    role: "summary".into(),
+                    content,
+                    covers_upto: Some(covers_upto),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        self.emit(session_id, Event::Message { message: saved });
+        Ok(true)
+    }
+
+    async fn summarize(&self, url: &str, body: &Value) -> Result<String> {
+        let res = self
+            .http
+            .post(url)
+            .json(body)
+            .timeout(Duration::from_secs(20 * 60))
+            .send()
+            .await
+            .map_err(|e| anyhow!("could not reach llama-server: {e}"))?;
+        let status = res.status();
+        let v: Value = res
+            .json()
+            .await
+            .map_err(|e| anyhow!("bad reply from llama-server: {e}"))?;
+        if !status.is_success() {
+            let msg = v
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("no details");
+            bail!("llama-server returned {status}: {msg}");
+        }
+        let raw = v
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        compact::clean_summary(raw).ok_or_else(|| anyhow!("the model wrote an empty summary"))
+    }
+
     async fn save(&self, session_id: &str, m: NewMessage) -> Result<Message> {
         let sid = session_id.to_string();
         self.db.call(move |c| db::insert_message(c, &sid, &m)).await
@@ -912,6 +1093,7 @@ pub fn request_body(conf: &Config, system: &str, history: &[Message], tool_defs:
         "repeat_penalty": s.repeat_penalty,
         "presence_penalty": s.presence_penalty,
         "chat_template_kwargs": { "enable_thinking": conf.agent.thinking },
+        "stream_options": { "include_usage": true },
     });
     if tool_defs.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = tool_defs.clone();
@@ -988,7 +1170,17 @@ pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a desig
 /// stored result (e.g. after a crash) get a synthetic result so the request
 /// stays well-formed.
 pub fn to_openai_messages(system: &str, history: &[Message]) -> Vec<Value> {
+    let (summary, kept) = compact::view(history);
+    let mut system = system.to_string();
+    if let Some(s) = summary {
+        system.push_str(&compact::system_section(s, history, &kept));
+    }
     let mut out = vec![json!({"role": "system", "content": system})];
+    // Chat templates expect a user message first.
+    if summary.is_some() && kept.first().is_some_and(|m| m.role != "user") {
+        out.push(json!({"role": "user", "content": "Carry on from the summary above."}));
+    }
+    let history = kept;
     let mut pending: Vec<String> = Vec::new();
     let flush = |pending: &mut Vec<String>, out: &mut Vec<Value>| {
         for id in pending.drain(..) {
@@ -998,6 +1190,7 @@ pub fn to_openai_messages(system: &str, history: &[Message]) -> Vec<Value> {
     let mut answered: HashSet<String> = HashSet::new();
     for m in history {
         match m.role.as_str() {
+            "summary" => {}
             "tool" => {
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 if !pending.contains(&id) || answered.contains(&id) {
@@ -1051,6 +1244,7 @@ mod tests {
             tool_name: None,
             is_error: false,
             created_at: String::new(),
+            covers_upto: None,
         }
     }
 

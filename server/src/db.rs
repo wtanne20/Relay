@@ -81,7 +81,7 @@ pub struct ToolCall {
 pub struct Message {
     pub id: i64,
     pub session_id: String,
-    /// "user", "assistant" or "tool"
+    /// "user", "assistant", "tool" or "summary"
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,6 +95,10 @@ pub struct Message {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub is_error: bool,
     pub created_at: String,
+    /// On a "summary" message: the id of the newest message it replaces in
+    /// the model's context. Older messages stay stored and shown.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub covers_upto: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -106,6 +110,7 @@ pub struct NewMessage {
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub is_error: bool,
+    pub covers_upto: Option<i64>,
 }
 
 pub fn now() -> String {
@@ -212,6 +217,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE sessions ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 0",
         )?;
+    }
+    if !has_col("messages", "covers_upto")? {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN covers_upto INTEGER")?;
     }
     for table in ["projects", "sessions"] {
         if !has_col(table, "archived")? {
@@ -524,7 +532,7 @@ pub fn reset_stale_running(c: &Connection) -> Result<usize> {
 
 // ---------- messages ----------
 
-const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at";
+const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto";
 
 fn message_row(r: &Row) -> rusqlite::Result<Message> {
     let tool_calls: Option<String> = r.get(5)?;
@@ -541,6 +549,7 @@ fn message_row(r: &Row) -> rusqlite::Result<Message> {
         tool_name: r.get(7)?,
         is_error: r.get::<_, i64>(8)? != 0,
         created_at: r.get(9)?,
+        covers_upto: r.get(10)?,
     })
 }
 
@@ -552,8 +561,8 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
         Some(serde_json::to_string(&m.tool_calls)?)
     };
     c.execute(
-        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             session_id,
             m.role,
@@ -563,7 +572,8 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
             m.tool_call_id,
             m.tool_name,
             m.is_error as i64,
-            created_at
+            created_at,
+            m.covers_upto
         ],
     )?;
     let id = c.last_insert_rowid();
@@ -582,6 +592,7 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
         tool_name: m.tool_name.clone(),
         is_error: m.is_error,
         created_at,
+        covers_upto: m.covers_upto,
     })
 }
 

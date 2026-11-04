@@ -32,6 +32,49 @@ export function UserBubble({ message }: { message: Message }) {
 }
 
 /**
+ * Where Relay summarized older messages to fit the model's context. The
+ * messages above stay here; tap to read what the model now has instead.
+ */
+export function SummaryDivider({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.summary}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        style={styles.summaryRow}
+      >
+        <View style={styles.summaryLine} />
+        <Icon name="text-box-outline" size={16} color={m3.onSurfaceVariant} />
+        <Text style={styles.summaryLabel}>Earlier messages summarized</Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color={m3.onSurfaceVariant} />
+        <View style={styles.summaryLine} />
+      </Pressable>
+      {open ? (
+        <View style={styles.summaryBody}>
+          <Text style={styles.summaryNote}>
+            The model's context was getting full, so it now sees this summary instead of the messages above.
+            Everything is still saved here.
+          </Text>
+          <Markdown text={message.content} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** Shown while Relay writes a summary. */
+export function CompactingRow() {
+  return (
+    <View style={[styles.summaryRow, styles.summary]}>
+      <ActivityIndicator size="small" color={m3.primary} />
+      <Text style={styles.summaryLabel}>Summarizing earlier messages to make room…</Text>
+    </View>
+  );
+}
+
+/**
  * A short status from the model's thinking so far: its latest complete
  * sentence (or line), trimmed. Shown on one line while it works, so the
  * person sees what it's doing without the whole stream racing past.
@@ -333,6 +376,18 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
 }
 
 const styles = StyleSheet.create({
+  summary: { marginVertical: space.lg },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, minHeight: 36 },
+  summaryLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant },
+  summaryLabel: { ...type.labelLarge, color: m3.onSurfaceVariant },
+  summaryBody: {
+    marginTop: space.sm,
+    padding: space.lg,
+    borderRadius: radius.lg,
+    backgroundColor: m3.surfaceContainer,
+    gap: space.sm,
+  },
+  summaryNote: { ...type.bodySmall, color: m3.onSurfaceVariant },
   userRow: { alignItems: 'flex-end', marginTop: space.xl, marginBottom: space.sm, paddingLeft: 56 },
   userBubble: {
     backgroundColor: m3.surfaceContainerHigh,

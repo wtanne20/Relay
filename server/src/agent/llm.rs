@@ -25,6 +25,8 @@ pub struct Turn {
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
+    /// Tokens in the prompt, as llama-server counted them.
+    pub prompt_tokens: Option<u64>,
 }
 
 pub enum StreamResult {
@@ -89,6 +91,9 @@ impl TurnBuilder {
                 .map(str::to_string)
                 .unwrap_or_else(|| err.to_string());
             bail!("llama-server error: {msg}");
+        }
+        if let Some(n) = prompt_tokens(chunk) {
+            self.turn.prompt_tokens = Some(n);
         }
         let mut deltas = Vec::new();
         let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
@@ -179,6 +184,52 @@ impl TurnBuilder {
             ..Default::default()
         }
     }
+}
+
+/// The prompt size from a chunk's `usage` (OpenAI style) or `timings`
+/// (llama-server's own, where cached tokens are counted apart).
+fn prompt_tokens(chunk: &Value) -> Option<u64> {
+    if let Some(n) = chunk
+        .pointer("/usage/prompt_tokens")
+        .and_then(Value::as_u64)
+    {
+        return Some(n);
+    }
+    let t = chunk.get("timings")?;
+    let n = t.get("prompt_n").and_then(Value::as_u64)?;
+    Some(n + t.get("cache_n").and_then(Value::as_u64).unwrap_or(0))
+}
+
+/// The prompt size from llama-server's "context too long" error, if that's
+/// what this is: "request (66986 tokens) exceeds the available context size
+/// (65536 tokens)".
+pub fn context_overflow(err: &str) -> Option<(u64, Option<u64>)> {
+    let lower = err.to_lowercase();
+    if !(lower.contains("exceed") && lower.contains("context")) {
+        return None;
+    }
+    // The numbers written just before "tokens".
+    let mut numbers = Vec::new();
+    let mut rest = lower.as_str();
+    while let Some(i) = rest.find("token") {
+        let before = rest[..i].trim_end();
+        let digits: String = before
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if let Ok(n) = digits.parse::<u64>() {
+            numbers.push(n);
+        }
+        rest = &rest[i + 5..];
+    }
+    Some((
+        numbers.first().copied().unwrap_or(0),
+        numbers.get(1).copied(),
+    ))
 }
 
 pub async fn stream_chat(
@@ -295,6 +346,32 @@ mod tests {
         );
         assert_eq!(t.tool_calls[1].id, "c2");
         assert_eq!(t.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn reads_prompt_size() {
+        let mut b = TurnBuilder::default();
+        b.apply(&json!({"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":5}}))
+            .unwrap();
+        assert_eq!(b.finish().prompt_tokens, Some(1200));
+        let mut b = TurnBuilder::default();
+        b.apply(&json!({"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"prompt_n":200,"cache_n":1000}}))
+            .unwrap();
+        assert_eq!(b.finish().prompt_tokens, Some(1200));
+    }
+
+    #[test]
+    fn spots_context_overflow() {
+        assert_eq!(
+            context_overflow(
+                "llama-server returned 400 Bad Request: request (66986 tokens) exceeds the available context size (65536 tokens), try increasing it"
+            ),
+            Some((66986, Some(65536)))
+        );
+        assert_eq!(
+            context_overflow("llama-server returned 500: out of memory"),
+            None
+        );
     }
 
     #[test]
