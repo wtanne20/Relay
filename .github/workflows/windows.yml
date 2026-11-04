@@ -110,7 +110,7 @@ jobs:
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "relay.exe --version failed" }
           Write-Host "Checking firewall rule"
-          $rule = netsh advfirewall firewall show rule name="Relay (Tailscale only)" | Out-String
+          $rule = netsh advfirewall firewall show rule name="Relay (Tailscale only)" verbose | Out-String
           if ($rule -notmatch '100\.64\.0\.0/10') { throw "firewall rule missing or not limited to Tailscale: $rule" }
           if ($rule -notmatch 'relay-desktop\.exe') { throw "firewall rule for relay-desktop.exe missing: $rule" }
           if ($rule -match 'RemoteIP:\s+Any') { throw "a firewall rule is not limited to Tailscale: $rule" }
