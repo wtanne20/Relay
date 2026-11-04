@@ -114,12 +114,24 @@ fn message_bytes(m: &Message) -> usize {
 /// summary needs what happened, not every byte of a file.
 pub fn render(m: &Message) -> String {
     match m.role.as_str() {
-        "user" if !m.images.is_empty() => format!(
-            "USER (attached {} picture{}):\n{}\n",
-            m.images.len(),
-            if m.images.len() == 1 { "" } else { "s" },
-            cut(&m.content, 6000)
-        ),
+        "user" if !m.images.is_empty() || !m.files.is_empty() => {
+            let mut what = Vec::new();
+            if !m.images.is_empty() {
+                what.push(format!(
+                    "{} picture{}",
+                    m.images.len(),
+                    if m.images.len() == 1 { "" } else { "s" }
+                ));
+            }
+            for f in &m.files {
+                what.push(format!("file {}", f.name));
+            }
+            format!(
+                "USER (attached {}):\n{}\n",
+                what.join(", "),
+                cut(&m.content, 6000)
+            )
+        }
         "user" => format!("USER:\n{}\n", cut(&m.content, 6000)),
         "assistant" => {
             let mut s = String::from("AGENT:\n");
@@ -232,6 +244,7 @@ mod tests {
             created_at: String::new(),
             covers_upto: None,
             images: vec![],
+            files: vec![],
         }
     }
 

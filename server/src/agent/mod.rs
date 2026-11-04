@@ -282,9 +282,16 @@ impl AgentManager {
         session_id: &str,
         prompt: String,
         images: Vec<String>,
+        files: Vec<crate::files::NewFile>,
     ) -> Result<Message, StartError> {
-        if prompt.trim().is_empty() && images.is_empty() {
+        if prompt.trim().is_empty() && images.is_empty() && files.is_empty() {
             return Err(StartError::Invalid("prompt is empty".into()));
+        }
+        if files.len() > crate::files::MAX_PER_PROMPT {
+            return Err(StartError::Invalid(format!(
+                "attach at most {} files at a time",
+                crate::files::MAX_PER_PROMPT
+            )));
         }
         if images.len() > crate::images::MAX_PER_PROMPT {
             return Err(StartError::Invalid(format!(
@@ -342,6 +349,20 @@ impl AgentManager {
             .map_err(|e| anyhow!("saving pictures failed: {e}"))?
             .map_err(|e| StartError::Invalid(format!("{e:#}")))?
         };
+        let file_refs = if files.is_empty() {
+            Vec::new()
+        } else {
+            let dir = self.attachments.clone();
+            tokio::task::spawn_blocking(move || {
+                files
+                    .iter()
+                    .map(|f| crate::files::save(&dir, f))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .await
+            .map_err(|e| anyhow!("saving files failed: {e}"))?
+            .map_err(|e| StartError::Invalid(format!("{e:#}")))?
+        };
 
         let cancel = CancellationToken::new();
         let draft = Arc::new(Mutex::new(Draft::default()));
@@ -392,6 +413,7 @@ impl AgentManager {
                         role: "user".into(),
                         content: prompt,
                         images: names,
+                        files: file_refs,
                         ..Default::default()
                     },
                 )?;
@@ -1015,7 +1037,8 @@ impl AgentManager {
         compact::clean_summary(raw).ok_or_else(|| anyhow!("the model wrote an empty summary"))
     }
 
-    /// Reads the pictures the model will see that aren't loaded yet.
+    /// Reads the pictures the model will see that aren't loaded yet, and
+    /// the text of attached files (keyed by their stored names).
     async fn load_pictures(&self, history: &[Message], cache: &mut HashMap<String, String>) {
         let (_, kept) = compact::view(history);
         let wanted: Vec<String> = kept
@@ -1024,15 +1047,27 @@ impl AgentManager {
             .filter(|n| !cache.contains_key(*n))
             .cloned()
             .collect();
-        if wanted.is_empty() {
+        let files: Vec<crate::files::FileRef> = kept
+            .iter()
+            .flat_map(|m| m.files.iter())
+            .filter(|f| f.chars > 0 && !cache.contains_key(&f.stored))
+            .cloned()
+            .collect();
+        if wanted.is_empty() && files.is_empty() {
             return;
         }
         let dir = self.attachments.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            wanted
+            let mut out: Vec<(String, String)> = wanted
                 .into_iter()
                 .filter_map(|n| crate::images::data_url(&dir, &n).map(|u| (n, u)))
-                .collect::<Vec<_>>()
+                .collect();
+            out.extend(
+                files
+                    .iter()
+                    .filter_map(|f| crate::files::text(&dir, f).map(|t| (f.stored.clone(), t))),
+            );
+            out
         })
         .await
         .unwrap_or_default();
@@ -1345,15 +1380,25 @@ pub fn to_openai_messages(
     out
 }
 
-/// A user message's text, plus its pictures as image parts.
+/// A user message's text with any attached files' text after it, plus its
+/// pictures as image parts. `pictures` also holds file texts, keyed by the
+/// stored file name.
 fn user_content(m: &Message, pictures: &HashMap<String, String>) -> Value {
-    if m.images.is_empty() {
-        return json!(m.content);
+    let mut text = m.content.clone();
+    for f in &m.files {
+        let t = pictures.get(&f.stored).map(String::as_str);
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&crate::files::for_model(f, t));
     }
-    let text = if m.content.trim().is_empty() {
+    if m.images.is_empty() {
+        return json!(text);
+    }
+    let text = if text.trim().is_empty() {
         "(see the attached picture)".to_string()
     } else {
-        m.content.clone()
+        text
     };
     let mut parts = vec![json!({"type": "text", "text": text})];
     for name in &m.images {
@@ -1385,6 +1430,7 @@ mod tests {
             created_at: String::new(),
             covers_upto: None,
             images: vec![],
+            files: vec![],
         }
     }
 

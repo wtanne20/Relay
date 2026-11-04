@@ -1,16 +1,27 @@
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { type ComponentRef, useCallback, useEffect, useRef, useState } from 'react';
+import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { RelayClient } from '../lib/api';
 import { useClient } from '../lib/connection';
-import { m3, radius, space } from './theme';
-import { Icon, IconButton } from './ui';
+import { formatBytes } from '../lib/format';
+import type { FileRef } from '../lib/types';
+import { m3, radius, space, type } from './theme';
+import { Icon, IconButton, type IconName } from './ui';
 
-/** Matches the server's limit per prompt. */
+/** Matches the server's limits per prompt. */
 export const MAX_PICTURES = 8;
+export const MAX_FILES = 8;
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
-export type Attachment = { id: string; dataUrl: string };
+/** A picture (sent to the model's vision) or any other file (sent as text when it has some). */
+export type Attachment =
+  | { id: string; kind: 'image'; dataUrl: string }
+  | { id: string; kind: 'file'; dataUrl: string; name: string; size: number };
+
+type Incoming = { kind: 'image'; dataUrl: string } | { kind: 'file'; dataUrl: string; name: string; size: number };
 
 let counter = 0;
 
@@ -23,32 +34,60 @@ function readFile(file: File): Promise<string> {
   });
 }
 
-function imageFiles(list: FileList | null | undefined): File[] {
-  return Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
+/** Pictures Relay can send to vision; other image types go as files. */
+const isPicture = (mime: string) => /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(mime);
+
+async function fromWebFile(f: File): Promise<Incoming> {
+  if (f.size > MAX_FILE_BYTES) throw new Error(`${f.name} is larger than 25 MB.`);
+  const dataUrl = await readFile(f);
+  return isPicture(f.type) ? { kind: 'image', dataUrl } : { kind: 'file', dataUrl, name: f.name || 'file', size: f.size };
+}
+
+export function fileIcon(name: string): IconName {
+  const ext = name.toLowerCase().split('.').pop() ?? '';
+  if (ext === 'pdf') return 'file-pdf-box';
+  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return 'file-word-outline';
+  if (['xls', 'xlsx', 'csv', 'tsv'].includes(ext)) return 'file-table-outline';
+  if (['zip', '7z', 'rar', 'gz', 'tar'].includes(ext)) return 'folder-zip-outline';
+  if (['txt', 'md', 'log', 'rst'].includes(ext)) return 'file-document-outline';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic'].includes(ext)) return 'file-image-outline';
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'file-music-outline';
+  if (['mp4', 'mov', 'webm', 'mkv', 'avi'].includes(ext)) return 'file-video-outline';
+  return 'file-code-outline';
 }
 
 /**
- * Pictures waiting to be sent with the next prompt. On the web and desktop,
- * pictures can also be pasted or dropped anywhere on the page.
+ * Pictures and files waiting to be sent with the next prompt. On the web and
+ * desktop, they can also be pasted or dropped anywhere on the page.
  */
 export function useAttachments() {
   const [items, setItems] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const add = useCallback((urls: string[]) => {
-    if (urls.length === 0) return;
+  const add = useCallback((incoming: Incoming[]) => {
+    if (incoming.length === 0) return;
     setItems((cur) => {
-      const next = [...cur, ...urls.map((dataUrl) => ({ id: `a${++counter}`, dataUrl }))];
-      if (next.length > MAX_PICTURES) setError(`You can attach up to ${MAX_PICTURES} pictures at a time.`);
-      return next.slice(0, MAX_PICTURES);
+      const next = [...cur];
+      let dropped = false;
+      for (const a of incoming) {
+        const same = next.filter((x) => x.kind === a.kind).length;
+        if (same >= (a.kind === 'image' ? MAX_PICTURES : MAX_FILES)) {
+          dropped = true;
+          continue;
+        }
+        next.push({ ...a, id: `a${++counter}` } as Attachment);
+      }
+      if (dropped) setError(`You can attach up to ${MAX_PICTURES} pictures and ${MAX_FILES} files at a time.`);
+      return next;
     });
   }, []);
 
-  const addFiles = useCallback(
+  const addWebFiles = useCallback(
     (files: File[]) => {
-      Promise.all(files.map(readFile))
+      if (!files.length) return;
+      Promise.all(files.map(fromWebFile))
         .then(add)
-        .catch(() => setError("Couldn't read that picture."));
+        .catch((e) => setError(e instanceof Error && e.message ? e.message : "Couldn't read that file."));
     },
     [add],
   );
@@ -56,10 +95,10 @@ export function useAttachments() {
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
     const onPaste = (e: ClipboardEvent) => {
-      const files = imageFiles(e.clipboardData?.files);
+      const files = Array.from(e.clipboardData?.files ?? []);
       if (files.length === 0) return;
       e.preventDefault();
-      addFiles(files);
+      addWebFiles(files);
     };
     const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const onDragOver = (e: DragEvent) => {
@@ -68,7 +107,7 @@ export function useAttachments() {
     const onDrop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
-      addFiles(imageFiles(e.dataTransfer?.files));
+      addWebFiles(Array.from(e.dataTransfer?.files ?? []));
     };
     document.addEventListener('paste', onPaste);
     document.addEventListener('dragover', onDragOver);
@@ -78,21 +117,42 @@ export function useAttachments() {
       document.removeEventListener('dragover', onDragOver);
       document.removeEventListener('drop', onDrop);
     };
-  }, [addFiles]);
+  }, [addWebFiles]);
 
   const pick = useCallback(
-    async (source: 'library' | 'camera') => {
+    async (source: AttachSource) => {
       setError(null);
       if (Platform.OS === 'web') {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = 'image/*';
+        if (source !== 'file') input.accept = 'image/*';
         input.multiple = true;
-        input.onchange = () => addFiles(imageFiles(input.files));
+        input.onchange = () => addWebFiles(Array.from(input.files ?? []));
         input.click();
         return;
       }
       try {
+        if (source === 'file') {
+          const res = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true, type: '*/*' });
+          if (res.canceled) return;
+          const out: Incoming[] = [];
+          for (const a of res.assets) {
+            if (a.size && a.size > MAX_FILE_BYTES) {
+              setError(`${a.name} is larger than 25 MB.`);
+              continue;
+            }
+            const b64 = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.Base64 });
+            const mime = a.mimeType ?? 'application/octet-stream';
+            const dataUrl = `data:${mime};base64,${b64}`;
+            out.push(
+              isPicture(mime)
+                ? { kind: 'image', dataUrl }
+                : { kind: 'file', dataUrl, name: a.name || 'file', size: a.size ?? Math.floor((b64.length * 3) / 4) },
+            );
+          }
+          add(out);
+          return;
+        }
         const options: ImagePicker.ImagePickerOptions = {
           mediaTypes: ['images'],
           base64: true,
@@ -115,13 +175,13 @@ export function useAttachments() {
         add(
           result.assets
             .filter((a) => a.base64)
-            .map((a) => `data:${a.mimeType ?? 'image/jpeg'};base64,${a.base64}`),
+            .map((a) => ({ kind: 'image' as const, dataUrl: `data:${a.mimeType ?? 'image/jpeg'};base64,${a.base64}` })),
         );
       } catch {
-        setError("Couldn't open your pictures.");
+        setError(source === 'file' ? "Couldn't open that file." : "Couldn't open your pictures.");
       }
     },
-    [add, addFiles],
+    [add, addWebFiles],
   );
 
   const remove = useCallback((id: string) => setItems((cur) => cur.filter((a) => a.id !== id)), []);
@@ -130,48 +190,131 @@ export function useAttachments() {
     setError(null);
   }, []);
 
-  return { items, error, setError, pick, remove, clear };
+  const images = items.filter((a) => a.kind === 'image').map((a) => a.dataUrl);
+  const files = items.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, data: a.dataUrl }] : []));
+  return { items, images, files, error, setError, pick, remove, clear };
 }
 
-/** Attach buttons for the composer: one on desktop, gallery and camera on a phone. */
-export function AttachButtons({
-  onPick,
-  disabled,
-}: {
-  onPick: (source: 'library' | 'camera') => void;
-  disabled?: boolean;
-}) {
-  if (Platform.OS === 'web') {
-    return <IconButton icon="image-plus" label="Attach pictures" onPress={() => onPick('library')} disabled={disabled} size={22} />;
-  }
+export type AttachSource = 'library' | 'camera' | 'file';
+
+/**
+ * The composer's + button. It opens a small menu: take a photo and choose
+ * photos on a phone, and attach any file everywhere.
+ */
+export function AttachMenu({ onPick, disabled }: { onPick: (source: AttachSource) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const anchor = useRef<ComponentRef<typeof View>>(null);
+  const show = () => {
+    anchor.current?.measureInWindow((x: number, y: number) => {
+      setAt({ x, y });
+      setOpen(true);
+    });
+  };
+  const choose = (s: AttachSource) => {
+    setOpen(false);
+    // Let the menu close before a system picker opens over it.
+    setTimeout(() => onPick(s), Platform.OS === 'web' ? 0 : 250);
+  };
+  const items: { source: AttachSource; icon: IconName; label: string }[] =
+    Platform.OS === 'web'
+      ? [
+          { source: 'library', icon: 'image-outline', label: 'Add photos' },
+          { source: 'file', icon: 'paperclip', label: 'Add files' },
+        ]
+      : [
+          { source: 'camera', icon: 'camera-outline', label: 'Take a photo' },
+          { source: 'library', icon: 'image-outline', label: 'Choose photos' },
+          { source: 'file', icon: 'paperclip', label: 'Attach a file' },
+        ];
   return (
-    <>
-      <IconButton icon="image-outline" label="Attach pictures" onPress={() => onPick('library')} disabled={disabled} size={22} />
-      <IconButton icon="camera-outline" label="Take a photo" onPress={() => onPick('camera')} disabled={disabled} size={22} />
-    </>
+    <View ref={anchor} collapsable={false}>
+      <IconButton icon="plus" label="Add photos and files" onPress={show} disabled={disabled} size={22} />
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} accessibilityLabel="Close menu" />
+        {at ? (
+          <View style={[styles.menu, { left: Math.max(8, at.x - 4), bottom: undefined, top: Math.max(8, at.y - 8 - items.length * 44 - 12) }]}>
+            {items.map((it) => (
+              <Pressable
+                key={it.source}
+                onPress={() => choose(it.source)}
+                style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                  styles.menuItem,
+                  (hovered || pressed) && { backgroundColor: m3.hover },
+                ]}
+                accessibilityRole="menuitem"
+              >
+                <Icon name={it.icon} size={20} color={m3.onSurfaceVariant} />
+                <Text style={[type.labelLarge, { color: m3.onSurface }]}>{it.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </Modal>
+    </View>
   );
 }
 
-/** Thumbnails of the pictures about to be sent, each with a remove button. */
+/** A file's name, kind and size as a small chip. */
+export function FileChip({ name, size, onRemove }: { name: string; size?: number; onRemove?: () => void }) {
+  return (
+    <View style={styles.fileChip}>
+      <Icon name={fileIcon(name)} size={20} color={m3.primary} />
+      <View style={styles.fileText}>
+        <Text style={[type.labelLarge, { color: m3.onSurface }]} numberOfLines={1}>
+          {name}
+        </Text>
+        {size !== undefined ? <Text style={[type.bodySmall, { color: m3.outline }]}>{formatSize(size)}</Text> : null}
+      </View>
+      {onRemove ? (
+        <Pressable onPress={onRemove} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${name}`}>
+          <Icon name="close" size={16} color={m3.onSurfaceVariant} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function formatSize(n: number): string {
+  return n < 1024 ? `${n} bytes` : formatBytes(n);
+}
+
+/** Thumbnails and file chips about to be sent, each with a remove button. */
 export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRemove: (id: string) => void }) {
   if (items.length === 0) return null;
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
-      {items.map((a) => (
-        <View key={a.id} style={styles.thumbWrap}>
-          <Image source={{ uri: a.dataUrl }} style={styles.thumb} accessibilityLabel="Attached picture" />
-          <Pressable
-            onPress={() => onRemove(a.id)}
-            style={styles.remove}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Remove picture"
-          >
-            <Icon name="close" size={14} color={m3.onSurface} />
-          </Pressable>
-        </View>
-      ))}
+      {items.map((a) =>
+        a.kind === 'file' ? (
+          <FileChip key={a.id} name={a.name} size={a.size} onRemove={() => onRemove(a.id)} />
+        ) : (
+          <View key={a.id} style={styles.thumbWrap}>
+            <Image source={{ uri: a.dataUrl }} style={styles.thumb} accessibilityLabel="Attached picture" />
+            <Pressable
+              onPress={() => onRemove(a.id)}
+              style={styles.remove}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Remove picture"
+            >
+              <Icon name="close" size={14} color={m3.onSurface} />
+            </Pressable>
+          </View>
+        ),
+      )}
     </ScrollView>
+  );
+}
+
+/** Files on a sent message. */
+export function MessageFiles({ files }: { files: FileRef[] }) {
+  if (!files.length) return null;
+  return (
+    <View style={styles.sentFiles}>
+      {files.map((f) => (
+        <FileChip key={f.stored} name={f.name} size={f.size} />
+      ))}
+    </View>
   );
 }
 
@@ -254,7 +397,36 @@ export function MessagePicture({ name }: { name: string }) {
 }
 
 const styles = StyleSheet.create({
-  strip: { gap: space.sm, paddingHorizontal: space.md, paddingTop: space.md },
+  strip: { gap: space.sm, paddingHorizontal: space.md, paddingTop: space.md, alignItems: 'center' },
+  menu: {
+    position: 'absolute',
+    minWidth: 200,
+    paddingVertical: space.xs,
+    borderRadius: radius.md,
+    backgroundColor: m3.surfaceContainerHigh,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: space.md, height: 44, paddingHorizontal: space.lg },
+  fileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    height: 52,
+    maxWidth: 240,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+    backgroundColor: m3.surfaceContainerHigh,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+  },
+  fileText: { flexShrink: 1, minWidth: 0 },
+  sentFiles: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: space.sm, marginBottom: space.sm },
   thumbWrap: { width: 64, height: 64 },
   thumb: { width: 64, height: 64, borderRadius: radius.md, backgroundColor: m3.surfaceContainerHigh },
   remove: {

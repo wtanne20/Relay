@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssistantTurn, CompactingRow, noteStart, SummaryDivider, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
-import { AttachButtons, AttachmentStrip, useAttachments } from '../../components/Attachments';
+import { AttachMenu, AttachmentStrip, useAttachments } from '../../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
@@ -123,7 +123,8 @@ export default function ChatScreen() {
       const res = await client.sendPrompt(
         id,
         text,
-        pics.items.map((a) => a.dataUrl),
+        pics.images,
+        pics.files,
       );
       stream.applyMessages([res.message]);
       stream.markRunning();
@@ -293,7 +294,7 @@ export default function ChatScreen() {
               />
               <View style={styles.composerRow}>
                 <View style={styles.composerHint}>
-                  <AttachButtons onPick={pics.pick} disabled={sending} />
+                  <AttachMenu onPick={pics.pick} disabled={sending} />
                   <ModelChip
                     model={session?.model}
                     fallback={project?.model ?? loaded}

@@ -281,12 +281,12 @@ export class RelayClient {
       `/sessions/${encodeURIComponent(id)}/messages?${q.toString()}`,
     );
   }
-  sendPrompt(id: string, content: string, images: string[] = []) {
+  sendPrompt(id: string, content: string, images: string[] = [], files: { name: string; data: string }[] = []) {
     return this.request<{ message: Message; status: string }>(
       'POST',
       `/sessions/${encodeURIComponent(id)}/prompt`,
-      { content, images },
-      images.length ? 120000 : undefined,
+      files.length ? { content, images, files } : { content, images },
+      images.length || files.length ? 120000 : undefined,
     );
   }
   // ----- updates -----

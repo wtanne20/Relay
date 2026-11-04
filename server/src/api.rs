@@ -1253,13 +1253,26 @@ async fn get_attachment(
     State(s): State<AppState>,
     UrlPath(name): UrlPath<String>,
 ) -> ApiResult<Response> {
-    if !crate::images::valid_name(&name) {
-        return Err(ApiError::NotFound("picture"));
+    let picture = crate::images::valid_name(&name);
+    if !picture && !crate::files::valid_name(&name) {
+        return Err(ApiError::NotFound("attachment"));
     }
     let path = crate::images::dir(&s.data_dir).join(&name);
     let bytes = tokio::fs::read(&path)
         .await
-        .map_err(|_| ApiError::NotFound("picture"))?;
+        .map_err(|_| ApiError::NotFound("attachment"))?;
+    if !picture {
+        // Other files are only offered as downloads, never shown as pages.
+        return Ok((
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (header::CONTENT_DISPOSITION, "attachment"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
     Ok((
         [
             (header::CONTENT_TYPE, crate::images::mime(&name)),
@@ -1733,6 +1746,8 @@ struct Prompt {
     /// Pictures as data URLs.
     #[serde(default)]
     images: Vec<String>,
+    #[serde(default)]
+    files: Vec<crate::files::NewFile>,
 }
 
 async fn send_prompt(
@@ -1740,7 +1755,10 @@ async fn send_prompt(
     UrlPath(id): UrlPath<String>,
     JsonBody(body): JsonBody<Prompt>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let message = s.agent.start(&id, body.content, body.images).await?;
+    let message = s
+        .agent
+        .start(&id, body.content, body.images, body.files)
+        .await?;
     // Carrying on with an archived chat brings it back to the lists.
     let sid = id.clone();
     s.db.call(move |c| db::set_session_archived(c, &sid, false))

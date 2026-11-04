@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
 import { alert } from '../components/Dialogs';
-import { AttachButtons, AttachmentStrip, useAttachments } from '../components/Attachments';
+import { AttachMenu, AttachmentStrip, useAttachments } from '../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
 import { UpdateCard } from '../components/UpdateCard';
 import { m3, radius, space, type } from '../components/theme';
@@ -139,7 +139,8 @@ export default function Home() {
       await client.sendPrompt(
         s.id,
         prompt,
-        pics.items.map((a) => a.dataUrl),
+        pics.images,
+        pics.files,
       );
       setModel(null);
       setText('');
@@ -373,7 +374,7 @@ export default function Home() {
             />
             <View style={styles.row}>
               <View style={styles.modelSlot}>
-                <AttachButtons onPick={pics.pick} disabled={busy} />
+                <AttachMenu onPick={pics.pick} disabled={busy} />
                 <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
               </View>
               <Pressable

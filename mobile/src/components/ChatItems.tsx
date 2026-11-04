@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { toolDetails, toolSummary } from '../lib/format';
 import { fileChange, partialArgs, readArgs, type FileChange } from '../lib/liveCode';
 import type { Draft, Message, ToolCall } from '../lib/types';
-import { MessagePicture } from './Attachments';
+import { MessageFiles, MessagePicture } from './Attachments';
 import { ChangesLine, CodeChange } from './CodeChange';
 import { Markdown } from './Markdown';
 import { m3, mono as monoFont, radius, space, type } from './theme';
@@ -33,6 +33,7 @@ export function UserBubble({ message }: { message: Message }) {
           ))}
         </View>
       ) : null}
+      <MessageFiles files={message.files ?? []} />
       {message.content.trim() ? (
         <View style={styles.userBubble}>
           <Text selectable style={styles.userText}>
@@ -267,7 +268,11 @@ function stepsSummary(calls: ToolCall[]): string {
   if (n('fetch_url')) parts.push(`read ${plural(n('fetch_url'), 'page')}`);
   if (n('run_command')) parts.push(`ran ${plural(n('run_command'), 'command')}`);
   if (n('read_file')) parts.push(`read ${plural(n('read_file'), 'file')}`);
-  if (n('edit_file', 'write_file')) parts.push(`changed ${plural(n('edit_file', 'write_file'), 'file')}`);
+  // Files, not attempts: several edits to one file count once.
+  const changed = new Set(
+    calls.filter((c) => c.name === 'edit_file' || c.name === 'write_file').map((c) => readArgs(c.arguments).path ?? c.id),
+  ).size;
+  if (changed) parts.push(`changed ${plural(changed, 'file')}`);
   if (n('list_dir')) parts.push(`listed ${plural(n('list_dir'), 'folder')}`);
   if (calls.length > known) parts.push(plural(calls.length - known, 'other step'));
   const text = parts.join(' · ') || 'Thought process';

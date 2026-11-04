@@ -177,6 +177,8 @@ const styles = StyleSheet.create({
     gap: 6,
     height: 32,
     maxWidth: 260,
+    flexShrink: 1,
+    minWidth: 0,
     paddingHorizontal: space.md,
     borderRadius: radius.sm,
   },

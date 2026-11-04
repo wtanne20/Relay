@@ -104,6 +104,18 @@ export interface Message {
   covers_upto?: number;
   /** Pictures attached to a user message. */
   images?: string[];
+  /** Other files attached to a user message. */
+  files?: FileRef[];
+}
+
+export interface FileRef {
+  name: string;
+  stored: string;
+  mime: string;
+  size: number;
+  /** "text", "pdf", "docx" (the model gets its text) or "other". */
+  kind: string;
+  chars: number;
 }
 
 export interface DraftCall {

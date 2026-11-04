@@ -103,6 +103,9 @@ pub struct Message {
     /// folder.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub images: Vec<String>,
+    /// Other files attached to a user message.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub files: Vec<crate::files::FileRef>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -116,6 +119,7 @@ pub struct NewMessage {
     pub is_error: bool,
     pub covers_upto: Option<i64>,
     pub images: Vec<String>,
+    pub files: Vec<crate::files::FileRef>,
 }
 
 pub fn now() -> String {
@@ -228,6 +232,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
     }
     if !has_col("messages", "images")? {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN images TEXT")?;
+    }
+    if !has_col("messages", "files")? {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN files TEXT")?;
     }
     for table in ["projects", "sessions"] {
         if !has_col(table, "archived")? {
@@ -540,7 +547,7 @@ pub fn reset_stale_running(c: &Connection) -> Result<usize> {
 
 // ---------- messages ----------
 
-const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images";
+const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files";
 
 fn message_row(r: &Row) -> rusqlite::Result<Message> {
     let tool_calls: Option<String> = r.get(5)?;
@@ -562,6 +569,10 @@ fn message_row(r: &Row) -> rusqlite::Result<Message> {
             .get::<_, Option<String>>(11)?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        files: r
+            .get::<_, Option<String>>(12)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -577,9 +588,14 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
     } else {
         Some(serde_json::to_string(&m.images)?)
     };
+    let files = if m.files.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&m.files)?)
+    };
     c.execute(
-        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             session_id,
             m.role,
@@ -591,7 +607,8 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
             m.is_error as i64,
             created_at,
             m.covers_upto,
-            images
+            images,
+            files
         ],
     )?;
     let id = c.last_insert_rowid();
@@ -612,6 +629,7 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
         created_at,
         covers_upto: m.covers_upto,
         images: m.images.clone(),
+        files: m.files.clone(),
     })
 }
 

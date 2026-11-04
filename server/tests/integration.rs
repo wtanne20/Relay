@@ -1294,3 +1294,73 @@ async fn pictures_are_stored_served_and_sent_to_the_model() {
     ws.until_status(&["done", "error"]).await;
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn files_are_stored_and_their_text_goes_to_the_model() {
+    use base64::Engine;
+    let h = Harness::start().await;
+    let (st, v) = h
+        .post("/projects/chats/sessions", json!({"title": "Files"}))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let b64 = |b: &[u8]| {
+        format!(
+            "data:application/octet-stream;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b)
+        )
+    };
+
+    let mut ws = h.ws(&sid).await;
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "explain", "files": [
+                {"name": "notes.md", "data": b64(b"# Plan\nship it")},
+                {"name": "blob.bin", "data": b64(&[0, 159, 146, 150])},
+            ]}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    let files = v["message"]["files"].as_array().expect("files").clone();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["name"], "notes.md");
+    assert_eq!(files[0]["kind"], "text");
+    assert_eq!(files[1]["kind"], "other");
+    ws.until_status(&["done", "error"]).await;
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    // The mock echoes what it was sent: the prompt, then the file's text.
+    let answer = msgs["messages"][1]["content"].as_str().unwrap_or("");
+    assert!(answer.contains("explain"), "{answer}");
+    assert!(answer.contains("Attached file: notes.md"), "{answer}");
+    assert!(answer.contains("# Plan\nship it"), "{answer}");
+    assert!(answer.contains("Attached file: blob.bin"), "{answer}");
+    // Stored messages keep the files; the stored copy downloads, never renders.
+    assert_eq!(msgs["messages"][0]["files"][0]["name"], "notes.md");
+    let stored = files[0]["stored"].as_str().expect("stored");
+    let res = h
+        .http
+        .get(format!("{}/attachments/{stored}", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.headers()["content-type"].to_str().ok(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        res.bytes().await.expect("bytes").as_ref(),
+        b"# Plan\nship it"
+    );
+
+    // A file alone is a fine prompt; too many is refused.
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"files": (0..9).map(|i| json!({"name": format!("{i}.txt"), "data": b64(b"x")})).collect::<Vec<_>>()}),
+        )
+        .await;
+    assert_eq!(st, 400, "{v}");
+}

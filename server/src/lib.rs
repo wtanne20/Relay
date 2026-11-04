@@ -4,6 +4,7 @@ pub mod agent;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod files;
 pub mod hub;
 pub mod images;
 pub mod libraries;
