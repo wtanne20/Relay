@@ -163,11 +163,35 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
         .unwrap_or_default();
     let last = messages.last().cloned().unwrap_or(Value::Null);
     let role = last.get("role").and_then(Value::as_str).unwrap_or("");
-    let content = last
+    // Pictures come as content parts; the mock says how many it got.
+    let pictures = last
         .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|p| {
+                    p.pointer("/image_url/url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|u| u.starts_with("data:image/"))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let content = match last.get("content") {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        Some(v) => v.as_str().unwrap_or("").to_string(),
+        None => String::new(),
+    };
+    let content = if pictures > 0 {
+        format!("[{pictures} picture(s)] {content}")
+    } else {
+        content
+    };
 
     let mut delay = Duration::from_millis(5);
     let mut chunks = vec![chunk(json!({"role": "assistant", "content": null}), None)];

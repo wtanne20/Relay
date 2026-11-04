@@ -1209,3 +1209,81 @@ async fn an_overflowing_prompt_is_summarized_and_retried() {
     );
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn pictures_are_stored_served_and_sent_to_the_model() {
+    use base64::Engine;
+    let h = Harness::start().await;
+    let (st, v) = h
+        .post("/projects/chats/sessions", json!({"title": "Pics"}))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(3000, 2000))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("png");
+    let url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    );
+
+    // Not a picture.
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "what is this?", "images": ["data:image/png;base64,aGVsbG8="]}),
+        )
+        .await;
+    assert_eq!(st, 400, "{v}");
+
+    let mut ws = h.ws(&sid).await;
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "what is this?", "images": [url.clone()]}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    let name = v["message"]["images"][0]
+        .as_str()
+        .expect("stored")
+        .to_string();
+    ws.until_status(&["done", "error"]).await;
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    let answer = msgs["messages"][1]["content"].as_str().unwrap_or("");
+    assert!(answer.contains("[1 picture(s)] what is this?"), "{answer}");
+
+    // The app fetches the picture back, scaled down.
+    let res = h
+        .http
+        .get(format!("{}/attachments/{name}", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(res.status(), 200);
+    let bytes = res.bytes().await.expect("bytes");
+    let img = image::load_from_memory(&bytes).expect("picture");
+    assert_eq!((img.width(), img.height()), (1568, 1045));
+    // Without the token: refused.
+    let res = h
+        .http
+        .get(format!("{}/attachments/{name}", h.base))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(res.status(), 401);
+
+    // A picture alone is a fine prompt.
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "", "images": [url]}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    ws.until_status(&["done", "error"]).await;
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
 import { alert } from '../components/Dialogs';
+import { AttachButtons, AttachmentStrip, useAttachments } from '../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
 import { m3, radius, space, type } from '../components/theme';
 import { Avatar, Banner, Button, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
@@ -68,6 +69,7 @@ export default function Home() {
   const [pickingModel, setPickingModel] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pics = useAttachments();
   const [target, setTarget] = useState<string>(remembered());
   const [picking, setPicking] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -121,11 +123,11 @@ export default function Home() {
   if (!client) return <Redirect href="/connect" />;
 
   const project = projects?.find((p) => p.id === target) ?? null;
-  const canSend = !!text.trim() && !busy;
+  const canSend = (!!text.trim() || pics.items.length > 0) && !busy;
   const open = (href: Parameters<typeof router.push>[0]) => (wide ? router.replace(href) : router.push(href));
 
   const send = async () => {
-    if (!text.trim() || busy) return;
+    if ((!text.trim() && !pics.items.length) || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -133,9 +135,14 @@ export default function Home() {
       // No title: Relay names the chat after the first reply.
       const s = await client.createSession(project?.id ?? CHATS_ID);
       if (model) await client.setSessionModel(s.id, model);
-      await client.sendPrompt(s.id, prompt);
+      await client.sendPrompt(
+        s.id,
+        prompt,
+        pics.items.map((a) => a.dataUrl),
+      );
       setModel(null);
       setText('');
+      pics.clear();
       emit('chats');
       open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
     } catch (e) {
@@ -349,6 +356,7 @@ export default function Home() {
                 />
               </Pressable>
             </View>
+            <AttachmentStrip items={pics.items} onRemove={pics.remove} />
             <TextInput
               ref={input}
               style={[styles.input, !wide && styles.inputPhone]}
@@ -364,6 +372,7 @@ export default function Home() {
             />
             <View style={styles.row}>
               <View style={styles.modelSlot}>
+                <AttachButtons onPick={pics.pick} disabled={busy} />
                 <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
               </View>
               <Pressable
@@ -413,6 +422,7 @@ export default function Home() {
           </Text>
 
           {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
+          {pics.error ? <Banner kind="warning" message={pics.error} actionLabel="Dismiss" onAction={() => pics.setError(null)} /> : null}
 
           <View style={styles.sectionRow}>
             <Text style={[type.titleSmall, styles.section]}>Chats</Text>
@@ -727,7 +737,7 @@ const styles = StyleSheet.create({
     borderColor: m3.outlineVariant,
   },
   targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
-  modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row' },
+  modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 },
   hover: { backgroundColor: m3.hover },
   selected: { backgroundColor: m3.secondaryContainer },
   checkSlot: { width: 32, alignItems: 'center' },

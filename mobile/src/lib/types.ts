@@ -11,6 +11,8 @@ export interface ModelStatus {
   since: string;
   /** 0..1 while llama.cpp is being downloaded on first run. */
   progress?: number | null;
+  /** The loaded model has a vision file and can read pictures. */
+  vision?: boolean;
 }
 
 export interface GpuInfo {
@@ -98,6 +100,8 @@ export interface Message {
   created_at: string;
   /** On a summary: the newest message it replaces in the model's context. */
   covers_upto?: number;
+  /** Pictures attached to a user message. */
+  images?: string[];
 }
 
 export interface Draft {
@@ -226,6 +230,8 @@ export interface ModelFile {
   path: string;
   name: string;
   size_bytes: number;
+  /** Has a vision file next to it, so it can read pictures. */
+  vision?: boolean;
   /** What the model is good at, e.g. "code", "UI". */
   tags?: string[];
   /** False when the tags were guessed from the file name. */

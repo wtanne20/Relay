@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{FromRequest, Path as UrlPath, Query, Request, State, WebSocketUpgrade};
+use axum::extract::{
+    DefaultBodyLimit, FromRequest, Path as UrlPath, Query, Request, State, WebSocketUpgrade,
+};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -200,7 +202,11 @@ pub fn router(state: AppState) -> Router {
             get(get_session).patch(patch_session).delete(delete_session),
         )
         .route("/sessions/{id}/messages", get(list_messages))
-        .route("/sessions/{id}/prompt", post(send_prompt))
+        .route(
+            "/sessions/{id}/prompt",
+            post(send_prompt).layer(DefaultBodyLimit::max(PROMPT_BODY_LIMIT)),
+        )
+        .route("/attachments/{name}", get(get_attachment))
         .route("/sessions/{id}/stop", post(stop_task))
         .route("/sessions/{id}/approval", post(answer_approval))
         .route("/sessions/{id}/ws", get(ws_upgrade))
@@ -594,6 +600,7 @@ async fn list_models(State(s): State<AppState>) -> ApiResult<Json<Value>> {
                 "path": m.path,
                 "name": m.name,
                 "size_bytes": m.size_bytes,
+                "vision": crate::images::mmproj_for(Path::new(&m.path)).is_some(),
                 "tags": t,
                 "custom_tags": custom,
             })
@@ -677,12 +684,13 @@ async fn hub_files(State(s): State<AppState>, Query(q): Query<HubFiles>) -> ApiR
             "not a Hugging Face repository name".into(),
         ));
     }
-    let files = crate::hub::files(&q.repo)
+    let (files, projector) = crate::hub::files_and_projector(&q.repo)
         .await
         .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
     Ok(Json(json!({
         "repo": q.repo,
         "files": files,
+        "vision": projector.is_some(),
         "vram_mb": s.hardware.total_vram_mb(),
     })))
 }
@@ -710,7 +718,7 @@ async fn hub_download(
         ));
     }
     // Look the file up so only real GGUF files from the repository are fetched.
-    let files = crate::hub::files(&body.repo)
+    let (files, projector) = crate::hub::files_and_projector(&body.repo)
         .await
         .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
     let model = files
@@ -725,6 +733,24 @@ async fn hub_download(
         .downloads
         .start(&models_dir, &body.repo, model)
         .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    // The vision file comes along, so the model can read pictures.
+    if let Some(p) = projector {
+        let folder = body
+            .repo
+            .split('/')
+            .fold(models_dir.clone(), |acc, part| acc.join(part));
+        let have = std::fs::read_dir(&folder).is_ok_and(|rd| {
+            rd.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with("mmproj")
+            })
+        });
+        if !have && let Err(e) = s.downloads.start(&models_dir, &body.repo, p) {
+            tracing::info!("vision file not downloaded: {e:#}");
+        }
+    }
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
 }
 
@@ -1172,6 +1198,33 @@ async fn create_mockup(
     Ok(Json(json!({ "id": id, "width": size.0, "height": size.1 })))
 }
 
+/// Room for a prompt with a few large pictures as base64.
+const PROMPT_BODY_LIMIT: usize = 120 * 1024 * 1024;
+
+async fn get_attachment(
+    State(s): State<AppState>,
+    UrlPath(name): UrlPath<String>,
+) -> ApiResult<Response> {
+    if !crate::images::valid_name(&name) {
+        return Err(ApiError::NotFound("picture"));
+    }
+    let path = crate::images::dir(&s.data_dir).join(&name);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::NotFound("picture"))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, crate::images::mime(&name)),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn get_mockup(
     State(s): State<AppState>,
     UrlPath(id): UrlPath<String>,
@@ -1198,7 +1251,10 @@ async fn get_mockup(
 }
 
 async fn model_status(State(s): State<AppState>) -> Json<Value> {
-    Json(serde_json::to_value(s.model.status()).unwrap_or(Value::Null))
+    let mut v = serde_json::to_value(s.model.status()).unwrap_or(Value::Null);
+    let path = s.cfg.read(|l| l.config.llama.model_path.clone());
+    v["vision"] = json!(crate::images::mmproj_for(Path::new(&path)).is_some());
+    Json(v)
 }
 
 async fn model_restart(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -1618,7 +1674,11 @@ async fn list_messages(
 
 #[derive(Deserialize)]
 struct Prompt {
+    #[serde(default)]
     content: String,
+    /// Pictures as data URLs.
+    #[serde(default)]
+    images: Vec<String>,
 }
 
 async fn send_prompt(
@@ -1626,7 +1686,7 @@ async fn send_prompt(
     UrlPath(id): UrlPath<String>,
     JsonBody(body): JsonBody<Prompt>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let message = s.agent.start(&id, body.content).await?;
+    let message = s.agent.start(&id, body.content, body.images).await?;
     // Carrying on with an archived chat brings it back to the lists.
     let sid = id.clone();
     s.db.call(move |c| db::set_session_archived(c, &sid, false))

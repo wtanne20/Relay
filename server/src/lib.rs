@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod hub;
+pub mod images;
 pub mod libraries;
 pub mod migrate;
 pub mod mockup;
@@ -56,7 +57,13 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     let shared = SharedConfig::new(cfg);
     let model = ModelManager::start(shared.clone(), hardware.clone());
     let pusher = Pusher::new(db.clone(), shared.clone());
-    let agent = agent::AgentManager::new(db.clone(), model.clone(), shared.clone(), pusher.clone());
+    let agent = agent::AgentManager::new(
+        db.clone(),
+        model.clone(),
+        shared.clone(),
+        pusher.clone(),
+        images::dir(&data_dir),
+    );
     let state: AppState = Arc::new(AppInner {
         cfg: shared,
         hardware,

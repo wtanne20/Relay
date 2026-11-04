@@ -60,9 +60,22 @@ pub fn system_section(summary: &Message, history: &[Message], kept: &[&Message])
 }
 
 /// Size of a request in bytes of JSON, which is what the estimate scales.
+/// Pictures count as this many bytes, whatever their size: the model sees
+/// them as a fixed number of tiles, not as their base64 text.
+pub const PICTURE_BYTES: usize = 6000;
+
 pub fn prompt_bytes(body: &Value) -> usize {
     let len = |v: &Value| serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
-    len(&body["messages"]) + body.get("tools").map(len).unwrap_or(0)
+    let pictures: usize = body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .filter_map(|p| p.pointer("/image_url/url").and_then(Value::as_str))
+        .map(|u| u.len().saturating_sub(PICTURE_BYTES))
+        .sum();
+    (len(&body["messages"]) + body.get("tools").map(len).unwrap_or(0)).saturating_sub(pictures)
 }
 
 /// Where to split `rest` so the kept part fits in `keep_bytes`: the start of
@@ -101,6 +114,12 @@ fn message_bytes(m: &Message) -> usize {
 /// summary needs what happened, not every byte of a file.
 pub fn render(m: &Message) -> String {
     match m.role.as_str() {
+        "user" if !m.images.is_empty() => format!(
+            "USER (attached {} picture{}):\n{}\n",
+            m.images.len(),
+            if m.images.len() == 1 { "" } else { "s" },
+            cut(&m.content, 6000)
+        ),
         "user" => format!("USER:\n{}\n", cut(&m.content, 6000)),
         "assistant" => {
             let mut s = String::from("AGENT:\n");
@@ -210,6 +229,7 @@ mod tests {
             is_error: false,
             created_at: String::new(),
             covers_upto: None,
+            images: vec![],
         }
     }
 

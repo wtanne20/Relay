@@ -279,10 +279,17 @@ export class RelayClient {
       `/sessions/${encodeURIComponent(id)}/messages?${q.toString()}`,
     );
   }
-  sendPrompt(id: string, content: string) {
-    return this.request<{ message: Message; status: string }>('POST', `/sessions/${encodeURIComponent(id)}/prompt`, {
-      content,
-    });
+  sendPrompt(id: string, content: string, images: string[] = []) {
+    return this.request<{ message: Message; status: string }>(
+      'POST',
+      `/sessions/${encodeURIComponent(id)}/prompt`,
+      { content, images },
+      images.length ? 120000 : undefined,
+    );
+  }
+  /** A picture attached to a message (needs the token). */
+  attachmentUrl(name: string): string {
+    return `${this.creds.url}/attachments/${encodeURIComponent(name)}`;
   }
   stop(id: string) {
     return this.request<{ stopping: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/stop`, {});

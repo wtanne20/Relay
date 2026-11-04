@@ -2,7 +2,7 @@
 //! bounded auto-restart, logging, and clean shutdown.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -470,6 +470,16 @@ impl Supervisor {
             self.cfg.port.to_string(),
         ];
         args.extend(sanitize_args(&self.cfg.server_args()));
+        // A vision file next to the model lets it read pictures.
+        if !args
+            .iter()
+            .any(|a| a.starts_with("--mmproj") || a == "--no-mmproj" || a == "-mm")
+            && let Some(p) = crate::images::mmproj_for(Path::new(&self.cfg.model_path))
+        {
+            tracing::info!("vision file: {}", p.display());
+            args.push("--mmproj".into());
+            args.push(p.to_string_lossy().into_owned());
+        }
 
         tokio::fs::create_dir_all(&self.logs_dir).await?;
         let log_path = self.logs_dir.join("llama-server.log");

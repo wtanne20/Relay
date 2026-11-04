@@ -176,7 +176,47 @@ pub fn group_files(tree: &[Value]) -> Vec<GgufFile> {
     singles
 }
 
+/// The repository's vision file (mmproj), if it has one: F16 first, then
+/// BF16, then the smallest other.
+pub fn pick_projector(tree: &[Value]) -> Option<GgufFile> {
+    tree.iter()
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("file"))
+        .filter_map(|e| {
+            let path = e.get("path").and_then(Value::as_str)?;
+            let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+            if !name.starts_with("mmproj") || !name.ends_with(".gguf") || !valid_file(path) {
+                return None;
+            }
+            let size = e
+                .get("lfs")
+                .and_then(|l| l.get("size"))
+                .or_else(|| e.get("size"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let rank = if name.contains("bf16") {
+                1
+            } else if name.contains("f16") {
+                0
+            } else {
+                2
+            };
+            Some((rank, size, path.to_string()))
+        })
+        .min()
+        .map(|(_, size, path)| GgufFile {
+            quant: quant_of(&path),
+            parts: vec![path.clone()],
+            file: path,
+            size_bytes: size,
+        })
+}
+
 pub async fn files(repo: &str) -> Result<Vec<GgufFile>> {
+    Ok(files_and_projector(repo).await?.0)
+}
+
+/// The repository's models, and its vision file if any.
+pub async fn files_and_projector(repo: &str) -> Result<(Vec<GgufFile>, Option<GgufFile>)> {
     if !valid_repo(repo) {
         bail!("not a Hugging Face repository name: {repo}");
     }
@@ -188,9 +228,8 @@ pub async fn files(repo: &str) -> Result<Vec<GgufFile>> {
         .error_for_status()?
         .json()
         .await?;
-    Ok(group_files(
-        tree.as_array().map(Vec::as_slice).unwrap_or_default(),
-    ))
+    let tree = tree.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok((group_files(tree), pick_projector(tree)))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -844,6 +883,9 @@ mod tests {
             json!({"type": "file", "path": "BF16/m-BF16-00002-of-00002.gguf", "lfs": {"size": 700}}),
             json!({"type": "file", "path": "BF16/m-BF16-00001-of-00002.gguf", "lfs": {"size": 900}}),
         ];
+        let p = pick_projector(&tree).expect("vision file");
+        assert_eq!((p.file.as_str(), p.size_bytes), ("mmproj-F16.gguf", 50));
+        assert!(pick_projector(&tree[..3]).is_none());
         let g = group_files(&tree);
         assert_eq!(g.len(), 3);
         assert_eq!(g[0].file, "m-Q4_K_M.gguf");

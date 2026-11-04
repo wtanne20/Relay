@@ -142,6 +142,8 @@ pub struct AgentManager {
     cfg: Arc<SharedConfig>,
     http: reqwest::Client,
     pusher: Pusher,
+    /// Where pictures attached to prompts are kept.
+    attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     running: Mutex<HashMap<String, RunningTask>>,
 }
@@ -156,7 +158,13 @@ enum LoopEnd {
 }
 
 impl AgentManager {
-    pub fn new(db: Db, model: ModelManager, cfg: Arc<SharedConfig>, pusher: Pusher) -> Arc<Self> {
+    pub fn new(
+        db: Db,
+        model: ModelManager,
+        cfg: Arc<SharedConfig>,
+        pusher: Pusher,
+        attachments: PathBuf,
+    ) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
@@ -167,6 +175,7 @@ impl AgentManager {
             cfg,
             http,
             pusher,
+            attachments,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
         })
@@ -250,15 +259,22 @@ impl AgentManager {
         lock(&self.channels).remove(session_id);
     }
 
-    /// Stores the prompt and starts a background task. Returns the stored
-    /// user message.
+    /// Stores the prompt (and any pictures, as data URLs) and starts a
+    /// background task. Returns the stored user message.
     pub async fn start(
         self: &Arc<Self>,
         session_id: &str,
         prompt: String,
+        images: Vec<String>,
     ) -> Result<Message, StartError> {
-        if prompt.trim().is_empty() {
+        if prompt.trim().is_empty() && images.is_empty() {
             return Err(StartError::Invalid("prompt is empty".into()));
+        }
+        if images.len() > crate::images::MAX_PER_PROMPT {
+            return Err(StartError::Invalid(format!(
+                "attach at most {} pictures at a time",
+                crate::images::MAX_PER_PROMPT
+            )));
         }
         let sid = session_id.to_string();
         let found = self
@@ -279,6 +295,32 @@ impl AgentManager {
             .clone()
             .or_else(|| project.model.clone())
             .filter(|m| !m.trim().is_empty());
+
+        if !images.is_empty() && !self.model.status().external {
+            let target = wanted
+                .clone()
+                .unwrap_or_else(|| self.cfg.get().llama.model_path);
+            if crate::images::mmproj_for(Path::new(&target)).is_none() {
+                return Err(StartError::Invalid(format!(
+                    "{} can't see pictures. Switch this chat to a model with vision, or send the message without the picture",
+                    file_name(&target)
+                )));
+            }
+        }
+        let names = if images.is_empty() {
+            Vec::new()
+        } else {
+            let dir = self.attachments.clone();
+            tokio::task::spawn_blocking(move || {
+                images
+                    .iter()
+                    .map(|d| crate::images::save(&dir, d))
+                    .collect::<Result<Vec<String>>>()
+            })
+            .await
+            .map_err(|e| anyhow!("saving pictures failed: {e}"))?
+            .map_err(|e| StartError::Invalid(format!("{e:#}")))?
+        };
 
         let cancel = CancellationToken::new();
         let draft = Arc::new(Mutex::new(Draft::default()));
@@ -328,6 +370,7 @@ impl AgentManager {
                     &NewMessage {
                         role: "user".into(),
                         content: prompt,
+                        images: names,
                         ..Default::default()
                     },
                 )?;
@@ -520,6 +563,7 @@ impl AgentManager {
 
         let mut step = 0;
         let mut retried = false;
+        let mut pictures: HashMap<String, String> = HashMap::new();
         while step < conf.agent.max_steps {
             if cancel.is_cancelled() {
                 return Ok(LoopEnd::Stopped);
@@ -530,7 +574,8 @@ impl AgentManager {
 
             let sid = session.id.clone();
             let mut history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
-            let mut body = request_body(&conf, &system, &history, &tool_defs);
+            self.load_pictures(&history, &mut pictures).await;
+            let mut body = request_body(&conf, &system, &history, &tool_defs, &pictures);
             let mut bytes = compact::prompt_bytes(&body);
             let reserve = if conf.sampling.max_tokens > 0 {
                 u64::from(conf.sampling.max_tokens)
@@ -553,7 +598,7 @@ impl AgentManager {
                 {
                     let sid = session.id.clone();
                     history = self.db.call(move |c| db::all_messages(c, &sid)).await?;
-                    body = request_body(&conf, &system, &history, &tool_defs);
+                    body = request_body(&conf, &system, &history, &tool_defs, &pictures);
                     bytes = compact::prompt_bytes(&body);
                 }
                 if cancel.is_cancelled() {
@@ -931,6 +976,30 @@ impl AgentManager {
         compact::clean_summary(raw).ok_or_else(|| anyhow!("the model wrote an empty summary"))
     }
 
+    /// Reads the pictures the model will see that aren't loaded yet.
+    async fn load_pictures(&self, history: &[Message], cache: &mut HashMap<String, String>) {
+        let (_, kept) = compact::view(history);
+        let wanted: Vec<String> = kept
+            .iter()
+            .flat_map(|m| m.images.iter())
+            .filter(|n| !cache.contains_key(*n))
+            .cloned()
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let dir = self.attachments.clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            wanted
+                .into_iter()
+                .filter_map(|n| crate::images::data_url(&dir, &n).map(|u| (n, u)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        cache.extend(loaded);
+    }
+
     async fn save(&self, session_id: &str, m: NewMessage) -> Result<Message> {
         let sid = session_id.to_string();
         self.db.call(move |c| db::insert_message(c, &sid, &m)).await
@@ -1080,11 +1149,17 @@ pub fn needs_approval(mode: ApprovalMode, tool: &str) -> bool {
 
 /// The chat completion request: history, tools and the current sampling
 /// settings (applied per request, so changes need no restart).
-pub fn request_body(conf: &Config, system: &str, history: &[Message], tool_defs: &Value) -> Value {
+pub fn request_body(
+    conf: &Config,
+    system: &str,
+    history: &[Message],
+    tool_defs: &Value,
+    pictures: &HashMap<String, String>,
+) -> Value {
     let s = &conf.sampling;
     let mut body = json!({
         "model": conf.llama.model_name,
-        "messages": to_openai_messages(system, history),
+        "messages": to_openai_messages(system, history, pictures),
         "stream": true,
         "temperature": s.temperature,
         "top_p": s.top_p,
@@ -1169,7 +1244,11 @@ pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a desig
 /// Converts stored history to OpenAI chat messages. Tool calls without a
 /// stored result (e.g. after a crash) get a synthetic result so the request
 /// stays well-formed.
-pub fn to_openai_messages(system: &str, history: &[Message]) -> Vec<Value> {
+pub fn to_openai_messages(
+    system: &str,
+    history: &[Message],
+    pictures: &HashMap<String, String>,
+) -> Vec<Value> {
     let (summary, kept) = compact::view(history);
     let mut system = system.to_string();
     if let Some(s) = summary {
@@ -1219,12 +1298,33 @@ pub fn to_openai_messages(system: &str, history: &[Message]) -> Vec<Value> {
             }
             _ => {
                 flush(&mut pending, &mut out);
-                out.push(json!({"role": "user", "content": m.content}));
+                out.push(json!({"role": "user", "content": user_content(m, pictures)}));
             }
         }
     }
     flush(&mut pending, &mut out);
     out
+}
+
+/// A user message's text, plus its pictures as image parts.
+fn user_content(m: &Message, pictures: &HashMap<String, String>) -> Value {
+    if m.images.is_empty() {
+        return json!(m.content);
+    }
+    let text = if m.content.trim().is_empty() {
+        "(see the attached picture)".to_string()
+    } else {
+        m.content.clone()
+    };
+    let mut parts = vec![json!({"type": "text", "text": text})];
+    for name in &m.images {
+        match pictures.get(name) {
+            Some(url) => parts.push(json!({"type": "image_url", "image_url": {"url": url}})),
+            None => parts
+                .push(json!({"type": "text", "text": "[a picture that is no longer on the PC]"})),
+        }
+    }
+    Value::Array(parts)
 }
 
 #[cfg(test)]
@@ -1245,6 +1345,7 @@ mod tests {
             is_error: false,
             created_at: String::new(),
             covers_upto: None,
+            images: vec![],
         }
     }
 
@@ -1281,7 +1382,7 @@ mod tests {
         conf.sampling.temperature = 0.1;
         conf.sampling.max_tokens = 512;
         conf.agent.thinking = false;
-        let body = request_body(&conf, "sys", &[], &json!([]));
+        let body = request_body(&conf, "sys", &[], &json!([]), &HashMap::new());
         assert_eq!(body["temperature"], 0.1);
         assert_eq!(body["max_tokens"], 512);
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
@@ -1316,7 +1417,7 @@ mod tests {
         let mut t = msg("tool", "ok");
         t.tool_call_id = Some("1".into());
         let h = vec![msg("user", "hi"), a, t, msg("user", "again")];
-        let out = to_openai_messages("sys", &h);
+        let out = to_openai_messages("sys", &h, &HashMap::new());
         let roles: Vec<&str> = out
             .iter()
             .map(|m| m["role"].as_str().unwrap_or(""))

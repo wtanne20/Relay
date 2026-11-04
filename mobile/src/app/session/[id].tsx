@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssistantTurn, CompactingRow, noteStart, SummaryDivider, UserBubble } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { AttachButtons, AttachmentStrip, useAttachments } from '../../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
@@ -42,6 +43,7 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const pics = useAttachments();
   const [session, setSession] = useState<Session | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
@@ -114,14 +116,19 @@ export default function ChatScreen() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || sending) return;
+    if ((!text && !pics.items.length) || sending) return;
     setSending(true);
     setSendError(null);
     try {
-      const res = await client.sendPrompt(id, text);
+      const res = await client.sendPrompt(
+        id,
+        text,
+        pics.items.map((a) => a.dataUrl),
+      );
       stream.applyMessages([res.message]);
       stream.markRunning();
       setInput('');
+      pics.clear();
       if (stream.link !== 'live') stream.reconnect();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && /another chat/i.test(e.message)) {
@@ -149,7 +156,7 @@ export default function ChatScreen() {
 
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
-  const canSend = !!input.trim() && !sending;
+  const canSend = (!!input.trim() || pics.items.length > 0) && !sending;
 
   return (
     <View style={[styles.flex, { paddingTop: insets.top }]}>
@@ -238,6 +245,7 @@ export default function ChatScreen() {
           ) : null}
           {stream.status === 'error' && stream.taskError ? <Banner message={stream.taskError} /> : null}
           {sendError ? <Banner message={sendError} actionLabel="Dismiss" onAction={() => setSendError(null)} /> : null}
+          {pics.error ? <Banner kind="warning" message={pics.error} actionLabel="Dismiss" onAction={() => pics.setError(null)} /> : null}
           {stream.approval ? (
             <ApprovalCard
               key={stream.approval.tool_call_id}
@@ -258,6 +266,7 @@ export default function ChatScreen() {
 
           <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, wide ? space.lg : space.sm) }]}>
             <View style={styles.composer}>
+              <AttachmentStrip items={pics.items} onRemove={pics.remove} />
               <TextInput
                 style={styles.input}
                 value={input}
@@ -284,6 +293,7 @@ export default function ChatScreen() {
               />
               <View style={styles.composerRow}>
                 <View style={styles.composerHint}>
+                  <AttachButtons onPick={pics.pick} disabled={sending} />
                   <ModelChip
                     model={session?.model}
                     fallback={project?.model ?? loaded}

@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { toolDetails, toolSummary } from '../lib/format';
 import type { Message, ToolCall } from '../lib/types';
+import { MessagePicture } from './Attachments';
 import { Markdown } from './Markdown';
 import { m3, mono as monoFont, radius, space, type } from './theme';
 import { Icon, type IconName } from './ui';
@@ -20,13 +21,23 @@ const TOOL_ICON: Record<string, IconName> = {
 };
 
 export function UserBubble({ message }: { message: Message }) {
+  const pictures = message.images ?? [];
   return (
     <View style={styles.userRow}>
-      <View style={styles.userBubble}>
-        <Text selectable style={styles.userText}>
-          {message.content}
-        </Text>
-      </View>
+      {pictures.length ? (
+        <View style={styles.userPictures}>
+          {pictures.map((p) => (
+            <MessagePicture key={p} name={p} />
+          ))}
+        </View>
+      ) : null}
+      {message.content.trim() ? (
+        <View style={styles.userBubble}>
+          <Text selectable style={styles.userText}>
+            {message.content}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -396,6 +407,7 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
   },
   userText: { ...type.bodyLarge, color: m3.onSurface },
+  userPictures: { alignItems: 'flex-end', gap: space.sm, marginBottom: space.sm, alignSelf: 'stretch' },
   assistant: { marginVertical: space.md, gap: space.sm },
   reasoning: { paddingVertical: 4 },
   thoughtText: { ...type.bodyMedium, color: m3.onSurfaceVariant, fontStyle: 'italic' },

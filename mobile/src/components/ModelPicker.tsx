@@ -152,6 +152,12 @@ export function ModelSheet({
             modelLabel(m.path),
             <View style={styles.meta}>
               <Text style={type.bodySmall}>{formatBytes(m.size_bytes)}</Text>
+              {m.vision ? (
+                <View style={styles.vision} accessibilityLabel="Can read pictures">
+                  <Icon name="eye-outline" size={14} color={m3.primary} />
+                  <Text style={[type.bodySmall, { color: m3.primary }]}>Vision</Text>
+                </View>
+              ) : null}
               <TagChips tags={m.tags ?? []} muted={!m.custom_tags} />
             </View>,
             () => pick(m.path),
@@ -163,6 +169,7 @@ export function ModelSheet({
 }
 
 const styles = StyleSheet.create({
+  vision: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   grow: { flex: 1, minWidth: 0, gap: 2 },
   chip: {
     flexDirection: 'row',
