@@ -13,6 +13,8 @@ export interface ModelStatus {
   progress?: number | null;
   /** The loaded model has a vision file and can read pictures. */
   vision?: boolean;
+  /** The model chats use when they don't pick one (may differ from the loaded one). */
+  default_model?: string;
 }
 
 export interface GpuInfo {

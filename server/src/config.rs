@@ -159,8 +159,14 @@ pub struct LlamaConfig {
     /// Path to llama-server.exe (or the llama.cpp folder that contains it).
     /// Empty = find or download it automatically.
     pub llama_server_path: String,
-    /// Path to the GGUF model file. Empty = pick one automatically.
+    /// Path to the GGUF model file that is loaded. Empty = pick one
+    /// automatically.
     pub model_path: String,
+    /// The model chats and projects use when they don't pick their own (the
+    /// one chosen in Settings). Empty = whatever `model_path` is. A chat with
+    /// its own model loads it without changing this.
+    #[serde(default)]
+    pub default_model: String,
     /// Extra folders to look for GGUF models in (<data>/models is always
     /// searched). Relay never looks in other apps' folders on its own.
     pub models_dirs: Vec<String>,
@@ -222,6 +228,7 @@ impl Default for LlamaConfig {
         Self {
             llama_server_path: String::new(),
             model_path: String::new(),
+            default_model: String::new(),
             models_dirs: Vec::new(),
             port: 8080,
             context_size: 65536,
@@ -244,6 +251,26 @@ impl Default for PushConfig {
 }
 
 impl LlamaConfig {
+    /// The model for chats that don't pick one.
+    pub fn default_model(&self) -> &str {
+        if self.default_model.trim().is_empty() {
+            &self.model_path
+        } else {
+            &self.default_model
+        }
+    }
+
+    /// Points both the loaded and the default model at a moved file.
+    pub fn model_moved(&mut self, old: &str, new: &str) {
+        let same = |a: &str| crate::libraries::same_path(Path::new(a), Path::new(old));
+        if same(&self.model_path) {
+            self.model_path = new.to_string();
+        }
+        if !self.default_model.is_empty() && same(&self.default_model) {
+            self.default_model = new.to_string();
+        }
+    }
+
     /// Resolves the llama-server executable. Accepts either the exe itself or
     /// the folder that contains it.
     pub fn executable(&self) -> PathBuf {
@@ -588,6 +615,20 @@ Guidelines:
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn default_model_follows_moves() {
+        let mut l = LlamaConfig {
+            model_path: "C:/m/qwen.gguf".into(),
+            ..Default::default()
+        };
+        assert_eq!(l.default_model(), "C:/m/qwen.gguf");
+        l.default_model = "C:/m/laguna.gguf".into();
+        l.model_moved("C:/m/laguna.gguf", "W:/m/laguna.gguf");
+        assert_eq!(l.default_model(), "W:/m/laguna.gguf");
+        assert_eq!(l.model_path, "C:/m/qwen.gguf");
+    }
+
     use super::*;
 
     #[test]

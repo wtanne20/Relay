@@ -290,10 +290,15 @@ impl AgentManager {
         let Some((session, project)) = found else {
             return Err(StartError::NotFound);
         };
+        // The chat's model, else the project's, else the default one (which
+        // may not be the loaded one after another chat switched).
         let wanted = session
             .model
             .clone()
+            .filter(|m| !m.trim().is_empty())
             .or_else(|| project.model.clone())
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| Some(self.cfg.get().llama.default_model().to_string()))
             .filter(|m| !m.trim().is_empty());
 
         if !images.is_empty() && !self.model.status().external {

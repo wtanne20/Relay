@@ -40,7 +40,7 @@ export default function SessionsScreen() {
       .catch(() => undefined);
     client
       .model()
-      .then((m) => setLoaded(m.model_path || null))
+      .then((m) => setLoaded(m.default_model || m.model_path || null))
       .catch(() => undefined);
   }, [client, id]);
   const [, setTick] = useState(0);
@@ -226,7 +226,7 @@ export default function SessionsScreen() {
         visible={picking}
         onClose={() => setPicking(false)}
         value={project?.model}
-        defaultTitle="Whichever model is loaded"
+        defaultTitle="The default model"
         defaultBody={loaded ? `Now: ${modelLabel(loaded)}` : 'The model chosen in Settings'}
         onPick={async (path) => setProject(await client.updateProject(id, { model: path }))}
       />

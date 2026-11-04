@@ -436,8 +436,12 @@ async fn patch_settings(
         projects_folder: String,
         models_folder: String,
     }
-    let next: Sections = serde_json::from_value(view)
+    let mut next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
+    // Picking a model in Settings makes it the default for chats too.
+    if next.llama.model_path != current.llama.model_path {
+        next.llama.default_model = next.llama.model_path.clone();
+    }
     if next.llama.model_path != current.llama.model_path && !next.llama.model_path.trim().is_empty()
     {
         let p = Path::new(next.llama.model_path.trim());
@@ -1035,8 +1039,8 @@ async fn move_model(
             while st.agent.any_running() {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
-            let path = new.clone();
-            match st.cfg.update(move |c| c.llama.model_path = path) {
+            let (o, n) = (old.clone(), new.clone());
+            match st.cfg.update(move |c| c.llama.model_moved(&o, &n)) {
                 Ok(_) => st.model.switch_to(&new).await,
                 Err(e) => {
                     tracing::warn!("could not switch to the moved model: {e:#}");
@@ -1141,8 +1145,8 @@ async fn import_model(
         if !in_use(&st) {
             return;
         }
-        let path = new.clone();
-        match st.cfg.update(move |c| c.llama.model_path = path) {
+        let (o, n) = (old.clone(), new.clone());
+        match st.cfg.update(move |c| c.llama.model_moved(&o, &n)) {
             Ok(_) => {
                 tracing::info!("switched to Relay's own copy of the model: {new}");
                 st.model.switch_to(&new).await;
@@ -1296,8 +1300,14 @@ async fn get_mockup(
 
 async fn model_status(State(s): State<AppState>) -> Json<Value> {
     let mut v = serde_json::to_value(s.model.status()).unwrap_or(Value::Null);
-    let path = s.cfg.read(|l| l.config.llama.model_path.clone());
+    let (path, default) = s.cfg.read(|l| {
+        (
+            l.config.llama.model_path.clone(),
+            l.config.llama.default_model().to_string(),
+        )
+    });
     v["vision"] = json!(crate::images::mmproj_for(Path::new(&path)).is_some());
+    v["default_model"] = json!(default);
     Json(v)
 }
 

@@ -64,7 +64,7 @@ export default function ChatScreen() {
       .catch(() => undefined);
     client
       .model()
-      .then((m) => setLoaded(m.model_path || null))
+      .then((m) => setLoaded(m.default_model || m.model_path || null))
       .catch(() => undefined);
   }, [client, id]);
 
@@ -343,7 +343,7 @@ export default function ChatScreen() {
         visible={picking}
         onClose={() => setPicking(false)}
         value={session?.model}
-        defaultTitle={project?.model && !plain ? 'Same as the project' : 'Whichever model is loaded'}
+        defaultTitle={project?.model && !plain ? 'Same as the project' : 'The default model'}
         defaultBody={
           project?.model
             ? `${plain ? 'Your default for chats' : project.name}: ${modelLabel(project.model)}`

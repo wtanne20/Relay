@@ -92,7 +92,7 @@ export default function Home() {
       ]);
       setProjects(ps);
       setChats(cs);
-      setLoaded(m?.model_path || null);
+      setLoaded(m?.default_model || m?.model_path || null);
       setTarget((cur) => (cur === CHATS_ID || ps.some((p) => p.id === cur) ? cur : CHATS_ID));
       setError(null);
     } catch (e) {
@@ -597,7 +597,7 @@ export default function Home() {
         visible={pickingModel}
         onClose={() => setPickingModel(false)}
         value={model}
-        defaultTitle={project?.model ? 'Same as the project' : 'Whichever model is loaded'}
+        defaultTitle={project?.model ? 'Same as the project' : 'The default model'}
         defaultBody={
           project?.model
             ? `${project.name}: ${modelLabel(project.model)}`
