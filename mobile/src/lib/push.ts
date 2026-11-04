@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 
 import type { RelayClient } from './api';
 import { loadPushPrefs, savePushPrefs } from './storage';
+import { setWatchEnabled, watchAvailable } from './watch';
 
 /** Show notifications while the app is open too. */
 export function configureNotificationHandler() {
@@ -18,9 +19,12 @@ export function configureNotificationHandler() {
   });
 }
 
-/** Whether this build can get push tokens (it needs an Expo project id). */
+/**
+ * Whether this phone can show task notifications: real push (with an Expo
+ * project id) or the background watcher.
+ */
 export function pushSupported(): boolean {
-  return !!projectId();
+  return !!projectId() || watchAvailable;
 }
 
 function projectId(): string | undefined {
@@ -52,6 +56,12 @@ export async function enablePush(client: RelayClient): Promise<string> {
     throw new Error('Notifications are turned off for Relay in your phone settings.');
   }
   const pid = projectId();
+  if (!pid && watchAvailable) {
+    // No push service: the phone watches running chats itself.
+    await savePushPrefs({ enabled: true, token: null });
+    setWatchEnabled(true);
+    return 'local';
+  }
   if (!pid) {
     throw new Error(
       "Notifications aren't set up for this version of the app yet.",
@@ -81,6 +91,7 @@ export async function disablePush(client: RelayClient | null): Promise<void> {
     }
   }
   await savePushPrefs({ enabled: false, token: prefs.token });
+  setWatchEnabled(false);
 }
 
 /** Re-registers on launch if the user has push turned on (tokens can change). */
@@ -89,6 +100,7 @@ export async function refreshPushRegistration(client: RelayClient): Promise<void
   if (!prefs.enabled) return;
   const perm = await Notifications.getPermissionsAsync();
   if (!perm.granted && prefs.token === null) return; // never set up; don't prompt on launch
+  if (watchAvailable) return; // nothing to register
   try {
     await enablePush(client);
   } catch {

@@ -26,6 +26,7 @@ import { desktop, isDesktop } from '../lib/desktop';
 import { usePageStyle } from '../lib/layout';
 import { formatDuration } from '../lib/format';
 import { disablePush, enablePush, pushSupported } from '../lib/push';
+import { watchAvailable } from '../lib/watch';
 import { loadPushPrefs } from '../lib/storage';
 import type { ServerInfo } from '../lib/types';
 
@@ -240,7 +241,7 @@ export default function SettingsScreen() {
   );
 
   useEffect(() => {
-    loadPushPrefs().then((p) => setPush(p.enabled && p.token !== null));
+    loadPushPrefs().then((p) => setPush(p.enabled && (p.token !== null || watchAvailable)));
   }, []);
 
   useEffect(() => {
@@ -395,7 +396,11 @@ export default function SettingsScreen() {
             <ToggleRow
               icon="bell-outline"
               label="Notifications on this phone"
-              hint="When a task ends or needs your approval. Only the project name, chat title and status are sent."
+              hint={
+                watchAvailable
+                  ? 'When a chat finishes or needs your approval, even with Relay closed. While a chat works, Android shows a small "working" notification. Only the project name, chat title and status are shown.'
+                  : 'When a task ends or needs your approval. Only the project name, chat title and status are sent.'
+              }
               value={push}
               onChange={togglePush}
               disabled={pushBusy || !pushSupported()}
@@ -409,7 +414,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
             ) : null}
-            {info && !info.push_enabled ? (
+            {info && !info.push_enabled && !watchAvailable ? (
               <View style={styles.note}>
                 <Icon name="alert-outline" size={18} color={m3.warning} />
                 <Text style={[type.bodyMedium, styles.grow]}>

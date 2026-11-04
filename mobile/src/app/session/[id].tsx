@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   KeyboardAvoidingView,
   type LayoutChangeEvent,
@@ -28,6 +29,7 @@ import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
 import { emit } from '../../lib/events';
 import { CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
+import { setViewing, watchChat } from '../../lib/watch';
 
 type Item =
   | { key: string; kind: 'user'; message: Message }
@@ -157,6 +159,20 @@ export default function ChatScreen() {
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
   const canSend = (!!input.trim() || pics.items.length > 0) && !sending;
+
+  // Keep an eye on this chat in the background while it works (Android
+  // without a push service), and don't notify about the chat on screen.
+  useEffect(() => {
+    if (running && client) watchChat(client, id);
+  }, [running, client, id]);
+  useEffect(() => {
+    setViewing(AppState.currentState === 'active' ? id : null);
+    const sub = AppState.addEventListener('change', (st) => setViewing(st === 'active' ? id : null));
+    return () => {
+      sub.remove();
+      setViewing(null);
+    };
+  }, [id]);
 
   // Scrolling while the agent writes. The list is inverted, so offset 0 is
   // the bottom: at the bottom, new text pushes older text up and the view

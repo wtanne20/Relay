@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.relaywatch'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.relaywatch"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  implementation "androidx.core:core-ktx:1.13.1"
+  implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}
