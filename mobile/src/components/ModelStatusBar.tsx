@@ -13,13 +13,17 @@ export function ModelStatusBar({
   client,
   active,
   onPress,
+  controls,
 }: {
   client: RelayClient | null;
   active: boolean;
   onPress?: () => void;
+  /** Show a Load or Unload button. */
+  controls?: boolean;
 }) {
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const poll = useCallback(async () => {
@@ -63,11 +67,15 @@ export function ModelStatusBar({
       icon = 'check-circle-outline';
       title = 'Selected model';
       detail = name;
+    } else if (status.state === 'idle') {
+      icon = 'power-sleep';
+      title = 'Model unloaded';
+      detail = `${name} loads when you open a chat`;
     } else if (status.state === 'starting') {
       tone = { bg: m3.primaryContainer, fg: m3.onPrimaryContainer };
       busy = true;
       title = status.progress != null ? 'Setting up' : 'Loading model';
-      detail = status.message ?? name;
+      detail = status.message && status.message !== 'Loading model' ? status.message : name;
     } else {
       tone = { bg: m3.errorContainer, fg: m3.onErrorContainer };
       icon = 'alert-circle-outline';
@@ -76,15 +84,31 @@ export function ModelStatusBar({
     }
   }
   const progress = status?.state === 'starting' && status.progress != null ? status.progress : null;
+  const action =
+    controls && client && !error && status
+      ? status.state === 'idle'
+        ? { label: 'Load', run: () => client.loadModel() }
+        : status.state === 'ready' && !status.external
+          ? { label: 'Unload', run: () => client.unloadModel() }
+          : null
+      : null;
+  const act = async () => {
+    if (!action) return;
+    setActing(true);
+    try {
+      await action.run();
+      // The state changes a moment later.
+      await new Promise((r) => setTimeout(r, 600));
+      await poll();
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setActing(false);
+    }
+  };
 
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={!onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`${title}. ${detail ?? ''}`}
-      style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
-    >
+  const body = (
+    <>
       <View style={styles.row}>
         <View style={[styles.iconWrap, { backgroundColor: tone.bg }]}>
           {busy ? <ActivityIndicator size="small" color={tone.fg} /> : <Icon name={icon} size={22} color={tone.fg} />}
@@ -97,6 +121,17 @@ export function ModelStatusBar({
             </Text>
           ) : null}
         </View>
+        {action ? (
+          <Pressable
+            onPress={act}
+            disabled={acting}
+            accessibilityRole="button"
+            accessibilityLabel={`${action.label} model`}
+            style={({ pressed }) => [styles.action, (pressed || acting) && { opacity: 0.6 }]}
+          >
+            <Text style={[type.labelLarge, { color: m3.primary }]}>{action.label}</Text>
+          </Pressable>
+        ) : null}
         {onPress ? <Icon name="chevron-right" color={m3.outline} /> : null}
       </View>
       {progress !== null ? (
@@ -104,6 +139,24 @@ export function ModelStatusBar({
           <View style={[styles.fill, { width: `${Math.round(progress * 100)}%` }]} />
         </View>
       ) : null}
+    </>
+  );
+  // A card with its own button can't be a button too.
+  if (!onPress) {
+    return (
+      <View style={styles.card} accessibilityLabel={`${title}. ${detail ?? ''}`}>
+        {body}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${detail ?? ''}`}
+      style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
+    >
+      {body}
     </Pressable>
   );
 }
@@ -126,4 +179,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   fill: { height: 4, backgroundColor: m3.primary, borderRadius: 2 },
+  action: {
+    paddingHorizontal: space.lg,
+    minHeight: 40,
+    justifyContent: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+  },
 });

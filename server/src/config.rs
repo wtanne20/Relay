@@ -189,6 +189,9 @@ pub struct LlamaConfig {
     pub model_name: String,
     /// Download llama.cpp and pick a model automatically when not configured.
     pub auto_setup: bool,
+    /// Unload the model after this many minutes without use, freeing the
+    /// GPU; it loads again when a chat is opened. 0 keeps it loaded.
+    pub idle_unload_minutes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +243,7 @@ impl Default for LlamaConfig {
             health_timeout_seconds: 600,
             model_name: "local".into(),
             auto_setup: true,
+            idle_unload_minutes: 15,
         }
     }
 }

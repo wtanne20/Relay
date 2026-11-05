@@ -88,6 +88,15 @@ export function CompactingRow() {
   );
 }
 
+export function LoadingModelRow() {
+  return (
+    <View style={[styles.summaryRow, styles.summary]}>
+      <ActivityIndicator size="small" color={m3.primary} />
+      <Text style={styles.summaryLabel}>Loading the model, this takes a few seconds…</Text>
+    </View>
+  );
+}
+
 /**
  * A short status from the model's thinking so far: its latest complete
  * sentence (or line), trimmed. Shown on one line while it works, so the

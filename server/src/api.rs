@@ -167,6 +167,8 @@ pub fn router(state: AppState) -> Router {
         .route("/pairing", get(pairing))
         .route("/model", get(model_status))
         .route("/model/restart", post(model_restart))
+        .route("/model/load", post(model_load))
+        .route("/model/unload", post(model_unload))
         .route("/models", get(list_models))
         .route("/models/tags", axum::routing::put(set_model_tags))
         .route("/models/import", post(import_model))
@@ -481,7 +483,11 @@ async fn patch_settings(
     } else {
         prepare_folder(&next.models_folder).await?
     };
-    let restart = next.llama != current.llama;
+    // The unload timer applies without restarting the model.
+    let restart = crate::config::LlamaConfig {
+        idle_unload_minutes: current.llama.idle_unload_minutes,
+        ..next.llama.clone()
+    } != current.llama;
     let updated = s.cfg.update(move |c| {
         c.agent = next.agent;
         c.sampling = next.sampling;
@@ -492,7 +498,7 @@ async fn patch_settings(
         c.models_folder = models_folder;
     })?;
     if restart {
-        s.model.restart().await;
+        s.model.settings_changed().await;
     }
     Ok(Json(json!({
         "settings": settings_view(&updated),
@@ -1327,6 +1333,21 @@ async fn model_status(State(s): State<AppState>) -> Json<Value> {
 async fn model_restart(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     s.model.restart().await;
     (StatusCode::ACCEPTED, Json(json!({ "ok": true })))
+}
+
+async fn model_load(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
+    s.model.wake();
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true })))
+}
+
+async fn model_unload(State(s): State<AppState>) -> ApiResult<(StatusCode, Json<Value>)> {
+    if s.model.in_use() {
+        return Err(ApiError::Conflict(
+            "a chat is working; the model unloads once it's done".into(),
+        ));
+    }
+    s.model.unload().await;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "ok": true }))))
 }
 
 // ---------- projects ----------

@@ -84,6 +84,10 @@ pub enum Event {
     Compacting {
         active: bool,
     },
+    /// The task is waiting for the model to load (true), or it has (false).
+    LoadingModel {
+        active: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -442,6 +446,7 @@ impl AgentManager {
             },
         );
 
+        self.model.wake();
         if let Some(w) = wanted {
             let loaded = self.cfg.get().llama.model_path;
             if !same_path(&w, &loaded) && !self.model.status().external {
@@ -502,6 +507,8 @@ impl AgentManager {
         approval: Arc<Mutex<Option<ApprovalSlot>>>,
     ) {
         tracing::info!(session = %session.id, project = %project.name, "task started");
+        // Keep the model loaded until the task, its title and any summary are done.
+        let _hold = self.model.hold();
         let result = self
             .agent_loop(&session, &project, &cancel, &draft, &approval)
             .await;
@@ -618,7 +625,7 @@ impl AgentManager {
             if cancel.is_cancelled() {
                 return Ok(LoopEnd::Stopped);
             }
-            if !self.wait_for_model(cancel).await? {
+            if !self.wait_for_model(&session.id, cancel).await? {
                 return Ok(LoopEnd::Stopped);
             }
 
@@ -1079,8 +1086,19 @@ impl AgentManager {
         self.db.call(move |c| db::insert_message(c, &sid, &m)).await
     }
 
-    /// Waits while the model is starting. Ok(false) if cancelled.
-    async fn wait_for_model(&self, cancel: &CancellationToken) -> Result<bool> {
+    /// Waits while the model is loading, telling the chat. Ok(false) if
+    /// cancelled.
+    async fn wait_for_model(&self, session_id: &str, cancel: &CancellationToken) -> Result<bool> {
+        if self.model.is_ready() {
+            return Ok(true);
+        }
+        self.emit(session_id, Event::LoadingModel { active: true });
+        let result = self.wait_until_ready(cancel).await;
+        self.emit(session_id, Event::LoadingModel { active: false });
+        result
+    }
+
+    async fn wait_until_ready(&self, cancel: &CancellationToken) -> Result<bool> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
         loop {
             let st = self.model.status();
@@ -1093,13 +1111,15 @@ impl AgentManager {
                     ));
                 }
                 ModelState::Starting => {}
+                // Unloaded while nothing used it: load it again.
+                ModelState::Idle => self.model.wake(),
             }
             if tokio::time::Instant::now() > deadline {
                 bail!("timed out waiting for the model to finish loading");
             }
             tokio::select! {
                 _ = cancel.cancelled() => return Ok(false),
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(300)) => {}
             }
         }
     }

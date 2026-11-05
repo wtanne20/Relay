@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -18,10 +19,14 @@ use crate::setup::{self, Hardware};
 
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// How often a loaded model is checked for being unused.
+const IDLE_CHECK: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelState {
+    /// Not loaded, to leave the GPU free; it loads when a chat needs it.
+    Idle,
     Starting,
     Ready,
     Error,
@@ -45,13 +50,51 @@ pub struct ModelStatus {
 
 enum Cmd {
     Restart,
+    /// Load the model if it isn't loaded.
+    Wake,
+    /// Unload the model now, freeing the GPU.
+    Unload,
     Shutdown(oneshot::Sender<()>),
+}
+
+/// When the model was last needed, and how many tasks need it now.
+struct Activity {
+    holds: AtomicUsize,
+    last_used: std::sync::Mutex<Instant>,
+}
+
+impl Activity {
+    fn touch(&self) {
+        *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+
+    /// True when no task needs the model and it hasn't been used for `after`.
+    fn unused_for(&self, after: Duration) -> bool {
+        self.holds.load(Ordering::SeqCst) == 0
+            && self
+                .last_used
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .elapsed()
+                >= after
+    }
+}
+
+/// Keeps the model loaded while it lives (one per running task).
+pub struct ModelHold(Arc<Activity>);
+
+impl Drop for ModelHold {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.holds.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Clone)]
 pub struct ModelManager {
     status: Arc<RwLock<ModelStatus>>,
     tx: mpsc::Sender<Cmd>,
+    activity: Arc<Activity>,
 }
 
 impl ModelManager {
@@ -70,8 +113,13 @@ impl ModelManager {
             since: crate::db::now(),
             progress: None,
         }));
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, rx) = mpsc::channel(16);
+        let activity = Arc::new(Activity {
+            holds: AtomicUsize::new(0),
+            last_used: std::sync::Mutex::new(Instant::now()),
+        });
         let sup = Supervisor {
+            activity: activity.clone(),
             cfg,
             shared,
             hardware,
@@ -82,7 +130,55 @@ impl ModelManager {
             http: reqwest::Client::new(),
         };
         tokio::spawn(sup.run());
-        Self { status, tx }
+        Self {
+            status,
+            tx,
+            activity,
+        }
+    }
+
+    /// Notes that the model is wanted (a chat was opened or a prompt sent),
+    /// and loads it if it was unloaded.
+    pub fn wake(&self) {
+        self.activity.touch();
+        let idle = {
+            let mut st = self.status.write().unwrap_or_else(|e| e.into_inner());
+            let idle = st.state == ModelState::Idle;
+            if idle {
+                st.state = ModelState::Starting;
+                st.since = crate::db::now();
+                st.message = Some("Loading model".into());
+            }
+            idle
+        };
+        if idle {
+            let _ = self.tx.try_send(Cmd::Wake);
+        }
+    }
+
+    /// Keeps the model loaded until the returned value is dropped.
+    pub fn hold(&self) -> ModelHold {
+        self.activity.holds.fetch_add(1, Ordering::SeqCst);
+        self.activity.touch();
+        ModelHold(self.activity.clone())
+    }
+
+    /// Whether a task is using the model now.
+    pub fn in_use(&self) -> bool {
+        self.activity.holds.load(Ordering::SeqCst) > 0
+    }
+
+    /// Unloads the model now; it loads again when a chat needs it.
+    pub async fn unload(&self) {
+        let _ = self.tx.send(Cmd::Unload).await;
+    }
+
+    /// After a settings change: restarts a loaded model so the change takes
+    /// effect. An unloaded one stays unloaded and uses it when it next loads.
+    pub async fn settings_changed(&self) {
+        if self.status().state != ModelState::Idle {
+            self.restart().await;
+        }
     }
 
     pub fn status(&self) -> ModelStatus {
@@ -133,6 +229,7 @@ impl ModelManager {
 }
 
 struct Supervisor {
+    activity: Arc<Activity>,
     /// Snapshot taken at the start of each lifecycle.
     cfg: LlamaConfig,
     shared: Arc<SharedConfig>,
@@ -148,10 +245,47 @@ enum Outcome {
     /// Child exited / failed to come up; counts toward the restart budget.
     Failed(String),
     Restart,
+    /// Unloaded because it wasn't used, or when asked.
+    Unloaded,
     Shutdown(oneshot::Sender<()>),
 }
 
 impl Supervisor {
+    /// How long the model may sit unused before it's unloaded; None keeps it.
+    fn idle_after(&self) -> Option<Duration> {
+        match self.shared.get().llama.idle_unload_minutes {
+            0 => None,
+            m => Some(Duration::from_secs(u64::from(m) * 60)),
+        }
+    }
+
+    /// Waits, unloaded, until the model is needed. None means shut down.
+    async fn wait_idle(&mut self) -> Option<()> {
+        {
+            let mut st = self.status.write().unwrap_or_else(|e| e.into_inner());
+            if st.state != ModelState::Idle {
+                st.since = crate::db::now();
+            }
+            st.state = ModelState::Idle;
+            st.message = None;
+            st.pid = None;
+            st.external = false;
+            st.progress = None;
+        }
+        tracing::info!("model: unloaded; it loads again when a chat needs it");
+        loop {
+            match self.rx.recv().await {
+                Some(Cmd::Wake) | Some(Cmd::Restart) => return Some(()),
+                Some(Cmd::Unload) => {}
+                Some(Cmd::Shutdown(ack)) => {
+                    let _ = ack.send(());
+                    return None;
+                }
+                None => return None,
+            }
+        }
+    }
+
     fn set(&self, state: ModelState, message: Option<String>, pid: Option<u32>, external: bool) {
         let mut s = self.status.write().unwrap_or_else(|e| e.into_inner());
         if s.state != state {
@@ -187,9 +321,23 @@ impl Supervisor {
 
     async fn run(mut self) {
         let mut failures: VecDeque<Instant> = VecDeque::new();
+        // With unloading on, nothing loads until a chat needs it.
+        if self.idle_after().is_some() && self.wait_idle().await.is_none() {
+            return;
+        }
         loop {
             let outcome = self.run_once().await;
             match outcome {
+                Outcome::Unloaded => {
+                    failures.clear();
+                    self.status
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .recent_restarts = 0;
+                    if self.wait_idle().await.is_none() {
+                        return;
+                    }
+                }
                 Outcome::Shutdown(ack) => {
                     let _ = ack.send(());
                     return;
@@ -223,20 +371,28 @@ impl Supervisor {
                             .unwrap_or_else(|e| e.into_inner())
                             .recent_restarts = failures.len();
                         // Wait for an explicit restart (or shutdown).
-                        match self.rx.recv().await {
-                            Some(Cmd::Restart) => {
-                                failures.clear();
-                                self.status
-                                    .write()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .recent_restarts = 0;
+                        loop {
+                            match self.rx.recv().await {
+                                Some(Cmd::Restart) => break,
+                                Some(Cmd::Wake) => {}
+                                Some(Cmd::Unload) => {
+                                    if self.wait_idle().await.is_none() {
+                                        return;
+                                    }
+                                    break;
+                                }
+                                Some(Cmd::Shutdown(ack)) => {
+                                    let _ = ack.send(());
+                                    return;
+                                }
+                                None => return,
                             }
-                            Some(Cmd::Shutdown(ack)) => {
-                                let _ = ack.send(());
-                                return;
-                            }
-                            None => return,
                         }
+                        failures.clear();
+                        self.status
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .recent_restarts = 0;
                     } else {
                         failures.push_back(now);
                         self.status
@@ -283,11 +439,7 @@ impl Supervisor {
 
         if let Err(e) = self.ensure_setup().await {
             self.set(ModelState::Error, Some(format!("{e:#}")), None, false);
-            return match self.rx.recv().await {
-                Some(Cmd::Restart) => Outcome::Restart,
-                Some(Cmd::Shutdown(ack)) => Outcome::Shutdown(ack),
-                None => Outcome::Shutdown(oneshot::channel().0),
-            };
+            return self.wait_command().await;
         }
         self.status
             .write()
@@ -299,11 +451,7 @@ impl Supervisor {
             Err(e) => {
                 self.set(ModelState::Error, Some(format!("{e:#}")), None, false);
                 // Configuration problems won't fix themselves; wait for a command.
-                return match self.rx.recv().await {
-                    Some(Cmd::Restart) => Outcome::Restart,
-                    Some(Cmd::Shutdown(ack)) => Outcome::Shutdown(ack),
-                    None => Outcome::Shutdown(oneshot::channel().0),
-                };
+                return self.wait_command().await;
             }
         };
         let pid = child.id();
@@ -324,6 +472,9 @@ impl Supervisor {
                     return Outcome::Failed(format!("llama-server exited during startup ({code}); see logs/llama-server.log"));
                 }
                 cmd = self.rx.recv() => {
+                    if matches!(cmd, Some(Cmd::Wake)) {
+                        continue;
+                    }
                     kill(&mut child).await;
                     return cmd_outcome(cmd);
                 }
@@ -342,15 +493,40 @@ impl Supervisor {
             }
         }
         self.set(ModelState::Ready, None, pid, false);
+        self.activity.touch();
 
-        tokio::select! {
-            st = child.wait() => {
-                let code = st.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-                Outcome::Failed(format!("llama-server exited unexpectedly ({code})"))
+        loop {
+            tokio::select! {
+                st = child.wait() => {
+                    let code = st.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+                    return Outcome::Failed(format!("llama-server exited unexpectedly ({code})"));
+                }
+                cmd = self.rx.recv() => {
+                    if matches!(cmd, Some(Cmd::Wake)) {
+                        continue;
+                    }
+                    kill(&mut child).await;
+                    return cmd_outcome(cmd);
+                }
+                _ = tokio::time::sleep(IDLE_CHECK) => {
+                    if let Some(after) = self.idle_after()
+                        && self.activity.unused_for(after)
+                    {
+                        tracing::info!("model unused for {} min; unloading", after.as_secs() / 60);
+                        kill(&mut child).await;
+                        return Outcome::Unloaded;
+                    }
+                }
             }
-            cmd = self.rx.recv() => {
-                kill(&mut child).await;
-                cmd_outcome(cmd)
+        }
+    }
+
+    /// After an error that won't fix itself: waits for a command.
+    async fn wait_command(&mut self) -> Outcome {
+        loop {
+            match self.rx.recv().await {
+                Some(Cmd::Wake) => {}
+                cmd => return cmd_outcome(cmd),
             }
         }
     }
@@ -360,7 +536,11 @@ impl Supervisor {
         let mut misses = 0;
         loop {
             tokio::select! {
-                cmd = self.rx.recv() => return cmd_outcome(cmd),
+                cmd = self.rx.recv() => match cmd {
+                    // Relay didn't start this server, so it can't unload it.
+                    Some(Cmd::Wake) | Some(Cmd::Unload) => {}
+                    cmd => return cmd_outcome(cmd),
+                },
                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                     if self.health_ok().await {
                         misses = 0;
@@ -531,7 +711,8 @@ impl Supervisor {
 
 fn cmd_outcome(cmd: Option<Cmd>) -> Outcome {
     match cmd {
-        Some(Cmd::Restart) => Outcome::Restart,
+        Some(Cmd::Restart) | Some(Cmd::Wake) => Outcome::Restart,
+        Some(Cmd::Unload) => Outcome::Unloaded,
         Some(Cmd::Shutdown(ack)) => Outcome::Shutdown(ack),
         None => Outcome::Shutdown(oneshot::channel().0),
     }

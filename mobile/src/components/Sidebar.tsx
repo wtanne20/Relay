@@ -203,9 +203,11 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
                   ? m3.error
                   : model.state === 'ready'
                     ? m3.success
-                    : model.state === 'error'
-                      ? m3.error
-                      : m3.warning,
+                    : model.state === 'idle'
+                      ? m3.outline
+                      : model.state === 'error'
+                        ? m3.error
+                        : m3.warning,
               },
             ]}
           />
@@ -215,9 +217,11 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
                 ? 'Server unreachable'
                 : model.state === 'ready'
                   ? 'Selected model'
-                  : model.state === 'error'
-                    ? 'Model error'
-                    : 'Model loading…'}
+                  : model.state === 'idle'
+                    ? 'Model unloaded'
+                    : model.state === 'error'
+                      ? 'Model error'
+                      : 'Model loading…'}
             </Text>
             {model?.model_path ? (
               <Text style={type.bodySmall} numberOfLines={1}>

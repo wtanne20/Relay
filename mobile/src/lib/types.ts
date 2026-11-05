@@ -1,4 +1,5 @@
-export type ModelState = 'starting' | 'ready' | 'error';
+/** `idle`: unloaded to free the GPU; it loads when a chat is opened. */
+export type ModelState = 'idle' | 'starting' | 'ready' | 'error';
 
 export interface ModelStatus {
   state: ModelState;
@@ -161,7 +162,8 @@ export type ServerEvent =
   | { type: 'approval_request'; approval: PendingApproval }
   | { type: 'approval_resolved'; tool_call_id: string; approved: boolean }
   | { type: 'title'; title: string }
-  | { type: 'compacting'; active: boolean };
+  | { type: 'compacting'; active: boolean }
+  | { type: 'loading_model'; active: boolean };
 
 export interface PendingApproval {
   tool_call_id: string;
@@ -222,6 +224,8 @@ export interface LlamaSettings {
   health_timeout_seconds: number;
   model_name: string;
   auto_setup: boolean;
+  /** Minutes unused before the model is unloaded; 0 keeps it loaded. */
+  idle_unload_minutes: number;
 }
 
 export interface Settings {

@@ -331,7 +331,7 @@ export default function SettingsScreen() {
         />
       }
     >
-      <ModelStatusBar client={client} active={focused} />
+      <ModelStatusBar client={client} active={focused} controls />
 
       <SectionTitle title="Appearance" />
       <Group>

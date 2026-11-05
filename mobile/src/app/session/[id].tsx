@@ -17,7 +17,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AssistantTurn, CompactingRow, noteStart, SummaryDivider, UserBubble } from '../../components/ChatItems';
+import {
+  AssistantTurn,
+  CompactingRow,
+  LoadingModelRow,
+  noteStart,
+  SummaryDivider,
+  UserBubble,
+} from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { AttachMenu, AttachmentStrip, useAttachments } from '../../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
@@ -35,7 +42,8 @@ type Item =
   | { key: string; kind: 'user'; message: Message }
   | { key: string; kind: 'turn'; messages: Message[]; latest: boolean }
   | { key: string; kind: 'summary'; message: Message }
-  | { key: string; kind: 'compacting' };
+  | { key: string; kind: 'compacting' }
+  | { key: string; kind: 'loading' };
 
 export default function ChatScreen() {
   const client = useClient();
@@ -113,10 +121,12 @@ export default function ChatScreen() {
     }
     const tail = out[out.length - 1];
     if (tail?.kind === 'turn') tail.latest = true;
-    else if (running && !stream.compacting) out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
+    else if (running && !stream.compacting && !stream.loadingModel)
+      out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
     if (running && stream.compacting) out.push({ key: 'compacting', kind: 'compacting' });
+    if (running && stream.loadingModel) out.push({ key: 'loading', kind: 'loading' });
     return out.reverse();
-  }, [stream.messages, running, stream.compacting]);
+  }, [stream.messages, running, stream.compacting, stream.loadingModel]);
 
   if (!client) return null;
 
@@ -311,6 +321,7 @@ export default function ChatScreen() {
                 if (item.kind === 'user') return <UserBubble message={item.message} />;
                 if (item.kind === 'summary') return <SummaryDivider message={item.message} />;
                 if (item.kind === 'compacting') return <CompactingRow />;
+                if (item.kind === 'loading') return <LoadingModelRow />;
                 return (
                   <AssistantTurn
                     messages={item.messages}

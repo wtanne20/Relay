@@ -25,6 +25,24 @@ impl Harness {
     }
 
     async fn start_with(mock_opts: common::mock_llama::MockOptions, llama_extra: &str) -> Self {
+        let h = Self::launch(mock_opts, llama_extra).await;
+        // The model starts unloaded; load it and wait until it's ready.
+        h.post("/model/load", json!({})).await;
+        h.wait_model("ready").await;
+        h
+    }
+
+    async fn wait_model(&self, state: &str) {
+        for _ in 0..100 {
+            if self.get("/model").await["state"] == state {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("model never became {state}");
+    }
+
+    async fn launch(mock_opts: common::mock_llama::MockOptions, llama_extra: &str) -> Self {
         let mock = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock");
@@ -57,22 +75,13 @@ impl Harness {
         let port = listener.local_addr().expect("addr").port();
         tokio::spawn(axum::serve(listener, app).into_future());
 
-        let h = Harness {
+        Harness {
             base: format!("http://127.0.0.1:{port}"),
             ws_base: format!("ws://127.0.0.1:{port}"),
             token,
             http: reqwest::Client::new(),
             dir,
-        };
-        // Wait for the model manager to detect the mock.
-        for _ in 0..100 {
-            let m = h.get("/model").await;
-            if m["state"] == "ready" {
-                return h;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("model never became ready");
     }
 
     async fn req(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> (u16, Value) {
@@ -1363,4 +1372,52 @@ async fn files_are_stored_and_their_text_goes_to_the_model() {
         )
         .await;
     assert_eq!(st, 400, "{v}");
+}
+
+#[tokio::test]
+async fn the_model_loads_only_when_a_chat_needs_it() {
+    let h = Harness::launch(Default::default(), "").await;
+    // Nothing is loaded until a chat is opened or a prompt is sent.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.get("/model").await["state"], "idle");
+    let s = h.get("/settings").await;
+    assert_eq!(s["settings"]["llama"]["idle_unload_minutes"], 15);
+
+    // A prompt loads it, and the task waits for it.
+    let (st, v) = h.post("/projects/chats/sessions", json!({})).await;
+    assert_eq!(st, 201, "{v}");
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "hello"}),
+        )
+        .await;
+    assert_eq!(st, 202, "{v}");
+    h.wait_model("ready").await;
+    for _ in 0..100 {
+        let s = h.get(&format!("/sessions/{sid}")).await;
+        if s["session"]["status"] == "done" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = h.get(&format!("/sessions/{sid}")).await;
+    assert_eq!(s["session"]["status"], "done", "{s}");
+
+    // Changing the timer doesn't restart the model.
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"llama": {"idle_unload_minutes": 5}})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["model_restarting"], false);
+    assert_eq!(v["settings"]["llama"]["idle_unload_minutes"], 5);
+
+    // With unloading off, the model loads as soon as Relay starts.
+    let h2 = Harness::launch(Default::default(), "idle_unload_minutes = 0").await;
+    h2.wait_model("ready").await;
 }

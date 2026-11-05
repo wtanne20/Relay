@@ -39,6 +39,8 @@ const THINKING_HINT: Record<ThinkingMode, string> = {
 const thinkingMode = (a: AgentSettings): ThinkingMode =>
   !a.thinking ? 'off' : a.brief_thinking === false ? 'full' : 'brief';
 
+/** Choices for unloading an unused model; 0 keeps it loaded. */
+const UNLOAD_MINUTES = [0, 5, 15, 30, 60];
 const COMMON_CACHE = ['f16', 'q8_0', 'q4_0'];
 
 const TOOL_ICONS: Record<string, IconName> = {
@@ -146,6 +148,10 @@ export default function AgentSettingsScreen() {
     setInvalid({});
   };
 
+  const unloadOptions = (current: number) =>
+    (UNLOAD_MINUTES.includes(current) ? UNLOAD_MINUTES : [...UNLOAD_MINUTES, current].sort((x, y) => x - y)).map(
+      (m) => ({ value: String(m), label: m === 0 ? 'Never' : `${m} min` }),
+    );
   const cacheOptions = (current: string) =>
     (COMMON_CACHE.includes(current) ? COMMON_CACHE : [...COMMON_CACHE, current]).map((v) => ({ value: v, label: v }));
   const vram = meta.gpus.reduce((n, g) => n + g.vram_mb, 0);
@@ -367,6 +373,14 @@ export default function AgentSettingsScreen() {
             integer
             onChange={(v) => set('llama', { gpu_layers: v })}
             onValidity={validity('ngl')}
+          />
+          <Segmented
+            label="Unload when unused"
+            icon="power-sleep"
+            hint="Frees the GPU for other apps. Loading again takes a few seconds when you open a chat."
+            value={String(l.idle_unload_minutes ?? 15)}
+            options={unloadOptions(l.idle_unload_minutes ?? 15)}
+            onChange={(v) => set('llama', { idle_unload_minutes: Number(v) })}
           />
           <Segmented
             label="Flash attention"

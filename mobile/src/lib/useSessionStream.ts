@@ -43,6 +43,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
+  const [loadingModel, setLoadingModel] = useState(false);
 
   const messagesRef = useRef<Message[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -125,6 +126,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           if (ev.status === 'error') setTaskError(ev.error);
           if (ev.status !== 'running') {
             setCompacting(false);
+            setLoadingModel(false);
             dropArgs();
             setDraft(null);
             setApproval(null);
@@ -163,6 +165,9 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           break;
         case 'compacting':
           setCompacting(ev.active);
+          break;
+        case 'loading_model':
+          setLoadingModel(ev.active);
           break;
         case 'resync':
           catchUp().catch((e) => setLinkError(describeError(e)));
@@ -314,6 +319,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
     setApproval,
     title,
     compacting,
+    loadingModel,
     loadOlder,
     applyMessages,
     markRunning,

@@ -17,6 +17,8 @@ use crate::api::AppState;
 use crate::db;
 
 pub async fn handle(mut socket: WebSocket, state: AppState, session_id: String) {
+    // An open chat is about to be used: load the model if it was unloaded.
+    state.model.wake();
     // Subscribe before reading state so no event falls in the gap.
     let (mut rx, draft, pending) = state.agent.subscribe(&session_id);
     let sid = session_id.clone();

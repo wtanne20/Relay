@@ -134,6 +134,13 @@ export class RelayClient {
   restartModel() {
     return this.request<{ ok: boolean }>('POST', '/model/restart');
   }
+  loadModel() {
+    return this.request<{ ok: boolean }>('POST', '/model/load');
+  }
+  /** Frees the GPU; the model loads again when a chat is opened. */
+  unloadModel() {
+    return this.request<{ ok: boolean }>('POST', '/model/unload');
+  }
 
   // ----- agent settings -----
   settings() {
