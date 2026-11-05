@@ -69,6 +69,8 @@ fn setup(extra: &[&str]) -> Option<(LlamaConfig, PathBuf)> {
         model_path: model.to_string_lossy().into_owned(),
         port: free_port(),
         health_timeout_seconds: 20,
+        // These tests are about supervision; the model loads right away.
+        idle_unload_minutes: 0,
         ..Default::default()
     };
     cfg.extra_args.extend(extra.iter().map(|s| s.to_string()));
@@ -176,6 +178,7 @@ async fn clear_error_when_not_configured() {
     let cfg = LlamaConfig {
         port: free_port(),
         auto_setup: false,
+        idle_unload_minutes: 0,
         ..Default::default()
     };
     let (m, _shared) = start(cfg, &dir);
@@ -216,6 +219,52 @@ async fn first_run_picks_a_model_and_saves_it() {
     );
     let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config saved");
     assert!(saved.contains("some-Q4_K_M.gguf"));
+    m.shutdown().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn loads_when_woken_and_unloads_when_asked() {
+    let Some((mut cfg, dir)) = setup(&[]) else {
+        return;
+    };
+    cfg.idle_unload_minutes = 15;
+    let port = cfg.port;
+    let (m, _shared) = start(cfg, &dir);
+    // Nothing loads until a chat needs it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(m.status().state, ModelState::Idle);
+    assert!(!health(port).await, "nothing should be running yet");
+
+    m.wake();
+    assert!(
+        wait_for(&m, ModelState::Ready, 20).await,
+        "status: {:?}",
+        m.status()
+    );
+    assert!(health(port).await);
+
+    // A running task keeps it; once that's done it can be unloaded.
+    let hold = m.hold();
+    assert!(m.in_use());
+    drop(hold);
+    assert!(!m.in_use());
+    m.unload().await;
+    assert!(
+        wait_for(&m, ModelState::Idle, 10).await,
+        "status: {:?}",
+        m.status()
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!health(port).await, "child should be stopped when unloaded");
+
+    // And it loads again on the next chat.
+    m.wake();
+    assert!(
+        wait_for(&m, ModelState::Ready, 20).await,
+        "status: {:?}",
+        m.status()
+    );
     m.shutdown().await;
     let _ = std::fs::remove_dir_all(dir);
 }
