@@ -1,6 +1,6 @@
 ; Inno Setup script for the Relay Windows installer.
 ; Built by .github/workflows/windows.yml:
-;   iscc /DAppVersion=1.0.3 installer\relay.iss
+;   iscc /DAppVersion=1.0.4 installer\relay.iss
 ;
 ; What it does:
 ;  - installs the Relay Windows app (relay-desktop.exe, which runs the server
@@ -17,7 +17,7 @@
 ; %LOCALAPPDATA%\Relay and are kept on uninstall unless you choose otherwise.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.3"
+  #define AppVersion "1.0.4"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\server\target\release\relay.exe"

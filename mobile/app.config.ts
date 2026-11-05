@@ -7,7 +7,7 @@ import pkg from './package.json';
  * the same version (so a fixed APK installs over the one before); set it back
  * to 0 when the version changes. versionCode 1.2.3 build 1 -> 102031.
  */
-const ANDROID_BUILD = 1;
+const ANDROID_BUILD = 0;
 const [major = 0, minor = 0, patch = 0] = pkg.version.split('.').map((n) => Number.parseInt(n, 10) || 0);
 const VERSION_CODE = (major * 10000 + minor * 100 + patch) * 10 + ANDROID_BUILD;
 
