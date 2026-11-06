@@ -17,6 +17,7 @@ pub mod push;
 pub mod setup;
 pub mod skills;
 pub mod tools;
+pub mod ui;
 pub mod updates;
 pub mod web;
 pub mod ws;
@@ -85,6 +86,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         updates: Default::default(),
         devices,
         data_dir,
+        web_root: ui::web_root(),
     });
     Ok((api::router(state.clone()), state))
 }

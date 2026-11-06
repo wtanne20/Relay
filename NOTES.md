@@ -1,11 +1,56 @@
-# Relay — Device Host + File Download: Working Notes
+# Relay — Device Host + File Download + PWA: Working Notes
 
-> Running log. **Last updated: 2026-11-06 — file download feature in progress.**
+> Running log. **Last updated: 2026-11-06 — PWA (aarch64 UI) in progress.**
 
-## CURRENT WORK: File download from the app (v1.0.6)
+## CURRENT WORK: PWA for aarch64 Linux (v1.0.6)
 
-Goal: when the agent builds something (an APK, a zip, a report), it can offer
-a download link in chat. Tapping it downloads the file to the phone.
+Goal: the aarch64 Proot box gets a UI that looks/works like the Windows desktop
+app, but without the brain. The AI reads/edits Proot files via `relay host`
+(already built in v1.0.5). The PWA is just the control panel.
+
+### Approach
+- The Windows app is a Tauri window + the same web UI bundle (Expo web export).
+- For aarch64 Proot (no webkit/GTK), serve the **same web bundle** from the
+  brain, so the aarch64 box opens it in a browser and installs it as a PWA.
+- Same appearance, same features (it's literally the same code).
+
+### Done
+- [x] `server/src/ui.rs` — serves the web bundle (index.html + assets)
+- [x] Wired into `lib.rs` (module + `web_root` field + router merge)
+- [x] Compiles clean
+
+### OPEN ISSUE (the blocker) — NOT DONE
+The web bundle uses **root-absolute paths** (`/_expo/...`), so serving it
+under `/ui` breaks: the browser loads `index.html` from `/ui` but then requests
+`/_expo/...` at the root, which hits the authed API (401). Verified live:
+`/ui` → 200 (HTML), but `/_expo/...` → 401, while `/ui/_expo/...` → 200.
+
+**Options (pick one next):**
+1. Build the web bundle with a **base path of `/ui/`** — check if Expo supports
+   `web.baseUrl` / publicPath. If yes, the current `/ui` serving works. (CLEANEST)
+2. Serve the UI at the **root** — collides with API routes (`/devices`,
+   `/projects`). Would need an `Accept: text/html` sniff to split browser
+   navigations from API calls. (FRAGILE)
+3. Serve the UI from a **second port** (e.g. 8766) — needs a second HTTP server.
+   (WORKABLE, MORE COMPLEX)
+
+**Next step:** investigate Expo's base path support (option 1). If it works,
+rebuild the bundle with `baseUrl: /ui/` and the current `/ui` serving works.
+If not, fall back to option 1's root-serve or option 3.
+
+### Files touched (uncommitted)
+- `server/src/ui.rs` — web UI serving (DONE, blocked on base path)
+- `server/src/lib.rs` — wired in (DONE)
+- `server/src/api.rs` — `web_root` field (DONE)
+
+### NOT STARTED
+- [ ] Fix the base path issue (see above)
+- [ ] Add PWA manifest (name, icon, theme color, display: standalone)
+- [ ] Package the aarch64 "installer" (tar.gz with launcher + .desktop file)
+- [ ] Test: load the PWA in a browser, verify it works
+- [ ] Bump version to 1.0.6, commit, push, tag, release
+
+## PREVIOUS WORK: File download from the app (DONE, committed as 3118398)
 
 ### DONE (all verified)
 - [x] Server endpoint `GET /projects/{id}/download?path=...` (api.rs)
@@ -30,27 +75,6 @@ a download link in chat. Tapping it downloads the file to the phone.
 - Path traversal `../../secret`: 400 "access denied ... outside the project" ✓
 - Missing file: 400 ✓
 - 83 unit + 12 integration + 6 supervisor tests pass; clippy clean; mobile tsc clean
-
-### Design decisions
-- Link format: `relay-download://<relative-path>` (e.g. `relay-download://app-release.apk`)
-  - The Markdown renderer intercepts this scheme and shows a download button
-  - The app resolves it against the project ID it already has in context
-  - On Android: download to cache → open with system handler (install APK, etc.)
-  - On desktop/web: browser download (Content-Disposition: attachment)
-- The agent doesn't need a new tool — it just formats a link in its reply
-- The server endpoint is the only new API surface
-
-### Files touched
-- `server/src/api.rs` — endpoint + query struct + mime helper (DONE)
-- `server/src/agent/mod.rs` — prompt hint (DONE)
-- `mobile/src/lib/download.tsx` — download helper + context (DONE, new file)
-- `mobile/src/components/Markdown.tsx` — download button (DONE)
-- `mobile/src/app/session/[id].tsx` — thread project context (DONE)
-
-### NEXT (not started)
-- [ ] Bump version to 1.0.6 (server, mobile, desktop, installer, app.json)
-- [ ] Commit + push + tag v1.0.6 → CI builds exe + apks
-- [ ] (Optional) real-device test: agent builds an APK, tap download on phone
 
 ## STATUS: COMPLETE (increments 1-5 committed, all tests green, clippy clean)
 

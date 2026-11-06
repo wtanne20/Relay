@@ -48,6 +48,8 @@ pub struct AppInner {
     pub updates: Arc<crate::updates::Updater>,
     /// Paired device hosts (phone Proot Linux and friends).
     pub devices: Arc<crate::device::DeviceRegistry>,
+    /// The built web UI bundle to serve at `/` (None if not bundled).
+    pub web_root: Option<std::path::PathBuf>,
 }
 
 /// Reads the persisted "phone last seen" time.
@@ -232,6 +234,9 @@ pub fn router(state: AppState) -> Router {
         // Outside auth so browser preflight requests (which carry no token) get an answer.
         .layer(cors())
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Outermost: serves the web UI to browser navigations and static
+        // assets (no token, same origin as the API), passing API calls through.
+        .layer(middleware::from_fn_with_state(state.clone(), crate::ui::ui_middleware))
         .with_state(state)
 }
 
