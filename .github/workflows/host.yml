@@ -66,10 +66,14 @@ jobs:
           cp server/target/aarch64-unknown-linux-gnu/release/relay dist/relay
           cp dev/proot-install.sh dist/install.sh
           chmod +x dist/relay dist/install.sh
-          # A tiny launcher so the phone can start it with one line.
+          # A tiny launcher so the phone can start the host with one line.
           printf '#!/bin/sh\nexec "$(dirname "$0")/relay" host --bind 0.0.0.0:8766 --root "${RELY_ROOT:-$HOME}" "$@"\n' > dist/start
           chmod +x dist/start
-          cd dist && zip -q relay-host-aarch64-linux.zip relay install.sh start
+          # A PWA launcher: opens the brain's web UI in the browser, where the
+          # user can "add to home screen" for a full-screen app.
+          cp dev/pwa.sh dist/pwa
+          chmod +x dist/pwa
+          cd dist && zip -q relay-host-aarch64-linux.zip relay install.sh start pwa
 
       - uses: actions/upload-artifact@v4
         with:

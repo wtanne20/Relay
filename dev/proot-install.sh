@@ -51,6 +51,10 @@ install -m 0755 "$tmp/relay" "$DEST/relay"
 install -m 0755 "$tmp/start" "$DEST/start" 2>/dev/null || \
   printf '#!/bin/sh\nexec "$(dirname "$0")/relay" host --bind 0.0.0.0:8766 --root "%s" "$@"\n' "$ROOT" > "$DEST/start"
 chmod +x "$DEST/start"
+# The PWA launcher (opens the brain's web UI in a browser).
+if [ -f "$tmp/pwa" ]; then
+  install -m 0755 "$tmp/pwa" "$DEST/pwa"
+fi
 
 echo
 echo "Installed. To start the host, run:"
@@ -62,3 +66,7 @@ echo "  Settings -> Devices -> Pair a device, and paste that address + token."
 echo
 echo "To change the folder the agent can touch, set RELY_ROOT before starting:"
 echo "  RELY_ROOT=$ROOT $DEST/start"
+echo
+echo "To get the Relay UI on this box (a full-screen app in your browser):"
+echo "  $DEST/pwa http://your-pc:8765"
+echo "  (open it, then use 'Add to Home Screen' / 'Install app')"
