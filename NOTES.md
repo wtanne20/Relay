@@ -1,6 +1,64 @@
 # Relay — Device Host + File Download + PWA: Working Notes
 
-> Running log. **Last updated: 2026-11-06 — PWA (aarch64 UI) core DONE.**
+> Running log. **Last updated: 2026-11-06 — v1.0.6 RELEASED.**
+
+## v1.0.6 — RELEASED (2026-11-06)
+
+Three features shipped:
+1. **File downloads** — agent offers a link, app downloads + opens it.
+2. **PWA for aarch64** — the brain serves the web UI to any browser; the aarch64
+   Proot box installs it as a full-screen app (no native webkit needed).
+3. **Load model on demand** (from the v1.0.4 line, carried forward).
+
+### v1.0.6 release assets (all published, CI all green)
+- `RelaySetup-1.0.6.exe` (13.4 MB) — Windows brain + desktop UI + web bundle
+- `Relay.apk` (110 MB) — Android app
+- `Relay-Dev.apk` (259 MB) — Android dev build
+- `relay-host-aarch64-linux.zip` (6.1 MB) — aarch64 "hands" + `pwa` launcher
+
+### Rollback
+- `rollback-v1.0.6` → `3118398` (file-download done, PWA not started)
+- `v1.0.6` → `8616047` (release)
+
+### How the aarch64 box works (owner's requirement met)
+- **Brain stays on the Windows PC** (model, agent, history, approvals).
+- aarch64 box runs `relay host` (exposes its files + shell) — the AI reads/edits
+  Proot files via the paired device. (Already in v1.0.5, unchanged.)
+- aarch64 box opens the brain's URL in a browser and installs the PWA for the
+  UI. No brain on the aarch64 box.
+
+### PWA implementation (the new work)
+- `server/src/ui.rs` — middleware serves the web UI to browser navigations
+  (Accept: text/html) + static assets; API calls (Accept: application/json)
+  pass through to the authed API untouched. Same origin, so no CORS.
+- PWA manifest served at `/manifest.webmanifest` + injected into the served
+  index.html.
+- `web_root()` finds the bundle next to the exe, in `web/`, or `mobile/dist`.
+- Windows installer copies `mobile/dist` → `<app>/web`; CI builds it.
+- aarch64 host package includes a `pwa` launcher (opens the brain's UI).
+- Connect screen pre-fills `window.location.origin` on web (the brain's address).
+
+### VERIFIED (live tests)
+- UI: `/` + `/devices` serve the SPA, 1.1MB bundle loads, manifest 200.
+- API: `/info`, `/projects` work with token (200 JSON), 401 without.
+- **Installed layout**: relay.exe + web/ (run from a different cwd) serves the
+  UI + bundle + manifest — the CI smoke-test gap, verified locally.
+- 83 unit + 12 integration + 6 supervisor tests pass; clippy clean; mobile tsc clean.
+
+### Commits (v1.0.6, newest first)
+- `8616047` — Bump to v1.0.6
+- `bbed0d5` — PWA: pre-fill the brain address on the web connect screen
+- `5ba03c9` — aarch64: add a PWA launcher to the host package
+- `18a6a36` — Ship the web UI with the Windows brain (installer + CI)
+- `e2672b0` — PWA: serve a manifest + inject it into the app HTML
+- `a36aed4` — Serve the web UI from the brain (for the aarch64 PWA)
+- `3118398` — File downloads
+
+### NOT VERIFIED (needs a real aarch64 box)
+- [ ] Open the brain's URL in a browser on the Proot box, install the PWA,
+      verify chat + file download work.
+- [ ] Run `relay host` + pair + have the AI edit a Proot file end-to-end.
+- [ ] (Optional) a nicer PWA icon (currently uses favicon.ico).
 
 ## PWA for aarch64 Linux (v1.0.6) — CORE DONE
 
