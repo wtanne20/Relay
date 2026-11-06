@@ -23,7 +23,13 @@ export default function ConnectScreen() {
   const { creds, save } = useConnection();
   const params = useLocalSearchParams<{ edit?: string; url?: string; token?: string }>();
   const edit = params.edit;
-  const [address, setAddress] = useState(params.url ?? creds?.url ?? '');
+  const [address, setAddress] = useState(
+    params.url ??
+      creds?.url ??
+      (Platform.OS === 'web' && typeof window !== 'undefined'
+        ? window.location.origin
+        : ''),
+  );
   const [token, setToken] = useState(params.token ?? creds?.token ?? '');
   const [manual, setManual] = useState(Boolean(edit || params.url || Platform.OS === 'web'));
   const [showToken, setShowToken] = useState(false);

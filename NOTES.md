@@ -1,54 +1,58 @@
 # Relay — Device Host + File Download + PWA: Working Notes
 
-> Running log. **Last updated: 2026-11-06 — PWA (aarch64 UI) in progress.**
+> Running log. **Last updated: 2026-11-06 — PWA (aarch64 UI) core DONE.**
 
-## CURRENT WORK: PWA for aarch64 Linux (v1.0.6)
+## PWA for aarch64 Linux (v1.0.6) — CORE DONE
 
 Goal: the aarch64 Proot box gets a UI that looks/works like the Windows desktop
 app, but without the brain. The AI reads/edits Proot files via `relay host`
 (already built in v1.0.5). The PWA is just the control panel.
 
-### Approach
+### Approach (decided)
 - The Windows app is a Tauri window + the same web UI bundle (Expo web export).
-- For aarch64 Proot (no webkit/GTK), serve the **same web bundle** from the
-  brain, so the aarch64 box opens it in a browser and installs it as a PWA.
-- Same appearance, same features (it's literally the same code).
+- Proot can't run a native webkit/GTK app, so the **brain serves the same web
+  bundle** to any browser. The aarch64 box opens it and installs it as a PWA.
+- Same appearance, same features (it's literally the same code). The aarch64
+  box needs NO UI binary — just a browser + `relay host` (already in v1.0.5).
 
-### Done
-- [x] `server/src/ui.rs` — serves the web bundle (index.html + assets)
-- [x] Wired into `lib.rs` (module + `web_root` field + router merge)
-- [x] Compiles clean
+### DONE (all verified)
+- [x] `server/src/ui.rs` — middleware serves the web UI to browser navigations
+  (Accept: text/html) + static assets; API calls (Accept: application/json)
+  pass through to the authed API untouched. Same origin, so no CORS.
+  - Resolves the root-absolute-path blocker: UI is served at the root (where
+    the bundle expects `/_expo/...`), not under a prefix.
+  - `web_root()` finds the bundle next to the exe, in `web/`, or `mobile/dist`.
+- [x] PWA manifest served at `/manifest.webmanifest` + injected into the
+  served index.html (name, theme, standalone display).
+- [x] Windows installer copies `mobile/dist` → `<app>/web`; CI builds it.
+- [x] aarch64 host package now includes a `pwa` launcher (opens the brain's
+  UI in a browser for "add to home screen"); `dev/pwa.sh` + install.sh.
+- [x] Wired into `lib.rs` + `api.rs` (middleware, outer than auth).
 
-### OPEN ISSUE (the blocker) — NOT DONE
-The web bundle uses **root-absolute paths** (`/_expo/...`), so serving it
-under `/ui` breaks: the browser loads `index.html` from `/ui` but then requests
-`/_expo/...` at the root, which hits the authed API (401). Verified live:
-`/ui` → 200 (HTML), but `/_expo/...` → 401, while `/ui/_expo/...` → 200.
+### VERIFIED (live, throwaway server)
+- `GET /` (Accept: text/html) → 200 HTML ✓
+- `GET /devices` (browser nav) → 200 SPA index.html ✓
+- `GET /_expo/.../entry-*.js` → 200, 1.1MB bundle ✓
+- `GET /info` WITH token (Accept: application/json) → 200 JSON ✓
+- `GET /info` WITHOUT token → 401 (not the UI) ✓
+- `GET /projects` WITH token → 200 JSON (the collision case) ✓
+- `GET /manifest.webmanifest` → 200 valid JSON ✓
+- HTML has manifest link + theme-color ✓
+- 83 unit + 12 integration + 6 supervisor tests pass; clippy clean
 
-**Options (pick one next):**
-1. Build the web bundle with a **base path of `/ui/`** — check if Expo supports
-   `web.baseUrl` / publicPath. If yes, the current `/ui` serving works. (CLEANEST)
-2. Serve the UI at the **root** — collides with API routes (`/devices`,
-   `/projects`). Would need an `Accept: text/html` sniff to split browser
-   navigations from API calls. (FRAGILE)
-3. Serve the UI from a **second port** (e.g. 8766) — needs a second HTTP server.
-   (WORKABLE, MORE COMPLEX)
+### Commits (newest first)
+- `18a6a36` — Ship the web UI with the Windows brain (installer + CI)
+- `e2672b0` — PWA: serve a manifest + inject it into the app HTML
+- `a36aed4` — Serve the web UI from the brain (for the aarch64 PWA)
+- `3118398` — File downloads (previous feature)
 
-**Next step:** investigate Expo's base path support (option 1). If it works,
-rebuild the bundle with `baseUrl: /ui/` and the current `/ui` serving works.
-If not, fall back to option 1's root-serve or option 3.
-
-### Files touched (uncommitted)
-- `server/src/ui.rs` — web UI serving (DONE, blocked on base path)
-- `server/src/lib.rs` — wired in (DONE)
-- `server/src/api.rs` — `web_root` field (DONE)
-
-### NOT STARTED
-- [ ] Fix the base path issue (see above)
-- [ ] Add PWA manifest (name, icon, theme color, display: standalone)
-- [ ] Package the aarch64 "installer" (tar.gz with launcher + .desktop file)
-- [ ] Test: load the PWA in a browser, verify it works
-- [ ] Bump version to 1.0.6, commit, push, tag, release
+### NOT STARTED (to ship as v1.0.6)
+- [ ] Bump version to 1.0.6 (server, mobile, desktop, installer, app.json)
+- [ ] Push + tag v1.0.6 → CI builds Windows installer (with web/ bundle) +
+      APKs + aarch64 host (with pwa launcher)
+- [ ] Real-device test: open the brain's URL in a browser on the aarch64 box,
+      install the PWA, verify it works; run `relay host` + pair + edit files
+- [ ] (Optional) a nicer PWA icon (currently uses favicon.ico)
 
 ## PREVIOUS WORK: File download from the app (DONE, committed as 3118398)
 
