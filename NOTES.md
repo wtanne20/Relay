@@ -86,6 +86,30 @@ run on the PC. The PC guard still applies to device commands.
   (no "refused"/"connect" substring) — assert on "error" + timing, not wording.
 - `let-chains` (Rust 2024) accepted by clippy; use to avoid collapsible-if.
 
+## Multi-platform roadmap (owner requirement, 2026-11-05)
+
+The brain (`relay serve`), hands (`relay host`), and UI (app) are already
+separable and platform-agnostic. "Set a device as host" = run `relay serve`
+on it + point the app at it. No code change needed for that.
+
+| Platform  | Brain       | Hands       | UI (app)   | Status                          |
+|-----------|-------------|-------------|------------|---------------------------------|
+| Windows   | relay serve | relay host  | Tauri      | All exist. Needs release build. |
+| Android   | Possible    | relay host  | Phone app  | App + hands exist.              |
+| Linux x64 | relay serve | relay host  | Tauri      | Code cross-platform. Needs CI.  |
+| Linux aarch | Possible  | relay host  | Phone app  | Hands built by CI. Brain CPU.   |
+
+**Priority (owner):** Windows + Android first, then Linux one at a time.
+
+**Future edits needed:**
+1. Linux x64 CI job (server + Tauri desktop target).
+2. Linux aarch64 brain test (CPU-only, slow).
+3. Tauri Linux build (currently Windows-only in CI).
+4. Release pipeline: add Linux x64 server + desktop to the v* tag workflow.
+5. Shared device registry (so hands survive a brain switch).
+6. `relay host` should detect its Tailscale IP and print the exact address
+   to paste (currently prints 0.0.0.0:8766; user must type the IP).
+
 ## Suggested next steps (not started; optional)
 - End-to-end: run `relay host` in a Linux VM/Proot, pair from the app, bind a
   project, and drive a real agent session against it.
