@@ -615,9 +615,18 @@ impl AgentManager {
             ),
         };
         let mut system = system;
-        if let Some(dc) = &device
-            && let Ok(info) = dc.info().await
-        {
+        if let Some(dc) = &device {
+            // Fail fast if the device is unreachable, so the user knows now
+            // instead of every tool call timing out. (Connect timeout is a
+            // few seconds, so a dead link fails quickly, not for a minute.)
+            let info = dc
+                .info()
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "the device this project runs on is not reachable ({e}). Check it is on and Tailscale is connected, then retry; or unbind the project to run on the PC."
+                    )
+                })?;
             let os = info.get("os").and_then(Value::as_str).unwrap_or("linux");
             let shell = info.get("shell").and_then(Value::as_str).unwrap_or("sh");
             let root = info.get("root").and_then(Value::as_str).unwrap_or(&project.path);

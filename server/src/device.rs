@@ -614,6 +614,10 @@ impl DeviceClient {
     pub fn new(url: &str, token: &str) -> Self {
         Self {
             http: reqwest::Client::builder()
+                // Fail fast when the device is unreachable (a dropped
+                // Tailscale link) instead of waiting out the full request
+                // timeout; the agent must never hang on a dead device.
+                .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
@@ -709,8 +713,32 @@ impl DeviceClient {
             .unwrap_or_default()
             .to_string();
         let deadline = Instant::now() + Duration::from_secs(timeout.saturating_add(30));
+        // A brief Tailscale blip shouldn't kill a long build, but a device
+        // that is really gone must fail (not hang). Tolerate ~10s of
+        // consecutive poll failures before giving up.
+        let mut poll_fail_since: Option<Instant> = None;
+        const POLL_GRACE: Duration = Duration::from_secs(10);
         loop {
-            let v: Value = self.get(&format!("/run/{id}")).await?;
+            let v: Value = match self.get(&format!("/run/{id}")).await {
+                Ok(v) => {
+                    poll_fail_since = None;
+                    v
+                }
+                Err(e) => {
+                    let since = *poll_fail_since.get_or_insert_with(Instant::now);
+                    if Instant::now() - since > POLL_GRACE {
+                        let _ = self
+                            .http
+                            .delete(format!("{}/run/{id}", self.base))
+                            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
+                            .send()
+                            .await;
+                        return Err(anyhow::anyhow!("device stopped responding: {e}"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+            };
             let state = v.get("state").and_then(Value::as_str).unwrap_or("running");
             if state != "running" {
                 let stdout = v.get("stdout").and_then(Value::as_str).unwrap_or("").to_string();
@@ -967,5 +995,30 @@ mod tests {
         assert_eq!(v["state"], "done");
         assert_eq!(v["exit_code"], 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A device that is down must fail fast, not hang the agent.
+    #[tokio::test]
+    async fn unreachable_device_fails_quickly() {
+        // Take a free port, then close it so the client has nothing to reach.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dc = DeviceClient::new(&format!("http://127.0.0.1:{port}"), "tok");
+        let started = tokio::time::Instant::now();
+        let err = dc.info().await.expect_err("must fail, not hang");
+        let elapsed = started.elapsed();
+        let msg = format!("{err:#}");
+        // It is a real failure (connection refused / timeout), never a
+        // silent success or an empty result.
+        assert!(
+            !msg.trim().is_empty() && msg.contains("error"),
+            "unexpected error: {msg}"
+        );
+        // Well under the 60s request timeout: a dead link fails in seconds.
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "took {elapsed:?} — an unreachable device must fail fast"
+        );
     }
 }
