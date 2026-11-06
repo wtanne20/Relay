@@ -26,16 +26,23 @@ use crate::api::AppState;
 /// 2. `web/` next to the working directory (where the installer puts it)
 /// 3. `mobile/dist` (development layout)
 pub fn web_root() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = std::env::var("RELAY_WEB_ROOT")
+    let mut candidates: Vec<PathBuf> = std::env::var("RELAY_WEB_ROOT")
         .map(PathBuf::from)
         .into_iter()
-        .chain([
-            PathBuf::from("web"),
-            PathBuf::from("./web"),
-            PathBuf::from("mobile/dist"),
-            PathBuf::from("../mobile/dist"),
-        ])
         .collect();
+    // Next to the executable (where the installer puts it), regardless of CWD.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("web"));
+        candidates.push(dir.join("mobile/dist"));
+    }
+    candidates.extend([
+        PathBuf::from("web"),
+        PathBuf::from("./web"),
+        PathBuf::from("mobile/dist"),
+        PathBuf::from("../mobile/dist"),
+    ]);
     candidates
         .into_iter()
         .find(|p| p.join("index.html").is_file())
