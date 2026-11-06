@@ -47,6 +47,7 @@ fn is_asset(path: &str) -> bool {
         || path.starts_with("/assets/")
         || path == "/favicon.ico"
         || path == "/metadata.json"
+        || path == "/manifest.webmanifest"
         || path.starts_with("/favicon")
 }
 
@@ -72,8 +73,14 @@ pub async fn ui_middleware(
 }
 
 /// Resolves a request path to a bundle file, or falls back to index.html
-/// (SPA routing). Serves it with the right content type.
+/// (SPA routing). Serves it with the right content type. When serving the
+/// app's HTML, injects a PWA manifest link so the browser can install it.
 fn serve_ui(state: &AppState, path: &str) -> Response {
+    // The PWA manifest (so the aarch64 box can "add to home screen").
+    if path == "/manifest.webmanifest" || path == "/manifest" {
+        return manifest_response();
+    }
+
     let Some(root) = &state.web_root else {
         return (
             StatusCode::NOT_FOUND,
@@ -119,7 +126,52 @@ fn serve_ui(state: &AppState, path: &str) -> Response {
             "public, max-age=31536000, immutable".parse().unwrap()
         },
     );
-    (StatusCode::OK, headers, bytes).into_response()
+
+    // Inject the PWA manifest into the app's HTML (the bundle has no link).
+    let body = if is_html {
+        let html = String::from_utf8_lossy(&bytes).into_owned();
+        if html.contains("rel=\"manifest\"") || html.contains("rel='manifest'") {
+            html.into_bytes()
+        } else {
+            let link =
+                "<link rel=\"manifest\" href=\"/manifest.webmanifest\"/><link rel=\"apple-touch-icon\" href=\"/favicon.ico\"/><meta name=\"theme-color\" content=\"#141414\"/>";
+            if let Some(pos) = html.find("</head>") {
+                let mut s = html.clone();
+                s.insert_str(pos, link);
+                s.into_bytes()
+            } else {
+                html.into_bytes()
+            }
+        }
+    } else {
+        bytes
+    };
+
+    (StatusCode::OK, headers, body).into_response()
+}
+
+/// The PWA manifest, so the browser can install the app (name, icon, theme).
+fn manifest_response() -> Response {
+    let manifest = r##"{
+  "name": "Relay",
+  "short_name": "Relay",
+  "description": "Control your local coding agents.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "any", "type": "image/x-icon", "purpose": "any" }
+  ]
+}"##;
+    let mut headers = header::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/manifest+json".parse().unwrap(),
+    );
+    (StatusCode::OK, headers, manifest).into_response()
 }
 
 fn mime_for(path: &Path) -> &'static str {
