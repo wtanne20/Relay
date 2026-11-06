@@ -1,6 +1,6 @@
 [package]
 name = "relay-desktop"
-version = "1.0.4"
+version = "1.0.5"
 description = "Relay for Windows: runs the Relay server in the background and gives it a desktop window"
 edition = "2024"
 
