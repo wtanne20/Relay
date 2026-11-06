@@ -36,20 +36,26 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cache/cross
             server/target
           key: host-cargo-${{ hashFiles('server/Cargo.lock') }}
 
-      - name: Install the aarch64 C toolchain
+      - name: Install cross
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          # cross provides a full aarch64 build environment (C toolchain + libc
+          # headers) in a container, which bare cross-gcc lacks for deps like
+          # ring (used by rustls). GitHub runners have Docker.
+          curl --proto '=https' --tlsv1.2 -sSfL \
+            https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz -o cross.tgz
+          mkdir -p ~/bin
+          tar -xzf cross.tgz --wildcards '*/cross' --strip-components 1 -C ~/bin
+          chmod +x ~/bin/cross
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          cross --version
 
       - name: Cross-compile relay for aarch64
         working-directory: server
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+        run: cross build --release --target aarch64-unknown-linux-gnu
 
       - name: Read version
         id: version
