@@ -1,7 +1,56 @@
-# Relay — Device Host Feature: Working Notes
+# Relay — Device Host + File Download: Working Notes
 
-> Running log for the "phone Proot Linux as a tool host" feature.
-> Reference if anything gets lost. **Last updated: 2026-11-05 — ALL 5 INCREMENTS DONE.**
+> Running log. **Last updated: 2026-11-06 — file download feature in progress.**
+
+## CURRENT WORK: File download from the app (v1.0.6)
+
+Goal: when the agent builds something (an APK, a zip, a report), it can offer
+a download link in chat. Tapping it downloads the file to the phone.
+
+### DONE (all verified)
+- [x] Server endpoint `GET /projects/{id}/download?path=...` (api.rs)
+  - Sandbox-validated (can't escape the project folder)
+  - Rejects device-bound projects (files are on the remote machine)
+  - Sets `Content-Disposition: attachment` + correct MIME type
+  - Compiles clean
+- [x] `DownloadQuery` struct + `file_mime` helper
+- [x] Agent prompt hint (`DOWNLOAD_HINT` in agent/mod.rs): tells the model to
+  present deliverables as `[Download <name>](relay-download://<path>)`
+- [x] Mobile: `mobile/src/lib/download.tsx` — `downloadAndOpen` (Android:
+  expo-file-system downloadAsync → intent open; web/desktop: blob link) +
+  `DownloadProvider`/`useDownload` context
+- [x] Mobile: `Markdown.tsx` — `DownloadButton` renders `relay-download://`
+  links as a download button (busy spinner, error text)
+- [x] Mobile: `session/[id].tsx` — chat wrapped in `DownloadProvider`
+
+### VERIFIED (live end-to-end test, throwaway server)
+- Auth: 401 without token ✓
+- Download: HTTP 200, correct content, `Content-Disposition: attachment`,
+  correct MIME (text/plain, application/vnd.android.package-archive) ✓
+- Path traversal `../../secret`: 400 "access denied ... outside the project" ✓
+- Missing file: 400 ✓
+- 83 unit + 12 integration + 6 supervisor tests pass; clippy clean; mobile tsc clean
+
+### Design decisions
+- Link format: `relay-download://<relative-path>` (e.g. `relay-download://app-release.apk`)
+  - The Markdown renderer intercepts this scheme and shows a download button
+  - The app resolves it against the project ID it already has in context
+  - On Android: download to cache → open with system handler (install APK, etc.)
+  - On desktop/web: browser download (Content-Disposition: attachment)
+- The agent doesn't need a new tool — it just formats a link in its reply
+- The server endpoint is the only new API surface
+
+### Files touched
+- `server/src/api.rs` — endpoint + query struct + mime helper (DONE)
+- `server/src/agent/mod.rs` — prompt hint (DONE)
+- `mobile/src/lib/download.tsx` — download helper + context (DONE, new file)
+- `mobile/src/components/Markdown.tsx` — download button (DONE)
+- `mobile/src/app/session/[id].tsx` — thread project context (DONE)
+
+### NEXT (not started)
+- [ ] Bump version to 1.0.6 (server, mobile, desktop, installer, app.json)
+- [ ] Commit + push + tag v1.0.6 → CI builds exe + apks
+- [ ] (Optional) real-device test: agent builds an APK, tap download on phone
 
 ## STATUS: COMPLETE (increments 1-5 committed, all tests green, clippy clean)
 

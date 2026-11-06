@@ -32,6 +32,7 @@ import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
+import { DownloadProvider } from '../../lib/download';
 import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
 import { emit } from '../../lib/events';
 import { CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
@@ -290,6 +291,7 @@ export default function ChatScreen() {
             )}
           </View>
         ) : (
+          <DownloadProvider projectId={project?.id ?? null}>
           <View style={styles.flex}>
             <FlatList
               ref={list}
@@ -347,6 +349,7 @@ export default function ChatScreen() {
               </Pressable>
             ) : null}
           </View>
+          </DownloadProvider>
         )}
 
         <View style={page}>

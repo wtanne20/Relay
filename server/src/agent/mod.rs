@@ -1460,6 +1460,7 @@ pub async fn build_system_prompt(
         s.push_str(&section);
     }
     s.push_str(MOCKUP_HINT);
+    s.push_str(DOWNLOAD_HINT);
     s
 }
 
@@ -1480,6 +1481,9 @@ pub const WEB_HINT: &str = "\n# Web\nYou can search the web with web_search and 
 /// Tells the model how to draw a UI mockup that Relay can show as a picture.
 /// Sent when thinking is set to Brief.
 pub const BRIEF_THINKING_HINT: &str = "\n# Thinking\nKeep your private thinking brief: a few short sentences to plan the next step, then act. Don't draft the answer or re-check things you already know while thinking.\n";
+
+/// Tells the model how to offer a file for download.
+pub const DOWNLOAD_HINT: &str = "\n# File downloads\nWhen you create a file the user may want to keep — an APK, a zip, a report, an image — offer it as a download link on its own line, using this exact format: [Download <filename>](relay-download://<path-relative-to-project>). The Relay app turns that into a download button. Only use this for files you actually created in the project folder; never for files on the web or outside the project.\n";
 
 pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. Keep any explanation short and outside the block.\n";
 

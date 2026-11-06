@@ -1,6 +1,8 @@
-import { memo, useMemo, type ReactNode } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useMemo, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { describeError } from '../lib/api';
+import { useDownload } from '../lib/download';
 import { MockupCard, isMockup } from './Mockup';
 import { colors, radius, space } from './theme';
 import { Icon } from './ui';
@@ -253,6 +255,57 @@ function LinkButton({ label, url }: { label: string; url: string }) {
   );
 }
 
+/**
+ * A `relay-download://<path>` link: downloads the file from the current
+ * project and opens it (install an APK, open a zip, view an image).
+ */
+function DownloadButton({ label, path }: { label: string; path: string }) {
+  const dl = useDownload();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!dl) {
+    // No project context (e.g. a plain chat): show the label, not a button.
+    return (
+      <Text selectable style={styles.para}>
+        {label}
+      </Text>
+    );
+  }
+  return (
+    <View style={styles.downloadWrap}>
+      <Pressable
+        onPress={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            await dl.download(path);
+          } catch (e) {
+            setError(describeError(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={busy}
+        style={({ pressed }) => [
+          styles.linkButton,
+          pressed && !busy && { backgroundColor: colors.surfaceRaised },
+          busy && { opacity: 0.7 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Download ${label}`}
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : (
+          <Icon name="download" size={16} color={colors.accent} />
+        )}
+        <Text style={styles.linkButtonText}>{busy ? 'Downloading…' : label}</Text>
+      </Pressable>
+      {error ? <Text style={styles.downloadError}>{error}</Text> : null}
+    </View>
+  );
+}
+
 const HEADING_SIZE = [24, 21, 19, 17];
 
 const SUB = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
@@ -372,6 +425,9 @@ function MarkdownImpl({ text, color = colors.text }: { text: string; color?: str
           case 'table':
             return <Table key={key} head={b.head} rows={b.rows} k={key} color={color} />;
           case 'para': {
+            // A download link on its own line: [Download app.apk](relay-download://app.apk)
+            const dl = b.text.trim().match(/^\[([^\]]+)\]\(relay-download:\/\/([^)\s]+)\)$/i);
+            if (dl) return <DownloadButton key={key} label={dl[1]} path={dl[2]} />;
             const only = b.text.trim().match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/i);
             if (only) return <LinkButton key={key} label={only[1]} url={only[2]} />;
             return (
@@ -441,5 +497,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   linkButtonText: { color: colors.accent, fontSize: 14, fontWeight: '600' },
+  downloadWrap: { alignItems: 'flex-start', gap: 2 },
+  downloadError: { color: colors.danger, fontSize: 13, paddingLeft: space.md },
   cellText: { fontSize: 14, lineHeight: 20 },
 });

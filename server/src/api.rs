@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{
     DefaultBodyLimit, FromRequest, Path as UrlPath, Query, Request, State, WebSocketUpgrade,
 };
@@ -203,6 +204,7 @@ pub fn router(state: AppState) -> Router {
             "/projects/{id}/sessions",
             get(list_sessions).post(create_session),
         )
+        .route("/projects/{id}/download", get(download_project_file))
         .route(
             "/sessions/{id}",
             get(get_session).patch(patch_session).delete(delete_session),
@@ -1542,6 +1544,91 @@ async fn get_project(
             .await?
             .ok_or(ApiError::NotFound("project"))?;
     Ok(Json(json!({ "project": project })))
+}
+
+/// Serves a file from a project's folder so the app can download it (for
+/// example an APK or zip the agent built). The path is confined to the
+/// project folder by the same sandbox the agent's tools use, so it can't
+/// reach anything outside.
+async fn download_project_file(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<DownloadQuery>,
+) -> ApiResult<Response> {
+    let project = s
+        .db
+        .call(move |c| db::get_project(c, &id))
+        .await?
+        .ok_or(ApiError::NotFound("project"))?;
+    let path = q.path.trim().trim_matches('"').to_string();
+    if path.is_empty() || path == "." {
+        return Err(ApiError::BadRequest("a file path is required".into()));
+    }
+    // Device-bound projects live on the remote machine; only the local brain
+    // can serve its own files here.
+    if project.device_id.is_some() {
+        return Err(ApiError::BadRequest(
+            "this project runs on a device, so it can't serve files here".into(),
+        ));
+    }
+    let sandbox = crate::tools::Sandbox::new(Path::new(&project.path), &[])
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let file = sandbox
+        .resolve_existing(&path, crate::tools::Access::Read)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !file.is_file() {
+        return Err(ApiError::NotFound("file"));
+    }
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let mime = file_mime(&name);
+    let len = tokio::fs::metadata(&file).await.map(|m| m.len()).unwrap_or(0);
+    let bytes = tokio::fs::read(&file).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let body = Body::from(bytes);
+    let mut headers = header::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        mime.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+    );
+    if len > 0 {
+        headers.insert(header::CONTENT_LENGTH, len.to_string().parse().unwrap());
+    }
+    // Tell the phone/browser to save it rather than try to display it.
+    let dispo = format!("attachment; filename=\"{}\"", name.replace('"', ""));
+    headers.insert(header::CONTENT_DISPOSITION, dispo.parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "private, max-age=0".parse().unwrap());
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    path: String,
+}
+
+/// A content type for the common build-artifact extensions we serve.
+fn file_mime(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "apk" => "application/vnd.android.package-archive",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "exe" => "application/vnd.microsoft.portable-executable",
+        "msi" => "application/x-msi",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "txt" | "md" => "text/plain",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn update_project(
