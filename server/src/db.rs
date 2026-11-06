@@ -30,6 +30,9 @@ pub struct Project {
     /// Model file this project's chats use unless a chat picks its own.
     #[serde(default)]
     pub model: Option<String>,
+    /// A paired device this project's tools run on (its folder + shell).
+    #[serde(default)]
+    pub device_id: Option<String>,
     /// Hidden from the lists until restored.
     #[serde(default)]
     pub archived: bool,
@@ -220,6 +223,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
     if !has_col("projects", "model")? {
         conn.execute_batch("ALTER TABLE projects ADD COLUMN model TEXT")?;
     }
+    if !has_col("projects", "device_id")? {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN device_id TEXT")?;
+    }
     if !has_col("sessions", "model")? {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN model TEXT")?;
     }
@@ -253,7 +259,8 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 // ---------- projects ----------
 
-const PROJECT_COLS: &str = "id, name, path, created_at, instructions, model, archived";
+const PROJECT_COLS: &str =
+    "id, name, path, created_at, instructions, model, archived, device_id";
 
 fn project_row(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -264,6 +271,7 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         instructions: r.get(4)?,
         model: r.get(5)?,
         archived: r.get::<_, i64>(6)? != 0,
+        device_id: r.get(7)?,
     })
 }
 
@@ -315,6 +323,7 @@ pub fn create_project(c: &Connection, name: &str, path: &str) -> Result<Project>
         created_at: now(),
         model: None,
         archived: false,
+        device_id: None,
     };
     c.execute(
         "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -330,6 +339,7 @@ pub fn update_project(
     path: Option<&str>,
     instructions: Option<&str>,
     model: Option<Option<&str>>,
+    device_id: Option<Option<&str>>,
 ) -> Result<Option<Project>> {
     if let Some(m) = model {
         c.execute(
@@ -353,6 +363,12 @@ pub fn update_project(
         c.execute(
             "UPDATE projects SET path = ?1 WHERE id = ?2",
             params![p, id],
+        )?;
+    }
+    if let Some(d) = device_id {
+        c.execute(
+            "UPDATE projects SET device_id = ?1 WHERE id = ?2",
+            params![d, id],
         )?;
     }
     get_project(c, id)

@@ -463,6 +463,7 @@ async fn system_prompt_includes_agents_md_and_skills() {
         instructions: "Prefer small commits.".into(),
         model: None,
         archived: false,
+        device_id: None,
         created_at: String::new(),
     };
     let skills = relay::skills::discover(&[dir.join("skills")]);

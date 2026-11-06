@@ -1396,6 +1396,8 @@ struct UpdateProject {
     instructions: Option<String>,
     /// A model file for the project's chats; "" goes back to the loaded model.
     model: Option<String>,
+    /// A paired device this project's tools run on; "" runs them locally again.
+    device_id: Option<String>,
     /// Hide the project (and its chats) from the lists, or restore it.
     archived: Option<bool>,
 }
@@ -1417,6 +1419,22 @@ fn validate_model(model: Option<String>) -> ApiResult<Option<Option<String>>> {
         )));
     }
     Ok(Some(Some(m)))
+}
+
+/// `Some("")` clears the binding; otherwise the id must be a paired device.
+async fn validate_device(
+    s: &AppInner,
+    device: Option<String>,
+) -> ApiResult<Option<Option<String>>> {
+    let Some(d) = device else { return Ok(None) };
+    let d = d.trim().to_string();
+    if d.is_empty() {
+        return Ok(Some(None));
+    }
+    if s.devices.get(&d).await?.is_none() {
+        return Err(ApiError::BadRequest(format!("unknown device: {d}")));
+    }
+    Ok(Some(Some(d)))
 }
 
 /// Validates and canonicalizes a project folder path.
@@ -1522,8 +1540,28 @@ async fn update_project(
         ));
     }
     let archived = body.archived;
-    let path = body.path.as_deref().map(validate_folder).transpose()?;
+    // A project bound to a device keeps its folder on that device, so the
+    // PC can only check that it looks like an absolute path.
+    let path = match body.path.as_deref() {
+        Some(p) => {
+            let trimmed = p.trim().trim_matches('"').to_string();
+            if trimmed.is_empty() {
+                return Err(ApiError::BadRequest("path is required".into()));
+            }
+            if !Path::new(&trimmed).is_absolute() {
+                return Err(ApiError::BadRequest(format!(
+                    "path must be absolute: {trimmed}"
+                )));
+            }
+            if Path::new(&trimmed).is_dir() {
+                validate_folder(p)?;
+            }
+            Some(trimmed)
+        }
+        None => None,
+    };
     let model = validate_model(body.model)?;
+    let device_id = validate_device(&s, body.device_id).await?;
     let instructions = body.instructions;
     if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
         return Err(ApiError::BadRequest(
@@ -1542,6 +1580,7 @@ async fn update_project(
                 path.as_deref(),
                 instructions.as_deref(),
                 model.as_ref().map(|m| m.as_deref()),
+                device_id.as_ref().map(|d| d.as_deref()),
             )
         })
         .await?

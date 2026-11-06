@@ -68,6 +68,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         shared.clone(),
         pusher.clone(),
         images::dir(&data_dir),
+        device::DeviceRegistry::new(db.clone()),
     );
     let state: AppState = Arc::new(AppInner {
         cfg: shared,

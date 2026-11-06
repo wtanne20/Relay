@@ -158,6 +158,8 @@ pub struct AgentManager {
     cfg: Arc<SharedConfig>,
     http: reqwest::Client,
     pusher: Pusher,
+    /// Paired device hosts; a project's tools may run on one of them.
+    devices: crate::device::DeviceRegistry,
     /// Where pictures attached to prompts are kept.
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
@@ -180,6 +182,7 @@ impl AgentManager {
         cfg: Arc<SharedConfig>,
         pusher: Pusher,
         attachments: PathBuf,
+        devices: crate::device::DeviceRegistry,
     ) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -192,6 +195,7 @@ impl AgentManager {
             http,
             pusher,
             attachments,
+            devices,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
         })
@@ -580,16 +584,47 @@ impl AgentManager {
                 default_timeout: conf.agent.command_timeout_seconds,
             })
         };
-        let (system, tool_defs) = match &ctx {
-            Some(ctx) => (
+        // A project may be bound to a paired device: then its tools run on
+        // that machine (its folder, its shell) instead of on this PC. The
+        // model, history and approvals all stay here.
+        let device = if project.is_chats() {
+            None
+        } else if let Some(id) = project
+            .device_id
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+        {
+            let d = self.devices.get(id).await?.ok_or_else(|| {
+                anyhow!(
+                    "project is bound to a device that is no longer paired ({}); unbind it or re-pair the device",
+                    id
+                )
+            })?;
+            Some(crate::device::DeviceClient::new(&d.url, &d.token))
+        } else {
+            None
+        };
+        let (system, tool_defs) = match (&ctx, &device) {
+            (Some(ctx), _) => (
                 build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await,
                 tools::definitions(&conf.agent.tools),
             ),
-            None => (
+            (None, _) => (
                 chat_system_prompt(project),
                 tools::web_definitions(&conf.agent.tools),
             ),
         };
+        let mut system = system;
+        if let Some(dc) = &device
+            && let Ok(info) = dc.info().await
+        {
+            let os = info.get("os").and_then(Value::as_str).unwrap_or("linux");
+            let shell = info.get("shell").and_then(Value::as_str).unwrap_or("sh");
+            let root = info.get("root").and_then(Value::as_str).unwrap_or(&project.path);
+            system.push_str(&format!(
+                "\n# Device\nThis project's tools run on a paired device ({os}), not on this PC. Its folder is {root}; run_command uses {shell}. File paths are relative to that folder.\n"
+            ));
+        }
         let has_web = tool_defs.as_array().is_some_and(|a| {
             a.iter().any(|d| {
                 d.pointer("/function/name")
@@ -597,7 +632,6 @@ impl AgentManager {
                     .is_some_and(|n| tools::WEB_TOOLS.contains(&n))
             })
         });
-        let mut system = system;
         if has_web {
             system.push_str(WEB_HINT);
         }
@@ -797,7 +831,7 @@ impl AgentManager {
                                 if d == Decision::ApproveAll {
                                     approval_mode = ApprovalMode::Never;
                                 }
-                                run_tool(ctx.as_ref(), call, cancel, &conf.agent.search_api_key).await
+                                run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
                             }
                             None => tools::ToolOutput {
                                 content: "cancelled by user before running".into(),
@@ -805,7 +839,7 @@ impl AgentManager {
                             },
                         }
                     } else {
-                        run_tool(ctx.as_ref(), call, cancel, &conf.agent.search_api_key).await
+                        run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
                     }
                 };
                 let truncated = output.content.chars().count() > EVENT_RESULT_CHARS;
@@ -1107,6 +1141,7 @@ impl AgentManager {
 
 async fn run_tool(
     ctx: Option<&ToolContext>,
+    device: Option<&crate::device::DeviceClient>,
     call: &db::ToolCall,
     cancel: &CancellationToken,
     search_key: &str,
@@ -1120,12 +1155,116 @@ async fn run_tool(
             },
         };
     }
+    // A device-bound project routes its file/shell tools to the device.
+    if let Some(dc) = device
+        && matches!(
+            call.name.as_str(),
+            "list_dir" | "read_file" | "write_file" | "edit_file" | "run_command"
+        )
+    {
+        return tokio::select! {
+            out = run_on_device(dc, call) => out,
+            _ = cancel.cancelled() => tools::ToolOutput {
+                content: "cancelled by user".into(),
+                is_error: true,
+            },
+        };
+    }
     match ctx {
         Some(ctx) => tools::execute(ctx, &call.name, &call.arguments, cancel).await,
         None => tools::ToolOutput {
             content:
                 "error: this tool needs a project folder; plain chats can only use the web tools"
                     .into(),
+            is_error: true,
+        },
+    }
+}
+
+/// Executes one tool call on a paired device, through the same HTTP tools
+/// the device host exposes. Output is formatted like the local tools so the
+/// model sees no difference.
+async fn run_on_device(
+    dc: &crate::device::DeviceClient,
+    call: &db::ToolCall,
+) -> tools::ToolOutput {
+    let args: Value = match serde_json::from_str(if call.arguments.trim().is_empty() {
+        "{}"
+    } else {
+        &call.arguments
+    }) {
+        Ok(v) => v,
+        Err(e) => {
+            return tools::ToolOutput {
+                content: format!("error: arguments are not valid JSON ({e})"),
+                is_error: true,
+            }
+        }
+    };
+    let str_arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+    let err = |e: anyhow::Error| tools::ToolOutput {
+        content: format!("error: {e:#}"),
+        is_error: true,
+    };
+    let ok = |content: String| tools::ToolOutput { content, is_error: false };
+    match call.name.as_str() {
+        "list_dir" => {
+            let p = str_arg("path").unwrap_or_else(|| ".".into());
+            match dc.list_dir(&p).await {
+                Ok(s) => ok(s),
+                Err(e) => err(e),
+            }
+        }
+        "read_file" => {
+            let Some(p) = str_arg("path") else {
+                return err(anyhow::anyhow!("missing path"));
+            };
+            match dc.read_file(&p).await {
+                Ok(s) => ok(s),
+                Err(e) => err(e),
+            }
+        }
+        "write_file" => {
+            let (Some(p), Some(c)) = (str_arg("path"), str_arg("content")) else {
+                return err(anyhow::anyhow!("missing path or content"));
+            };
+            match dc.write_file(&p, &c).await {
+                Ok(s) => ok(s),
+                Err(e) => err(e),
+            }
+        }
+        "edit_file" => {
+            let (Some(p), Some(o), Some(n)) =
+                (str_arg("path"), str_arg("old_text"), str_arg("new_text"))
+            else {
+                return err(anyhow::anyhow!("missing path, old_text or new_text"));
+            };
+            match dc.edit_file(&p, &o, &n).await {
+                Ok(s) => ok(s),
+                Err(e) => err(e),
+            }
+        }
+        "run_command" => {
+            let Some(cmd) = str_arg("command") else {
+                return err(anyhow::anyhow!("missing command"));
+            };
+            // The PC-side guard still applies, minus the delete-target check
+            // (the device's own sandbox confines that folder).
+            if let Some(reason) = tools::guard::check_command_remote(&cmd) {
+                return tools::ToolOutput { content: reason, is_error: true };
+            }
+            let timeout = args
+                .get("timeout_seconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(120)
+                .clamp(1, tools::MAX_COMMAND_TIMEOUT);
+            match dc.run_command(&cmd, timeout).await {
+                Ok(out) => out,
+                Err(e) => err(e),
+            }
+        }
+        other => tools::ToolOutput {
+            content: format!("error: tool '{other}' is not available on a device"),
             is_error: true,
         },
     }
