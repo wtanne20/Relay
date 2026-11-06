@@ -86,6 +86,37 @@ run on the PC. The PC guard still applies to device commands.
   (no "refused"/"connect" substring) — assert on "error" + timing, not wording.
 - `let-chains` (Rust 2024) accepted by clippy; use to avoid collapsible-if.
 
+## STATUS: v1.0.5 RELEASE IN PROGRESS (2026-11-06)
+
+The device-host feature is released as **v1.0.5** on GitHub.
+
+### How the release works
+- The app's updater (`server/src/updates.rs`) checks the **latest** GitHub
+  release for these exact asset names: `RelaySetup-<v>.exe`, `Relay.apk`,
+  `Relay-Dev.apk`. It requires a SHA-256 (GitHub auto-publishes it) to run the
+  Windows installer. Bumping the version makes the update appear.
+- CI publishes all three on any `v*` tag:
+  - `windows.yml` → `RelaySetup-1.0.5.exe` (relay.exe + relay-desktop.exe + Inno Setup)
+  - `android.yml` → `Relay.apk` + `Relay-Dev.apk`
+  - `host.yml` → `relay-host-aarch64-linux.zip` (the hands binary)
+
+### Release timeline (v1.0.5)
+- `v1.0.4` already existed on GitHub (a separate "load model on demand" line
+  of work). So device-host was merged **on top of it** and released as v1.0.5.
+- Merged `feature/device-host-v2` (device-host, based on latest main) → main.
+- Bumped all version files (server, mobile, desktop, installer, app.json) to 1.0.5.
+- **Fix 1 (Windows CI fail):** `server/Cargo.lock` + `desktop Cargo.lock` were
+  still at 1.0.4 → broke the `--locked` build. Synced to 1.0.5.
+- **Fix 2 (aarch64 CI fail):** bare cross-gcc lacked libc headers for `ring`
+  (rustls). Switched `host.yml` to `cross` (full aarch64 build env).
+- Moved the `v1.0.5` tag to the fixed commit (8e10eef) and re-triggered CI.
+
+### Rollback
+- `rollback-v1.0.3` → acd8aec (stable v1.0.3).
+- v1.0.4 tag → the load-on-demand release (pre-device-host).
+- v1.0.5 tag → 8e10eef (device-host + load-on-demand).
+- Local branches: `main`, `feature/device-host-v2` (release), `feature/device-host` (original).
+
 ## Multi-platform roadmap (owner requirement, 2026-11-05)
 
 The brain (`relay serve`), hands (`relay host`), and UI (app) are already
