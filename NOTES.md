@@ -86,30 +86,33 @@ run on the PC. The PC guard still applies to device commands.
   (no "refused"/"connect" substring) — assert on "error" + timing, not wording.
 - `let-chains` (Rust 2024) accepted by clippy; use to avoid collapsible-if.
 
-## STATUS: v1.0.5 RELEASE IN PROGRESS (2026-11-06)
+## STATUS: v1.0.5 RELEASE COMPLETE (2026-11-06)
 
-The device-host feature is released as **v1.0.5** on GitHub.
+The device-host feature is released as **v1.0.5** on GitHub, with all assets
+published (each has the SHA-256 the app's updater requires):
 
-### How the release works
-- The app's updater (`server/src/updates.rs`) checks the **latest** GitHub
-  release for these exact asset names: `RelaySetup-<v>.exe`, `Relay.apk`,
-  `Relay-Dev.apk`. It requires a SHA-256 (GitHub auto-publishes it) to run the
-  Windows installer. Bumping the version makes the update appear.
-- CI publishes all three on any `v*` tag:
-  - `windows.yml` → `RelaySetup-1.0.5.exe` (relay.exe + relay-desktop.exe + Inno Setup)
-  - `android.yml` → `Relay.apk` + `Relay-Dev.apk`
-  - `host.yml` → `relay-host-aarch64-linux.zip` (the hands binary)
+- **`RelaySetup-1.0.5.exe`** (12.5 MB) — Windows brain + desktop UI (auto-updatable)
+- **`Relay.apk`** (110 MB) — Android app
+- **`Relay-Dev.apk`** (259 MB) — Android dev build
+- **`relay-host-aarch64-linux.zip`** (6.1 MB) — the "hands" binary for the Proot aarch64 desktop
+
+How the app finds them: the updater (`server/src/updates.rs`) checks the
+**latest** GitHub release for these exact names; it needs a SHA-256 to run the
+Windows installer. Bumping the version is what makes the update appear. CI
+publishes them on any `v*` tag (windows.yml, android.yml, host.yml).
 
 ### Release timeline (v1.0.5)
-- `v1.0.4` already existed on GitHub (a separate "load model on demand" line
-  of work). So device-host was merged **on top of it** and released as v1.0.5.
-- Merged `feature/device-host-v2` (device-host, based on latest main) → main.
+- `v1.0.4` already existed on GitHub (a separate "load model on demand" line).
+  So device-host was merged **on top of it** and released as v1.0.5.
+- Merged `feature/device-host-v2` (device-host on latest main) → main.
 - Bumped all version files (server, mobile, desktop, installer, app.json) to 1.0.5.
 - **Fix 1 (Windows CI fail):** `server/Cargo.lock` + `desktop Cargo.lock` were
   still at 1.0.4 → broke the `--locked` build. Synced to 1.0.5.
 - **Fix 2 (aarch64 CI fail):** bare cross-gcc lacked libc headers for `ring`
-  (rustls). Switched `host.yml` to `cross` (full aarch64 build env).
+  (rustls). Added `libc6-dev-arm64-cross` to `host.yml`. (A `cross` attempt
+  failed on archive layout; the apt cross-gcc + headers approach works.)
 - Moved the `v1.0.5` tag to the fixed commit (8e10eef) and re-triggered CI.
+- Attached the aarch64 host zip (built on main with the fix) to the release.
 
 ### Rollback
 - `rollback-v1.0.3` → acd8aec (stable v1.0.3).
