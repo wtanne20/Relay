@@ -558,7 +558,7 @@ pub async fn run_shell(
 }
 
 /// Reads to EOF but keeps at most ~4 MB in memory.
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+pub(crate) async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<()> {
@@ -575,7 +575,7 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
     if let Some(pid) = pid {
         #[cfg(windows)]
         {

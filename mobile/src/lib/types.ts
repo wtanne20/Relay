@@ -54,8 +54,23 @@ export interface Project {
   created_at: string;
   /** Model file this project's chats use; null follows whatever is loaded. */
   model?: string | null;
+  /** A paired device this project's tools run on; null = the PC. */
+  device_id?: string | null;
   /** Hidden from the lists until restored. */
   archived?: boolean;
+}
+
+/** A paired device (e.g. a phone with Proot Linux) the agent can work in. */
+export interface Device {
+  id: string;
+  name: string;
+  url: string;
+  os?: string;
+  root?: string;
+  shell?: string;
+  last_seen?: string;
+  /** The PC reached this device within the last two minutes. */
+  connected?: boolean;
 }
 
 /** The built-in space for plain chats (no folder, no tools). */

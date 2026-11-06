@@ -8,6 +8,7 @@ import type {
   HubRepo,
   ApprovalDecision,
   DeepPartial,
+  Device,
   Message,
   ModelFile,
   ModelStatus,
@@ -225,11 +226,32 @@ export class RelayClient {
     return (await this.request<{ project: Project }>('GET', `/projects/${encodeURIComponent(id)}`)).project;
   }
   /** `model: ''` goes back to whatever model is loaded. */
-  async updateProject(id: string, patch: { name?: string; instructions?: string; model?: string }): Promise<Project> {
+  /** `device_id: ''` runs the tools on the PC again. */
+  async updateProject(
+    id: string,
+    patch: { name?: string; instructions?: string; model?: string; device_id?: string },
+  ): Promise<Project> {
     return (await this.request<{ project: Project }>('PATCH', `/projects/${encodeURIComponent(id)}`, patch)).project;
   }
   async deleteProject(id: string): Promise<void> {
     await this.request('DELETE', `/projects/${encodeURIComponent(id)}`);
+  }
+
+  // ----- devices -----
+  /** Paired devices the agent can work in (phone Proot Linux, ...). */
+  async devices(): Promise<Device[]> {
+    return (await this.request<{ devices: Device[] }>('GET', '/devices')).devices;
+  }
+  /** Pairs a device host; the PC checks it answers before saving. */
+  async addDevice(name: string, url: string, token: string): Promise<Device> {
+    return (await this.request<{ device: Device }>('POST', '/devices', { name, url, token })).device;
+  }
+  async removeDevice(id: string): Promise<void> {
+    await this.request('DELETE', `/devices/${encodeURIComponent(id)}`);
+  }
+  /** Re-checks the link and refreshes last_seen. */
+  async pingDevice(id: string): Promise<{ connected: boolean; error?: string }> {
+    return this.request('POST', `/devices/${encodeURIComponent(id)}/ping`, {});
   }
 
   // ----- sessions -----

@@ -45,6 +45,8 @@ pub struct AppInner {
     pub downloads: Arc<crate::hub::Downloads>,
     /// New versions from GitHub releases.
     pub updates: Arc<crate::updates::Updater>,
+    /// Paired device hosts (phone Proot Linux and friends).
+    pub devices: Arc<crate::device::DeviceRegistry>,
 }
 
 /// Reads the persisted "phone last seen" time.
@@ -220,6 +222,9 @@ pub fn router(state: AppState) -> Router {
             "/push-tokens",
             post(add_push_token).delete(remove_push_token),
         )
+        .route("/devices", get(list_devices).post(add_device))
+        .route("/devices/{id}", get(get_device).delete(remove_device))
+        .route("/devices/{id}/ping", post(ping_device))
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.
@@ -1412,6 +1417,8 @@ struct UpdateProject {
     instructions: Option<String>,
     /// A model file for the project's chats; "" goes back to the loaded model.
     model: Option<String>,
+    /// A paired device this project's tools run on; "" runs them locally again.
+    device_id: Option<String>,
     /// Hide the project (and its chats) from the lists, or restore it.
     archived: Option<bool>,
 }
@@ -1433,6 +1440,22 @@ fn validate_model(model: Option<String>) -> ApiResult<Option<Option<String>>> {
         )));
     }
     Ok(Some(Some(m)))
+}
+
+/// `Some("")` clears the binding; otherwise the id must be a paired device.
+async fn validate_device(
+    s: &AppInner,
+    device: Option<String>,
+) -> ApiResult<Option<Option<String>>> {
+    let Some(d) = device else { return Ok(None) };
+    let d = d.trim().to_string();
+    if d.is_empty() {
+        return Ok(Some(None));
+    }
+    if s.devices.get(&d).await?.is_none() {
+        return Err(ApiError::BadRequest(format!("unknown device: {d}")));
+    }
+    Ok(Some(Some(d)))
 }
 
 /// Validates and canonicalizes a project folder path.
@@ -1538,8 +1561,28 @@ async fn update_project(
         ));
     }
     let archived = body.archived;
-    let path = body.path.as_deref().map(validate_folder).transpose()?;
+    // A project bound to a device keeps its folder on that device, so the
+    // PC can only check that it looks like an absolute path.
+    let path = match body.path.as_deref() {
+        Some(p) => {
+            let trimmed = p.trim().trim_matches('"').to_string();
+            if trimmed.is_empty() {
+                return Err(ApiError::BadRequest("path is required".into()));
+            }
+            if !Path::new(&trimmed).is_absolute() {
+                return Err(ApiError::BadRequest(format!(
+                    "path must be absolute: {trimmed}"
+                )));
+            }
+            if Path::new(&trimmed).is_dir() {
+                validate_folder(p)?;
+            }
+            Some(trimmed)
+        }
+        None => None,
+    };
     let model = validate_model(body.model)?;
+    let device_id = validate_device(&s, body.device_id).await?;
     let instructions = body.instructions;
     if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
         return Err(ApiError::BadRequest(
@@ -1558,6 +1601,7 @@ async fn update_project(
                 path.as_deref(),
                 instructions.as_deref(),
                 model.as_ref().map(|m| m.as_deref()),
+                device_id.as_ref().map(|d| d.as_deref()),
             )
         })
         .await?
@@ -1874,4 +1918,147 @@ async fn remove_push_token(
     let token = body.token.trim().to_string();
     let removed = s.db.call(move |c| db::remove_push_token(c, &token)).await?;
     Ok(Json(json!({ "ok": true, "removed": removed })))
+}
+
+// ---------- devices ----------
+//
+// A device host (`relay host` on a phone or other machine) is paired into
+// the PC's device list. The PC stores its URL and token; the agent can then
+// work in the device's folder through the same tool interface it uses
+// locally.
+
+#[derive(Deserialize)]
+struct AddDevice {
+    id: Option<String>,
+    name: String,
+    url: String,
+    token: String,
+    os: Option<String>,
+    root: Option<String>,
+    shell: Option<String>,
+}
+
+/// Devices with a "connected" flag: true when the PC reached the host
+/// within the last two minutes.
+fn device_json(d: &crate::device::Device, online: bool) -> Value {
+    json!({
+        "id": d.id,
+        "name": d.name,
+        "url": d.url,
+        "os": d.os,
+        "root": d.root,
+        "shell": d.shell,
+        "last_seen": d.last_seen,
+        "connected": online,
+    })
+}
+
+async fn list_devices(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let devices = s.devices.list().await?;
+    let now = chrono::Utc::now();
+    let list = devices
+        .iter()
+        .map(|d| {
+            let online = d
+                .last_seen
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .map(|t| (now - t).num_seconds().abs() < 120)
+                .unwrap_or(false);
+            device_json(d, online)
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "devices": list })))
+}
+
+async fn add_device(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<AddDevice>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let url = body.url.trim().trim_end_matches('/');
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(ApiError::BadRequest(
+            "url must start with http:// or https://".into(),
+        ));
+    }
+    if body.token.trim().is_empty() {
+        return Err(ApiError::BadRequest("token is required".into()));
+    }
+    let id = body
+        .id
+        .as_deref()
+        .filter(|i| !i.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut d = crate::device::Device {
+        id: id.clone(),
+        name: body.name.trim().to_string(),
+        url: url.to_string(),
+        token: body.token.trim().to_string(),
+        os: body.os.unwrap_or_default(),
+        root: body.root.unwrap_or_default(),
+        shell: body.shell.unwrap_or_default(),
+        last_seen: crate::db::now(),
+    };
+    // Prove the pairing works before saving it.
+    let client = crate::device::DeviceClient::new(&d.url, &d.token);
+    let info = client
+        .info()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("could not reach {url}: {e}")))?;
+    d.os = info
+        .get("os")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.os)
+        .to_string();
+    d.root = info
+        .get("root")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.root)
+        .to_string();
+    d.shell = info
+        .get("shell")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.shell)
+        .to_string();
+    s.devices.upsert(&d).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "device": device_json(&d, true) })),
+    ))
+}
+
+async fn get_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    let online = s.devices.is_online(&d, 120);
+    Ok(Json(json!({ "device": device_json(&d, online) })))
+}
+
+/// Re-checks the link and refreshes `last_seen`.
+async fn ping_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    let client = crate::device::DeviceClient::new(&d.url, &d.token);
+    match client.info().await {
+        Ok(info) => {
+            s.devices.touch(&id);
+            Ok(Json(json!({ "connected": true, "info": info })))
+        }
+        Err(e) => Ok(Json(json!({ "connected": false, "error": e.to_string() }))),
+    }
+}
+
+async fn remove_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let removed = s.devices.remove(&id).await?;
+    if !removed {
+        return Err(ApiError::NotFound("device"));
+    }
+    Ok(Json(json!({ "ok": true })))
 }
