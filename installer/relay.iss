@@ -17,7 +17,7 @@
 ; %LOCALAPPDATA%\Relay and are kept on uninstall unless you choose otherwise.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.3"
+  #define AppVersion "1.0.4"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\server\target\release\relay.exe"
