@@ -196,6 +196,7 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
     upgrade(&conn)?;
+    crate::device::ensure_schema(&conn)?;
     Ok(conn)
 }
 
