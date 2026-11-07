@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Install Relay's "hands" role on a Proot Linux phone.
+# Install Relay's "hands" role on a Linux device (a phone running Proot, or a
+# full Linux PC you want to link to the brain).
 #
 #   ./install.sh            # install into ~/.relay-host and show the start line
 #   RELAY_ROOT=/home/you/app ./install.sh
 #
 # What it does:
-#   - downloads the aarch64 relay binary (from the current GitHub release)
+#   - downloads the relay binary for this machine's architecture (x86_64 or
+#     aarch64) from the current GitHub release
 #   - puts it in ~/.relay-host/
 #   - prints the one line that starts the host, and the address + token to
-#     paste into the phone app (Settings -> Devices)
+#     paste into the app (Settings -> Devices)
 #
-# The model, agent loop and chat history all stay on your PC. This only
+# The model, agent loop and chat history all stay on your brain PC. This only
 # exposes the device's folder and shell to the agent.
 
 set -euo pipefail
 
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64)  ASSET="relay-host-x86_64-linux.zip" ;;
+  aarch64|arm64) ASSET="relay-host-aarch64-linux.zip" ;;
+  *) echo "Unsupported architecture: $ARCH (need x86_64 or aarch64)" >&2; exit 1 ;;
+esac
+
 VERSION="$(curl -fsSL https://api.github.com/repos/wtanne20/Relay/releases/latest 2>/dev/null \
   | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n1 || true)"
 VERSION="${VERSION:-latest}"
-URL="https://github.com/wtanne20/Relay/releases/download/v${VERSION}/relay-host-aarch64-linux.zip"
+URL="https://github.com/wtanne20/Relay/releases/download/v${VERSION}/${ASSET}"
 DEST="${RELY_HOME:-$HOME/.relay-host}"
 ROOT="${RELY_ROOT:-$HOME}"
 

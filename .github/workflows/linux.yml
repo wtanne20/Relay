@@ -72,6 +72,7 @@ jobs:
             libfuse2 \
             patchelf \
             file \
+            zip \
             pkg-config
 
       - name: Test
@@ -91,6 +92,14 @@ jobs:
           ls -la src-tauri/target/release/bundle/deb/*.deb
           ls -la src-tauri/target/release/bundle/appimage/*.AppImage
 
+      - name: Build relay host (x86_64 Linux "hands")
+        # The runner is x86_64, so this is a native build. The same binary
+        # that runs the brain also has the `host` subcommand — on a linked
+        # Linux PC it's started as `relay host` to expose its files + shell
+        # to the Windows brain (the AI reads/edits this PC's files).
+        working-directory: server
+        run: cargo build --release --locked
+
       - name: Read version
         id: version
         run: |
@@ -102,6 +111,15 @@ jobs:
           mkdir -p dist
           cp desktop/src-tauri/target/release/bundle/deb/*.deb dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
           cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
+          # The x86_64 host (like the aarch64 one): relay binary + install.sh + start + pwa.
+          HOST=dist/relay-host-x86_64-linux
+          mkdir -p "$HOST"
+          cp server/target/release/relay "$HOST/relay"
+          cp dev/proot-install.sh "$HOST/install.sh"
+          cp dev/pwa.sh "$HOST/pwa"
+          printf '#!/bin/sh\nexec "$(dirname "$0")/relay" host --bind 0.0.0.0:8766 --root "${RELY_ROOT:-$HOME}" "$@"\n' > "$HOST/start"
+          chmod +x "$HOST/relay" "$HOST/install.sh" "$HOST/pwa" "$HOST/start"
+          (cd "$HOST" && zip -q ../relay-host-x86_64-linux.zip relay install.sh start pwa)
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
@@ -117,3 +135,4 @@ jobs:
           files: |
             dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
             dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
+            dist/relay-host-x86_64-linux.zip
