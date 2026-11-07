@@ -15,8 +15,16 @@ Four features shipped:
 - `Relay.apk` (110 MB) — Android app
 - `Relay-Dev.apk` (259 MB) — Android dev build
 - `relay-host-aarch64-linux.zip` (6.1 MB) — aarch64 "hands" + `pwa` launcher
-- **`Relay-1.0.6-amd64.deb` (10.1 MB) — Linux x64 desktop (Debian/Ubuntu)**
-- **`Relay-1.0.6-x86_64.AppImage` (83.4 MB) — Linux x64 desktop (portable)**
+- **`Relay-1.0.6-amd64.deb` (10.2 MB) — Linux x64 desktop (Debian/Ubuntu)**
+- **`Relay-1.0.6-x86_64.AppImage` (84.7 MB) — Linux x64 desktop (portable)**
+- **`relay-host-x86_64-linux.zip` (6.4 MB) — x86_64 "hands" (link a Linux PC to the brain)**
+
+### Linking a full Linux PC to the Windows brain (device-host, x86_64)
+- The Linux PC runs `relay host` (hands); the Windows PC keeps the brain.
+- `install.sh` now auto-detects arch (x86_64 vs aarch64) and pulls the right zip.
+- Flow: `./install.sh` → `~/.relay-host/start` (prints address+token) →
+  Windows app: Settings → Devices → Pair → bind a project to the device.
+- The AI then reads/edits/runs on the Linux PC's files, powered by the Windows model.
 
 ### Rollback
 - `rollback-v1.0.6` → `3118398` (file-download done, PWA not started)
