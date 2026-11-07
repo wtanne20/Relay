@@ -1,24 +1,61 @@
-# Relay — Device Host + File Download + PWA: Working Notes
+# Relay — Device Host + File Download + PWA + Linux: Working Notes
 
-> Running log. **Last updated: 2026-11-06 — v1.0.6 RELEASED.**
+> Running log. **Last updated: 2026-11-06 — v1.0.6 released (incl. Linux x64).**
 
-## v1.0.6 — RELEASED (2026-11-06)
+## v1.0.6 — RELEASED (2026-11-06) — COMPLETE (6 assets)
 
-Three features shipped:
+Four features shipped:
 1. **File downloads** — agent offers a link, app downloads + opens it.
-2. **PWA for aarch64** — the brain serves the web UI to any browser; the aarch64
-   Proot box installs it as a full-screen app (no native webkit needed).
-3. **Load model on demand** (from the v1.0.4 line, carried forward).
+2. **PWA for aarch64** — brain serves the web UI to any browser.
+3. **Linux x64 desktop** — full brain + native window (.deb + .AppImage).
+4. **Load model on demand** (from the v1.0.4 line, carried forward).
 
-### v1.0.6 release assets (all published, CI all green)
+### v1.0.6 release assets (all published)
 - `RelaySetup-1.0.6.exe` (13.4 MB) — Windows brain + desktop UI + web bundle
 - `Relay.apk` (110 MB) — Android app
 - `Relay-Dev.apk` (259 MB) — Android dev build
 - `relay-host-aarch64-linux.zip` (6.1 MB) — aarch64 "hands" + `pwa` launcher
+- **`Relay-1.0.6-amd64.deb` (10.1 MB) — Linux x64 desktop (Debian/Ubuntu)**
+- **`Relay-1.0.6-x86_64.AppImage` (83.4 MB) — Linux x64 desktop (portable)**
 
 ### Rollback
 - `rollback-v1.0.6` → `3118398` (file-download done, PWA not started)
 - `v1.0.6` → `8616047` (release)
+
+## Linux x64 desktop (NEW in v1.0.6)
+
+Goal: a full Linux x64 release — the brain + native window, exactly like
+Windows (unlike aarch64, which is Proot/hands-only + PWA).
+
+### How it works
+- Tauri can't cross-compile from Windows, so the Linux build runs on a
+  **Linux CI runner** (`.github/workflows/linux.yml`).
+- The desktop code was already cross-platform:
+  - `config.rs` data dir: `~/.local/share/relay` on Linux (not just %LOCALAPPDATA%)
+  - `setup.rs::open_in_browser`: uses `xdg-open` on Linux
+  - `config.rs::LLAMA_SERVER_EXE`: `llama-server` on Linux, `.exe` on Windows
+- Tauri bundling enabled in `tauri.conf.json` (`deb`, `appimage`); the Windows
+  build uses `--no-bundle` so it's unaffected.
+
+### DONE (all verified)
+- [x] `.github/workflows/linux.yml` — Linux CI (deps, test, Tauri build,
+      rename, upload, publish-on-tag)
+- [x] `tauri.conf.json` — `bundle.active: true`, targets `deb`, `appimage`
+- [x] CI build **succeeded** on a Linux runner (tests passed on Linux too)
+- [x] Artifacts: `Relay-1.0.6-amd64.deb` + `Relay-1.0.6-x86_64.AppImage`
+- [x] Both attached to the v1.0.6 release
+
+### Tauri Linux build dependencies (installed by CI)
+libwebkit2gtk-4.1-dev, libgtk-3-dev, libayatana-appindicator3-dev,
+librsvg2-dev, libssl-dev, libfuse2, patchelf, file, build-essential, curl,
+pkg-config
+
+### NOT VERIFIED (needs a real Linux x64 box)
+- [ ] Install the .deb or run the .AppImage on a real x64 Linux desktop
+- [ ] Verify the brain runs (model loads, agent works) in the native window
+- [ ] Verify the PWA also works from a browser on that box (same brain)
+
+## PWA for aarch64 Linux (v1.0.6)
 
 ### How the aarch64 box works (owner's requirement met)
 - **Brain stays on the Windows PC** (model, agent, history, approvals).
