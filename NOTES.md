@@ -18,6 +18,7 @@ Four features shipped:
 - **`Relay-1.0.6-amd64.deb` (10.2 MB) — Linux x64 desktop (Debian/Ubuntu)**
 - **`Relay-1.0.6-x86_64.AppImage` (84.7 MB) — Linux x64 desktop (portable)**
 - **`relay-host-x86_64-linux.zip` (6.4 MB) — x86_64 "hands" (link a Linux PC to the brain)**
+- **`RelayClient-1.0.6-amd64.deb` (5.1 MB) — installable "just works" client (Claude-like)**
 
 ### Linking a full Linux PC to the Windows brain (device-host, x86_64)
 - The Linux PC runs `relay host` (hands); the Windows PC keeps the brain.
@@ -25,6 +26,24 @@ Four features shipped:
 - Flow: `./install.sh` → `~/.relay-host/start` (prints address+token) →
   Windows app: Settings → Devices → Pair → bind a project to the device.
 - The AI then reads/edits/runs on the Linux PC's files, powered by the Windows model.
+
+### Relay Client (the "install and just works" app — Claude-like)
+Goal: install on a laptop, and it uses the local files while the home desktop
+does the processing. (User's exact ask, 2026-11-08.)
+
+- **`RelayClient-<v>-amd64.deb`** — installs the relay binary + a "Relay" app.
+- First run: enter the brain's address + token (one time). Then it:
+  1. starts the host (exposes this machine's files + shell),
+  2. pairs it with the brain (new `relay pair-device` command),
+  3. opens the UI (the brain serves it).
+- Later runs: ensures the host is up + opens the UI.
+- Files: `dev/relay-client/relay-client` (launcher), `relay-client.desktop`
+  (menu entry), `relay-host.service` (systemd user service),
+  `dev/build-relay-client.sh` (assembles the .deb), `server/src/main.rs`
+  (new `pair-device` subcommand).
+- CI: Linux workflow builds it after the relay binary.
+- Verified: valid .deb, downloads cleanly, 83+12+6 tests + clippy clean.
+- NOT verified: real install on a Linux laptop (user to test).
 
 ### Rollback
 - `rollback-v1.0.6` → `3118398` (file-download done, PWA not started)
