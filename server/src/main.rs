@@ -55,6 +55,24 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
+    /// Register this device (host) with a Relay brain so it can be paired.
+    PairDevice {
+        /// The brain's address, e.g. http://my-pc:8765.
+        #[arg(long)]
+        brain: String,
+        /// The brain's token (from its config.toml).
+        #[arg(long)]
+        token: String,
+        /// This device's name (shown in the brain's device list).
+        #[arg(long, default_value = "this-device")]
+        name: String,
+        /// This device's host address (what the brain will connect to).
+        #[arg(long, default_value = "127.0.0.1:8766")]
+        host: String,
+        /// This device's host token (from host.toml).
+        #[arg(long)]
+        host_token: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -153,6 +171,59 @@ async fn main() -> Result<()> {
                 eprintln!("\n  Relay host could not start: {e:#}\n");
             }
             result
+        }
+        Command::PairDevice {
+            brain,
+            token,
+            name,
+            host,
+            host_token,
+        } => {
+            // Register this device with the brain's /devices endpoint.
+            let brain = brain.trim_end_matches('/');
+            let host_token = match host_token {
+                Some(t) if !t.trim().is_empty() => t,
+                _ => {
+                    let state_path =
+                        config_path.parent().unwrap_or(Path::new(".")).join("host.toml");
+                    if let Ok(s) = std::fs::read_to_string(&state_path)
+                        && let Ok(v) = toml::from_str::<std::collections::HashMap<String, String>>(&s)
+                        && let Some(t) = v.get("token")
+                        && !t.trim().is_empty()
+                    {
+                        t.clone()
+                    } else {
+                        anyhow::bail!(
+                            "no host token. Start the host first (`relay host`), \
+                             or pass --host-token."
+                        )
+                    }
+                }
+            };
+            let body = serde_json::json!({
+                "name": name,
+                "url": host,
+                "token": host_token,
+            });
+            let client = reqwest::Client::new();
+            let resp = client
+                .post(format!("{brain}/devices"))
+                .header("Authorization", format!("Bearer {token}"))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| anyhow::anyhow!("could not reach the brain at {brain}: {e}"))?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                println!("Paired with the brain. This device is now in its device list.");
+                println!("  Name:  {name}");
+                println!("  Host:  {host}");
+                println!("  Brain: {brain}");
+                Ok(())
+            } else {
+                anyhow::bail!("brain returned {status}: {text}")
+            }
         }
     }
 }

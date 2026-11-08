@@ -1,0 +1,122 @@
+#!/bin/sh
+# Relay Client — connect this machine to a Relay brain.
+#
+# First run: asks for the brain's address + token, then starts the host
+# (which exposes this machine's files + shell), pairs it with the brain, and
+# opens the UI. Later runs just make sure the host is up and open the UI.
+#
+# The brain (the PC running the model) does all the thinking. This box is
+# only the "hands" — the AI reads/edits this machine's files and runs
+# commands here.
+
+set -u
+
+BIN="${RELAY_BIN:-/usr/local/bin/relay}"
+CONF_DIR="$HOME/.relay-client"
+CONF="$CONF_DIR/config.toml"
+HOST_PORT=8766
+mkdir -p "$CONF_DIR"
+
+# Read a string value from the simple config.toml.
+cfg_get() {
+  grep -E "^$1[[:space:]]*=" "$CONF" 2>/dev/null | head -n1 | sed -E 's/^.*"(.*)".*$/\1/'
+}
+
+# Best guess at this machine's network-reachable IPv4 (for the brain to reach).
+lan_ip() {
+  hostname -I 2>/dev/null | awk '{print $1}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || \
+  ip -4 addr show 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | grep -v '^127\.' | head -n1 || \
+  echo ""
+}
+
+BRAIN_URL="$(cfg_get brain_url)"
+BRAIN_TOKEN="$(cfg_get brain_token)"
+HOST_ADDR="$(cfg_get host_addr)"
+
+# First run: collect the brain's address + token.
+if [ -z "$BRAIN_URL" ] || [ -z "$BRAIN_TOKEN" ]; then
+  echo "=== Relay Client: first-time setup ==="
+  echo "This connects to a Relay brain (the PC running the model)."
+  echo
+  printf "Brain address (e.g. my-pc:8765 or 192.168.1.10:8765): "
+  read -r addr
+  case "$addr" in
+    http://*|https://*) BRAIN_URL="$addr" ;;
+    *) BRAIN_URL="http://$addr" ;;
+  esac
+  printf "Brain token (from config.toml on the brain PC): "
+  read -r tok
+  BRAIN_TOKEN="$tok"
+
+  # The address the brain will use to reach THIS machine's host.
+  GUESS="$(lan_ip)"
+  printf "Address of THIS machine (the brain connects here) [%s]: " "${GUESS:-?}"
+  read -r hostaddr
+  [ -z "$hostaddr" ] && hostaddr="$GUESS"
+
+  cat > "$CONF" <<EOF
+# Relay Client config (created by relay-client)
+brain_url = "$BRAIN_URL"
+brain_token = "$BRAIN_TOKEN"
+host_addr = "${hostaddr:-$GUESS}"
+host_port = "$HOST_PORT"
+host_name = "relay-client"
+EOF
+  chmod 600 "$CONF"
+  HOST_ADDR="$(cfg_get host_addr)"
+fi
+
+HOST_ADDR="${HOST_ADDR:-$(lan_ip)}"
+HOST_NAME="$(cfg_get host_name)"; HOST_NAME="${HOST_NAME:-relay-client}"
+
+# Make sure the host is running (it exposes this machine's files + shell).
+host_up() { curl -fsS "http://127.0.0.1:$HOST_PORT/info" >/dev/null 2>&1; }
+if ! host_up; then
+  echo "Starting the Relay host on this machine..."
+  nohup "$BIN" host \
+    --bind "0.0.0.0:$HOST_PORT" \
+    --root "$HOME" \
+    --name "$HOST_NAME" \
+    --config "$CONF" \
+    > "$CONF_DIR/host.log" 2>&1 &
+  i=0
+  while [ $i -lt 20 ] && ! host_up; do
+    sleep 0.5
+    i=$((i + 1))
+  done
+  if ! host_up; then
+    echo "The host did not start. Log: $CONF_DIR/host.log" >&2
+    exit 1
+  fi
+fi
+
+# The host's token (it generated one and saved it next to the config).
+HOST_TOKEN="$(grep -E '^token[[:space:]]*=' "$CONF_DIR/host.toml" 2>/dev/null | head -n1 | sed -E 's/^.*"(.*)".*$/\1/')"
+if [ -z "$HOST_TOKEN" ]; then
+  echo "Could not read the host token ($CONF_DIR/host.toml)." >&2
+  exit 1
+fi
+
+# Pair this host with the brain (records it in the brain's device list).
+echo "Pairing with the brain at $BRAIN_URL ..."
+if "$BIN" pair-device \
+  --brain "$BRAIN_URL" \
+  --token "$BRAIN_TOKEN" \
+  --name "$HOST_NAME" \
+  --host "${HOST_ADDR}:$HOST_PORT" \
+  --host-token "$HOST_TOKEN"; then
+  echo "Paired. The brain can now use this machine's files."
+else
+  echo "Pairing failed (is the brain reachable? is the token right?)." >&2
+  echo "You can retry by running: relay-client" >&2
+fi
+
+# Open the UI (the brain serves it).
+echo "Opening the Relay UI at $BRAIN_URL ..."
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$BRAIN_URL" >/dev/null 2>&1 &
+elif command -v open >/dev/null 2>&1; then
+  open "$BRAIN_URL" >/dev/null 2>&1 &
+else
+  echo "Open this URL in your browser: $BRAIN_URL"
+fi
