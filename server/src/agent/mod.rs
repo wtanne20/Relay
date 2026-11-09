@@ -697,10 +697,12 @@ impl AgentManager {
             self.load_pictures(&history, &mut pictures).await;
             let mut body = request_body(&conf, &system, &history, &tool_defs, &pictures);
             let mut bytes = compact::prompt_bytes(&body);
+            // Room kept free for the reply (thinking included): compaction
+            // starts early enough that a long thought isn't cut off.
             let reserve = if conf.sampling.max_tokens > 0 {
                 u64::from(conf.sampling.max_tokens)
             } else {
-                0
+                reply_reserve(ctx_tokens)
             };
             let room = ctx_tokens.saturating_sub(reserve) as f64;
             if bytes as f64 * tokens_per_byte > room * compact::TRIGGER {
@@ -790,7 +792,7 @@ impl AgentManager {
             retried = false;
             step += 1;
 
-            let (turn, stopped) = match result {
+            let (mut turn, stopped) = match result {
                 llm::StreamResult::Complete(t) => (t, false),
                 llm::StreamResult::Cancelled(t) => (t, true),
             };
@@ -801,6 +803,12 @@ impl AgentManager {
             }
             if stopped && turn.content.is_empty() && turn.reasoning.is_empty() {
                 return Ok(LoopEnd::Stopped);
+            }
+            // The model ran out of context mid-reply: say so instead of
+            // passing the unfinished text off as the answer.
+            if !stopped && turn.tool_calls.is_empty() && turn.finish_reason.as_deref() == Some("length") {
+                tracing::warn!("reply cut off: the model's context is full");
+                turn.content.push_str(CUT_OFF_NOTE);
             }
 
             let assistant = NewMessage {
@@ -1531,10 +1539,19 @@ pub const WEB_HINT: &str = "\n# Web\nYou can search the web with web_search and 
 /// Sent when thinking is set to Brief.
 pub const BRIEF_THINKING_HINT: &str = "\n# Thinking\nKeep your private thinking brief: a few short sentences to plan the next step, then act. Don't draft the answer or re-check things you already know while thinking.\n";
 
+/// Added to a reply the model couldn't finish because its context filled up.
+pub const CUT_OFF_NOTE: &str = "\n\n---\n*Relay: this reply was cut off because the model ran out of context (it may have been going in circles). Say \"continue\" to pick up from here, or start a new chat. A presence penalty of about 1 to 1.5 (Settings > Agent settings) helps against loops.*";
+
+/// Context kept free for the reply when no max_tokens is set: a quarter of
+/// the context, at most 16k tokens.
+fn reply_reserve(ctx_tokens: u64) -> u64 {
+    (ctx_tokens / 4).min(16_384)
+}
+
 /// Tells the model how to offer a file for download.
 pub const DOWNLOAD_HINT: &str = "\n# File downloads\nWhen you create a file the user may want to keep — an APK, a zip, a report, an image — offer it as a download link on its own line, using this exact format: [Download <filename>](relay-download://<path-relative-to-project>). The Relay app turns that into a download button. Only use this for files you actually created in the project folder; never for files on the web or outside the project.\n";
 
-pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. Keep any explanation short and outside the block.\n";
+pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. The picture is exactly that size (1280x800 without the tag), and the page itself is the screen: don't draw a device frame or bezel around it, don't add outer padding or margins to center it, and don't give anything a fixed width wider than the size; use width:100% and flex or grid so it fills the screen. Keep any explanation short and outside the block.\n";
 
 /// Converts stored history to OpenAI chat messages. Tool calls without a
 /// stored result (e.g. after a crash) get a synthetic result so the request
@@ -1685,6 +1702,8 @@ mod tests {
     #[test]
     fn request_uses_current_settings() {
         let mut conf = Config::default();
+        assert_eq!(reply_reserve(65_536), 16_384);
+        assert_eq!(reply_reserve(8_192), 2_048);
         conf.sampling.temperature = 0.1;
         conf.sampling.max_tokens = 512;
         conf.agent.thinking = false;
