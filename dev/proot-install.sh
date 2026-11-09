@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Install Relay's "hands" role on a Linux device (a phone running Proot, or a
-# full Linux PC you want to link to the brain).
+# Link a Linux device to your Relay brain from a terminal (a phone running
+# Proot, or a Linux PC without a desktop).
 #
-#   ./install.sh            # install into ~/.relay-host and show the start line
-#   RELAY_ROOT=/home/you/app ./install.sh
+#   ./install.sh
 #
 # What it does:
 #   - downloads the relay binary for this machine's architecture (x86_64 or
-#     aarch64) from the current GitHub release
-#   - puts it in ~/.relay-host/
-#   - prints the one line that starts the host, and the address + token to
-#     paste into the app (Settings -> Devices)
+#     aarch64) from the current GitHub release into ~/.relay-host/
+#   - asks for your brain's Tailscale address and the 6-digit code the brain
+#     shows (Settings -> Computers -> Link a computer), and pairs
+#   - prints the one line that keeps this device linked
 #
-# The model, agent loop and chat history all stay on your brain PC. This only
-# exposes the device's folder and shell to the agent.
+# The model, agent loop and chat history all stay on your brain. This only
+# lets the brain's agent work in this device's folder. To chat from this
+# device too, install the Relay desktop app (.deb) from the same release.
 
 set -euo pipefail
 
@@ -66,16 +66,20 @@ if [ -f "$tmp/pwa" ]; then
 fi
 
 echo
-echo "Installed. To start the host, run:"
+echo "Installed relay in $DEST."
+if [ -t 0 ]; then
+  echo
+  echo "Now link this device to your brain."
+  echo "On the brain: Settings -> Computers -> Link a computer shows a 6-digit code."
+  read -r -p "Brain's Tailscale IP or name (e.g. 100.101.102.103): " BRAIN
+  read -r -p "6-digit code: " CODE
+  if [ -n "$BRAIN" ] && [ -n "$CODE" ]; then
+    "$DEST/relay" link --brain "$BRAIN" --code "$CODE" --root "$ROOT" --pair-only
+  fi
+fi
+echo
+echo "To keep this device linked, run (in tmux, so it keeps going):"
 echo
 echo "  $DEST/start"
 echo
-echo "It will print the address and token. On your PC, open the Relay app:"
-echo "  Settings -> Devices -> Pair a device, and paste that address + token."
-echo
-echo "To change the folder the agent can touch, set RELY_ROOT before starting:"
-echo "  RELY_ROOT=$ROOT $DEST/start"
-echo
-echo "To get the Relay UI on this box (a full-screen app in your browser):"
-echo "  $DEST/pwa http://your-pc:8765"
-echo "  (open it, then use 'Add to Home Screen' / 'Install app')"
+echo "In Termux, run termux-wake-lock too, so Android doesn't pause it."

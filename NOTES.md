@@ -1,6 +1,23 @@
 # Relay — Device Host + File Download + PWA + Linux: Working Notes
 
-> Running log. **Last updated: 2026-11-09 — linked computers (one app, code pairing, outgoing link).**
+> Running log. **Last updated: 2026-11-09 — desktop app for Proot (arm64 .deb), v1.0.8.**
+
+## Desktop app in Proot (2026-11-09, v1.0.8)
+
+Owner wants to chat from inside Proot (Android phone, Debian/Ubuntu shown through Termux:X11 or VNC)
+with an app that looks and works like the Windows one. It is the same Tauri app, built for arm64:
+- `linux.yml` is a matrix: x64 (ubuntu-latest: .deb + AppImage + x86_64 host zip) and arm64
+  (`ubuntu-22.04-arm`, glibc 2.35 so Debian 12 / Ubuntu 22.04+ Proot images can run it: .deb only, no
+  FUSE for AppImage in Proot). Release asset: `Relay-<v>-arm64.deb`.
+- `desktop/src-tauri/src/main.rs` `in_proot()` (Android kernel in /proc/version, or TracerPid != 0;
+  `RELAY_PROOT=1/0` overrides): no tray, closing the window quits, no XDG autostart, WebKit in software
+  (`WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DISABLE_COMPOSITING_MODE`, `LIBGL_ALWAYS_SOFTWARE`).
+- The app reads the same data dir as the CLI, so a phone paired with `relay link` opens straight in
+  linked mode (stop the CLI link first, or the two share one key).
+- Host zips: `start` now runs `relay link`; `install.sh` asks for the brain address + code and pairs.
+- Install in Proot: `apt install ./Relay-1.0.8-arm64.deb`, then `relay-desktop` from the X11 session.
+NOT verified on a real phone yet (CI build only).
+
 
 ## Linked computers (2026-11-09, branch `claude/project-thread-cz7oc3`)
 
