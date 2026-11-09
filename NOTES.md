@@ -18,7 +18,8 @@ Four features shipped:
 - **`Relay-1.0.6-amd64.deb` (10.2 MB) — Linux x64 desktop (Debian/Ubuntu)**
 - **`Relay-1.0.6-x86_64.AppImage` (84.7 MB) — Linux x64 desktop (portable)**
 - **`relay-host-x86_64-linux.zip` (6.4 MB) — x86_64 "hands" (link a Linux PC to the brain)**
-- **`RelayClient-1.0.6-amd64.deb` (5.1 MB) — installable "just works" client (Claude-like)**
+- **`RelayClient-1.0.6-amd64.deb` (10.7 MB) — GUI "install and go" client (Claude-like)**
+- **`RelayClient-1.0.6-x86_64.AppImage` (85 MB) — GUI client (portable)**
 
 ### Linking a full Linux PC to the Windows brain (device-host, x86_64)
 - The Linux PC runs `relay host` (hands); the Windows PC keeps the brain.
@@ -31,19 +32,25 @@ Four features shipped:
 Goal: install on a laptop, and it uses the local files while the home desktop
 does the processing. (User's exact ask, 2026-11-08.)
 
-- **`RelayClient-<v>-amd64.deb`** — installs the relay binary + a "Relay" app.
-- First run: enter the brain's address + token (one time). Then it:
-  1. starts the host (exposes this machine's files + shell),
-  2. pairs it with the brain (new `relay pair-device` command),
-  3. opens the UI (the brain serves it).
-- Later runs: ensures the host is up + opens the UI.
-- Files: `dev/relay-client/relay-client` (launcher), `relay-client.desktop`
-  (menu entry), `relay-host.service` (systemd user service),
-  `dev/build-relay-client.sh` (assembles the .deb), `server/src/main.rs`
-  (new `pair-device` subcommand).
-- CI: Linux workflow builds it after the relay binary.
-- Verified: valid .deb, downloads cleanly, 83+12+6 tests + clippy clean.
-- NOT verified: real install on a Linux laptop (user to test).
+**V2 — a real GUI app (no terminal)** (2026-11-09, replaces the terminal .deb):
+- **`RelayClient-<v>-amd64.deb`** (10.7 MB) + **`RelayClient-<v>-x86_64.AppImage`**
+  (85 MB) — a small Tauri window (dark/green, matching Relay).
+- Double-click "Relay Client" → enter the brain's address + token once →
+  **Connect**. It then: tests the brain, starts this machine's host
+  (exposing its files + shell), pairs it with the brain, and offers "Open Relay"
+  (the UI). Remembers the brain, so later launches show the connected state.
+- The relay binary is **bundled inside the app** (Tauri resource), so the .deb
+  is self-contained — no separate binary install.
+- Files: `client/src-tauri/` (Rust backend + Tauri config),
+  `client/web/index.html` (the setup screen), `client/package.json` + lock.
+- `server/src/main.rs` — new `relay pair-device` command (the client uses it).
+- CI: Linux workflow builds it (bundles the relay binary as a resource).
+- Verified: cargo check + clippy clean (Windows baseline); Linux CI build
+  succeeded; valid .deb + AppImage, downloads cleanly.
+- NOT verified: real install + connect on a Linux laptop (user to test).
+
+**V1 — terminal-based (superseded):** `dev/relay-client/` launcher + .deb.
+Still in the repo, but the GUI app (V2) is the one to use.
 
 ### Rollback
 - `rollback-v1.0.6` → `3118398` (file-download done, PWA not started)
