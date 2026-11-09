@@ -15,12 +15,14 @@ on:
     paths:
       - "server/**"
       - "desktop/**"
+      - "client/**"
       - "mobile/**"
       - ".github/workflows/linux.yml"
   pull_request:
     paths:
       - "server/**"
       - "desktop/**"
+      - "client/**"
       - "mobile/**"
   workflow_dispatch:
 
