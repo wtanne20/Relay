@@ -2,8 +2,10 @@
 //! Proot Linux) that exposes its own file system and shell to the PC's
 //! agent. One binary, two roles: `relay serve` is the brain (model, agent
 //! loop, history), `relay host` is the hands (files + commands on the
-//! device). The PC calls the host over Tailscale with a per-device bearer
-//! token; every path is confined to the host's root folder by the same
+//! device). Usually the device dials in to the brain and keeps a link open
+//! ([`crate::link`]); an older "direct" device is called over Tailscale with
+//! a per-device bearer token instead. Either way every path is confined to
+//! the host's root folder (or the project folder inside it) by the same
 //! [`crate::tools::Sandbox`] used for local projects.
 //!
 //! Commands run as *jobs* (`POST /run` -> id, then poll `GET /run/{id}`)
@@ -50,6 +52,23 @@ pub struct Device {
     pub shell: String,
     /// Last time the PC successfully reached the host (RFC 3339).
     pub last_seen: String,
+    /// CPU architecture reported by the device ("x86_64", "aarch64", ...).
+    #[serde(default)]
+    pub arch: String,
+    /// The device's own computer name.
+    #[serde(default)]
+    pub hostname: String,
+}
+
+/// `url` of a device that dials in to the brain (instead of the brain
+/// calling it). Such a device is reachable only while its link is up.
+pub const LINK_URL: &str = "link:";
+
+impl Device {
+    /// True for a device that connects out to the brain over a link.
+    pub fn is_link(&self) -> bool {
+        self.url.starts_with(LINK_URL)
+    }
 }
 
 /// Registered devices, stored in the PC's relay.db.
@@ -66,7 +85,7 @@ impl DeviceRegistry {
         self.db
             .call(|c| {
                 let mut st = c.prepare(
-                    "SELECT id, name, url, token, os, root, shell, last_seen
+                    "SELECT id, name, url, token, os, root, shell, last_seen, arch, hostname
                      FROM devices ORDER BY name COLLATE NOCASE",
                 )?;
                 let rows = st.query_map([], |r| {
@@ -79,6 +98,8 @@ impl DeviceRegistry {
                         root: r.get(5)?,
                         shell: r.get(6)?,
                         last_seen: r.get(7)?,
+                        arch: r.get(8)?,
+                        hostname: r.get(9)?,
                     })
                 })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -99,17 +120,19 @@ impl DeviceRegistry {
             d.shell.clone(),
             d.last_seen.clone(),
         );
+        let (arch, hostname) = (d.arch.clone(), d.hostname.clone());
         self.db
             .call(move |c| {
                 c.execute(
-                    "INSERT INTO devices (id, name, url, token, os, root, shell, last_seen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    "INSERT INTO devices (id, name, url, token, os, root, shell, last_seen, arch, hostname)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                      ON CONFLICT(id) DO UPDATE SET
                        name = excluded.name, url = excluded.url, token = excluded.token,
                        os = excluded.os, root = excluded.root, shell = excluded.shell,
-                       last_seen = excluded.last_seen",
+                       last_seen = excluded.last_seen, arch = excluded.arch,
+                       hostname = excluded.hostname",
                     rusqlite::params![
-                        id, name, url, token, os, root, shell, last_seen
+                        id, name, url, token, os, root, shell, last_seen, arch, hostname
                     ],
                 )?;
                 Ok(())
@@ -122,7 +145,7 @@ impl DeviceRegistry {
         self.db
             .call(move |c| {
                 let mut st = c.prepare(
-                    "SELECT id, name, url, token, os, root, shell, last_seen
+                    "SELECT id, name, url, token, os, root, shell, last_seen, arch, hostname
                      FROM devices WHERE id = ?1",
                 )?;
                 let mut rows = st.query_map([id], |r| {
@@ -135,11 +158,21 @@ impl DeviceRegistry {
                         root: r.get(5)?,
                         shell: r.get(6)?,
                         last_seen: r.get(7)?,
+                        arch: r.get(8)?,
+                        hostname: r.get(9)?,
                     })
                 })?;
                 Ok(rows.next().transpose()?)
             })
             .await
+    }
+
+    /// The link device whose key this is (the key is what it connects with).
+    pub async fn by_key(&self, key: &str) -> Result<Option<Device>> {
+        let all = self.list().await?;
+        Ok(all
+            .into_iter()
+            .find(|d| d.is_link() && constant_time_eq(d.token.as_bytes(), key.as_bytes())))
     }
 
     pub async fn remove(&self, id: &str) -> Result<bool> {
@@ -181,6 +214,10 @@ impl DeviceRegistry {
 
 // ---------------------------------------------------------------- host app
 
+/// Header naming the project folder (an absolute path on the device, inside
+/// its root) a request works in. Without it, requests work in the root.
+pub const FOLDER_HEADER: &str = "x-relay-folder";
+
 /// What a device host needs to know; everything else stays on the PC.
 #[derive(Clone)]
 pub struct HostConfig {
@@ -219,6 +256,34 @@ struct HostState {
     cfg: HostConfig,
     sandbox: Arc<Sandbox>,
     runs: Arc<std::sync::Mutex<HashMap<String, RunJob>>>,
+}
+
+impl HostState {
+    /// The sandbox for one request: the project folder it names (which must
+    /// sit inside the device's root), or the root itself.
+    fn sandbox_for(&self, headers: &axum::http::HeaderMap) -> ApiResult<Arc<Sandbox>> {
+        let Some(folder) = headers
+            .get(FOLDER_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        else {
+            return Ok(Arc::clone(&self.sandbox));
+        };
+        let dir = self
+            .sandbox
+            .resolve_existing(folder, Access::Read)
+            .map_err(|_| {
+                DeviceError::BadRequest(format!(
+                    "the project folder {folder} does not exist on this device, or is outside {}",
+                    self.sandbox.root.display()
+                ))
+            })?;
+        if !dir.is_dir() {
+            return Err(DeviceError::BadRequest(format!("{folder} is not a folder")));
+        }
+        Ok(Arc::new(Sandbox::new(&dir, &[])?))
+    }
 }
 
 type ApiResult<T> = Result<T, DeviceError>;
@@ -294,15 +359,17 @@ async fn info(State(st): State<HostState>) -> ApiResult<Json<Value>> {
         "name": st.cfg.name,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "root": st.cfg.root.to_string_lossy(),
+        "root": st.sandbox.root.to_string_lossy(),
+        "hostname": crate::link::hostname(),
         "shell": st.cfg.shell,
         "version": env!("CARGO_PKG_VERSION"),
     })))
 }
 
 async fn list(State(st): State<HostState>, req: Request) -> ApiResult<Json<Value>> {
+    let sandbox = st.sandbox_for(req.headers())?;
     let path = query_path(&req).unwrap_or_else(|| ".".into());
-    let dir = st.sandbox.resolve_existing(&path, Access::Read)?;
+    let dir = sandbox.resolve_existing(&path, Access::Read)?;
     if !dir.is_dir() {
         return Err(DeviceError::BadRequest(format!("{path} is not a directory")));
     }
@@ -330,8 +397,9 @@ async fn list(State(st): State<HostState>, req: Request) -> ApiResult<Json<Value
 }
 
 async fn read(State(st): State<HostState>, req: Request) -> ApiResult<Response> {
+    let sandbox = st.sandbox_for(req.headers())?;
     let path = query_path(&req).ok_or_else(|| DeviceError::BadRequest("missing ?path=".into()))?;
-    let p = st.sandbox.resolve_existing(&path, Access::Read)?;
+    let p = sandbox.resolve_existing(&path, Access::Read)?;
     if p.is_dir() {
         return Err(DeviceError::BadRequest(format!("{path} is a directory")));
     }
@@ -366,18 +434,20 @@ struct WriteBody {
 
 async fn write(
     State(st): State<HostState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<WriteBody>,
 ) -> ApiResult<Json<Value>> {
-    let path = st.sandbox.resolve_for_write(&body.path)?;
+    let sandbox = st.sandbox_for(&headers)?;
+    let path = sandbox.resolve_for_write(&body.path)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     // Re-check after creating directories (defends against races with links).
-    let path = st.sandbox.resolve_for_write(&body.path)?;
+    let path = sandbox.resolve_for_write(&body.path)?;
     tokio::fs::write(&path, &body.content).await?;
     Ok(Json(json!({
         "ok": true,
-        "path": st.sandbox.display(&path),
+        "path": sandbox.display(&path),
         "bytes": body.content.len(),
     })))
 }
@@ -391,12 +461,14 @@ struct EditBody {
 
 async fn edit(
     State(st): State<HostState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<EditBody>,
 ) -> ApiResult<Json<Value>> {
+    let sandbox = st.sandbox_for(&headers)?;
     if body.old_text.is_empty() {
         return Err(DeviceError::BadRequest("old_text must not be empty".into()));
     }
-    let path = st.sandbox.resolve_existing(&body.path, Access::Write)?;
+    let path = sandbox.resolve_existing(&body.path, Access::Write)?;
     let original = tokio::fs::read_to_string(&path).await?;
     // Models often send \n while files use \r\n; try both (same as local edit).
     let (text, old) = if original.contains(&body.old_text) {
@@ -411,7 +483,7 @@ async fn edit(
         0 => {
             return Err(DeviceError::BadRequest(format!(
                 "old_text not found in {}",
-                st.sandbox.display(&path)
+                sandbox.display(&path)
             )))
         }
         1 => {}
@@ -430,7 +502,7 @@ async fn edit(
     tokio::fs::write(&path, updated).await?;
     Ok(Json(json!({
         "ok": true,
-        "path": st.sandbox.display(&path),
+        "path": sandbox.display(&path),
     })))
 }
 
@@ -504,8 +576,10 @@ struct RunBody {
 
 async fn run_start(
     State(st): State<HostState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<RunBody>,
 ) -> ApiResult<Json<Value>> {
+    let sandbox = st.sandbox_for(&headers)?;
     let timeout = body
         .timeout_seconds
         .unwrap_or(st.cfg.default_timeout)
@@ -525,7 +599,7 @@ async fn run_start(
     let worker = Arc::clone(&job.result);
     let cancel = job.cancel.clone();
     let shell = st.cfg.shell.clone();
-    let root = st.sandbox.root.clone();
+    let root = sandbox.root.clone();
     tokio::spawn(async move {
         let result = tools::run_shell(
             &shell,
@@ -603,27 +677,104 @@ async fn run_cancel(
 // ---------------------------------------------------------------- PC client
 
 /// The PC side: calls a device host the same way the agent calls local
-/// tools, so a session can work in the device's folder transparently.
+/// tools, so a session can work in the device's folder transparently. The
+/// host is reached either over HTTP (a `relay host` the PC dials) or over
+/// the link the device opened to the brain.
 pub struct DeviceClient {
-    http: reqwest::Client,
-    base: String,
-    token: String,
+    transport: Transport,
+    /// The project folder on the device (absolute), or the device root.
+    folder: Option<String>,
 }
+
+enum Transport {
+    Http {
+        http: reqwest::Client,
+        base: String,
+        token: String,
+    },
+    Link(Option<Arc<crate::link::Link>>),
+}
+
+/// How long one request to a device may take (commands are polled jobs,
+/// so this only bounds a single file read, write or poll).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl DeviceClient {
     pub fn new(url: &str, token: &str) -> Self {
         Self {
-            http: reqwest::Client::builder()
-                // Fail fast when the device is unreachable (a dropped
-                // Tailscale link) instead of waiting out the full request
-                // timeout; the agent must never hang on a dead device.
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(60))
-                .build()
-                .unwrap_or_default(),
-            base: url.trim_end_matches('/').to_string(),
-            token: token.to_string(),
+            transport: Transport::Http {
+                http: reqwest::Client::builder()
+                    // Fail fast when the device is unreachable (a dropped
+                    // Tailscale link) instead of waiting out the full request
+                    // timeout; the agent must never hang on a dead device.
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(REQUEST_TIMEOUT)
+                    .build()
+                    .unwrap_or_default(),
+                base: url.trim_end_matches('/').to_string(),
+                token: token.to_string(),
+            },
+            folder: None,
         }
+    }
+
+    /// The client for a registered device: over its link when it dials in,
+    /// over HTTP otherwise.
+    pub fn for_device(d: &Device, links: &crate::link::LinkHub) -> Self {
+        if d.is_link() {
+            Self { transport: Transport::Link(links.get(&d.id)), folder: None }
+        } else {
+            Self::new(&d.url, &d.token)
+        }
+    }
+
+    /// Works in this folder on the device (an absolute path inside its root).
+    pub fn in_folder(mut self, folder: Option<&str>) -> Self {
+        self.folder = folder.map(str::trim).filter(|f| !f.is_empty()).map(str::to_string);
+        self
+    }
+
+    /// One request; returns the body of a 2xx answer, an error otherwise.
+    async fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Vec<u8>> {
+        let (status, bytes) = match &self.transport {
+            Transport::Link(None) => {
+                return Err(anyhow::anyhow!(
+                    "the device is offline (it is not connected to this brain right now)"
+                ));
+            }
+            Transport::Link(Some(link)) => {
+                let body = body.map(|b| b.to_string().into_bytes());
+                let r = link
+                    .request(method, path, self.folder.as_deref(), body, REQUEST_TIMEOUT)
+                    .await?;
+                (r.status, r.body)
+            }
+            Transport::Http { http, base, token } => {
+                let m = axum::http::Method::from_bytes(method.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let mut req = http
+                    .request(m, format!("{base}{path}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"));
+                if let Some(f) = &self.folder {
+                    req = req.header(FOLDER_HEADER, f.as_str());
+                }
+                if let Some(b) = body {
+                    req = req.json(&b);
+                }
+                let resp = req.send().await.map_err(|e| anyhow_err(&e))?;
+                let status = resp.status().as_u16();
+                let bytes = resp.bytes().await.map_err(|e| anyhow_err(&e))?.to_vec();
+                (status, bytes)
+            }
+        };
+        if (200..300).contains(&status) {
+            return Ok(bytes);
+        }
+        let msg = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| format!("the device answered {status}"));
+        Err(anyhow::anyhow!("{msg}"))
     }
 
     pub async fn info(&self) -> Result<Value> {
@@ -632,8 +783,7 @@ impl DeviceClient {
 
     /// Lists a folder; returns the same shape the local list_dir prints.
     pub async fn list_dir(&self, path: &str) -> Result<String> {
-        let v: Value = self.get(&format!("/list?path={}", urlenc(path))).await?;
-        let entries = v.as_array().cloned().unwrap_or_default();
+        let entries = self.list_entries(path).await?;
         let total = entries.len();
         let mut out = format!("{} ({} entries)\n", path, total);
         for e in entries.into_iter().take(1000) {
@@ -652,19 +802,19 @@ impl DeviceClient {
         Ok(out)
     }
 
+    /// A folder's entries as `{name, dir, size}` objects.
+    pub async fn list_entries(&self, path: &str) -> Result<Vec<Value>> {
+        let v: Value = self.get(&format!("/list?path={}", urlenc(path))).await?;
+        Ok(v.as_array().cloned().unwrap_or_default())
+    }
+
+    /// A file's raw bytes.
+    pub async fn read_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        self.call("GET", &format!("/read?path={}", urlenc(path)), None).await
+    }
+
     pub async fn read_file(&self, path: &str) -> Result<String> {
-        let bytes = self
-            .http
-            .get(format!("{}/read?path={}", self.base, urlenc(path)))
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-            .send()
-            .await
-            .map_err(|e| anyhow_err(&e))?
-            .error_for_status()
-            .map_err(|e| anyhow_err(&e))?
-            .bytes()
-            .await
-            .map_err(|e| anyhow_err(&e))?;
+        let bytes = self.read_bytes(path).await?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         Ok(tools::truncate_head(
             &text,
@@ -727,12 +877,7 @@ impl DeviceClient {
                 Err(e) => {
                     let since = *poll_fail_since.get_or_insert_with(Instant::now);
                     if Instant::now() - since > POLL_GRACE {
-                        let _ = self
-                            .http
-                            .delete(format!("{}/run/{id}", self.base))
-                            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-                            .send()
-                            .await;
+                        let _ = self.cancel_run(&id).await;
                         return Err(anyhow::anyhow!("device stopped responding: {e}"));
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -771,12 +916,7 @@ impl DeviceClient {
                 });
             }
             if Instant::now() > deadline {
-                let _ = self
-                    .http
-                    .delete(format!("{}/run/{id}", self.base))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-                    .send()
-                    .await;
+                let _ = self.cancel_run(&id).await;
                 return Err(anyhow_err("timed out waiting for the device"));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -785,46 +925,18 @@ impl DeviceClient {
 
     /// Cancels a running command on the device.
     pub async fn cancel_run(&self, id: &str) -> Result<()> {
-        self.http
-            .delete(format!("{}/run/{id}", self.base))
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-            .send()
-            .await
-            .map_err(|e| anyhow_err(&e))?;
+        self.call("DELETE", &format!("/run/{id}"), None).await?;
         Ok(())
     }
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
-        let v: Value = self
-            .http
-            .get(format!("{}{path}", self.base))
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-            .send()
-            .await
-            .map_err(|e| anyhow_err(&e))?
-            .error_for_status()
-            .map_err(|e| anyhow_err(&e))?
-            .json()
-            .await
-            .map_err(|e| anyhow_err(&e))?;
-        Ok(serde_json::from_value(v)?)
+        let bytes = self.call("GET", path, None).await?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     async fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: Value) -> Result<T> {
-        let v: Value = self
-            .http
-            .post(format!("{}{path}", self.base))
-            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| anyhow_err(&e))?
-            .error_for_status()
-            .map_err(|e| anyhow_err(&e))?
-            .json()
-            .await
-            .map_err(|e| anyhow_err(&e))?;
-        Ok(serde_json::from_value(v)?)
+        let bytes = self.call("POST", path, Some(body)).await?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 }
 
@@ -860,6 +972,20 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
             last_seen TEXT NOT NULL DEFAULT ''
         );",
     )?;
+    let has = |col: &str| -> Result<bool> {
+        let mut st = c.prepare("SELECT name FROM pragma_table_info('devices')")?;
+        let names = st
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names.iter().any(|n| n == col))
+    };
+    for col in ["arch", "hostname"] {
+        if !has(col)? {
+            c.execute_batch(&format!(
+                "ALTER TABLE devices ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+            ))?;
+        }
+    }
     Ok(())
 }
 

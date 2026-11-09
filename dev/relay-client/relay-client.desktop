@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Relay
-Comment=Use the Relay brain on this machine (its files + shell)
-Exec=relay-client
-Terminal=false
-Categories=Development;
-Keywords=relay;ai;coding;agent;

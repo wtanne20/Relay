@@ -3421,7 +3421,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -3429,6 +3429,7 @@ dependencies = [
  "chrono",
  "clap",
  "dunce",
+ "futures-util",
  "image",
  "libc",
  "pdf-extract",
@@ -3441,8 +3442,10 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
+ "tower",
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
@@ -3453,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "relay-desktop"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "relay",

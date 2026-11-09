@@ -30,6 +30,8 @@ export interface TailscaleInfo {
 
 export interface ServerInfo {
   name: string;
+  /** Always "brain": the computer that runs the model, agent and history. */
+  role?: 'brain';
   version: string;
   hostname: string;
   os: string;
@@ -54,23 +56,49 @@ export interface Project {
   created_at: string;
   /** Model file this project's chats use; null follows whatever is loaded. */
   model?: string | null;
-  /** A paired device this project's tools run on; null = the PC. */
+  /** A paired device this project's folder is on; null = the brain. */
   device_id?: string | null;
   /** Hidden from the lists until restored. */
   archived?: boolean;
+  /** Which computer the folder is on (filled in by the brain). */
+  location?: ProjectLocation;
 }
+
+/** Where a project's files live: the brain itself, or a paired computer. */
+export type ProjectLocation =
+  | { kind: 'none' }
+  | { kind: 'brain'; name: string; online: boolean }
+  | { kind: 'device'; device_id: string; name: string; online: boolean };
 
 /** A paired device (e.g. a phone with Proot Linux) the agent can work in. */
 export interface Device {
   id: string;
   name: string;
-  url: string;
+  /** Its own computer name. */
+  hostname?: string;
+  /** Only for "direct" devices (the brain calls them). */
+  url?: string | null;
+  /** "link": it connects to the brain (Relay app / `relay link`); "direct": `relay host`. */
+  connection?: 'link' | 'direct';
+  /** The address it is connected from (its Tailscale IP), while connected. */
+  address?: string | null;
   os?: string;
+  arch?: string;
+  /** The folder it shares with the agent. */
   root?: string;
   shell?: string;
   last_seen?: string;
-  /** The PC reached this device within the last two minutes. */
+  /** The brain can reach it right now. */
   connected?: boolean;
+}
+
+/** A pairing code shown on the brain, typed on the new computer. */
+export interface PairCode {
+  code: string;
+  expires_at: string;
+  brain_url: string;
+  brain_name: string;
+  tailscale: boolean;
 }
 
 /** The built-in space for plain chats (no folder, no tools). */

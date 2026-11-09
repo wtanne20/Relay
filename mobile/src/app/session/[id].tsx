@@ -26,6 +26,7 @@ import {
   UserBubble,
 } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { LocationChip, locationLabel, useHere } from '../../components/Location';
 import { AttachMenu, AttachmentStrip, useAttachments } from '../../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
@@ -92,6 +93,8 @@ export default function ChatScreen() {
   }, [stream.title]);
 
   const plain = session?.project_id === CHATS_ID;
+  const here = useHere();
+  const where = locationLabel(project?.location, here);
 
   const running = stream.status === 'running';
   useEffect(() => {
@@ -256,6 +259,14 @@ export default function ChatScreen() {
           <Text style={type.titleMedium} numberOfLines={1}>
             {title}
           </Text>
+          {project && !plain ? (
+            <View style={styles.whereRow}>
+              <Text style={[type.bodySmall, styles.whereProject]} numberOfLines={1}>
+                {project.name}
+              </Text>
+              <LocationChip location={project.location} compact />
+            </View>
+          ) : null}
           {linkLabel ? (
             <Pressable onPress={stream.reconnect} hitSlop={6} accessibilityRole="button" style={styles.linkRow}>
               <Icon name="wifi-off" size={14} color={m3.warning} />
@@ -283,7 +294,9 @@ export default function ChatScreen() {
                 <Text style={[type.bodyLarge, styles.emptyBody]}>
                   {plain
                     ? 'A plain chat with your local model. It runs privately on your PC and has no access to your files.'
-                    : `The agent reads, edits and runs code in ${project?.name ?? 'this project'} on your PC.`}
+                    : `The agent reads, edits and runs code in ${project?.name ?? 'this project'}${
+                        where ? `, with the files on ${where.brain ? where.text.replace(' (brain)', ', the brain') : where.text}` : ''
+                      }.${where && !where.online ? ' That computer is offline right now.' : ''}`}
                 </Text>
               </View>
             ) : (
@@ -487,6 +500,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: m3.outlineVariant,
   },
+  whereRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, minWidth: 0 },
+  whereProject: { color: m3.onSurfaceVariant, flexShrink: 1 },
   headerText: { flex: 1, minWidth: 0, paddingHorizontal: space.xs },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   list: { paddingHorizontal: space.lg, paddingVertical: space.md },

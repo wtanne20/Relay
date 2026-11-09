@@ -4,9 +4,11 @@ name: Linux desktop (x64)
 # Tauri can't cross-compile from Windows, so this runs on a Linux runner.
 # Produces a .deb and an .AppImage — the two standard Linux desktop formats.
 #
-# This is the "full" Linux release: the brain (model, agent, history) runs
-# locally, exactly like the Windows app. (The aarch64 Proot box is different —
-# that one is hands-only and uses the PWA.)
+# One app for every Linux desktop: on first launch it asks whether this
+# computer is the brain (model, agent, history run here, like on Windows) or
+# a computer linked to a brain elsewhere on the tailnet (it shares its files;
+# the brain does the thinking). (The aarch64 Proot box is different: it runs
+# `relay link` from the host zip and uses the PWA.)
 
 on:
   push:
@@ -15,14 +17,12 @@ on:
     paths:
       - "server/**"
       - "desktop/**"
-      - "client/**"
       - "mobile/**"
       - ".github/workflows/linux.yml"
   pull_request:
     paths:
       - "server/**"
       - "desktop/**"
-      - "client/**"
       - "mobile/**"
   workflow_dispatch:
 
@@ -90,6 +90,9 @@ jobs:
         working-directory: desktop
         run: |
           npm ci
+          # The target cache keeps old versions' bundles; start clean so the
+          # copy below finds exactly this version's .deb and .AppImage.
+          rm -rf src-tauri/target/release/bundle
           npx tauri build --bundles deb,appimage
           ls -la src-tauri/target/release/bundle/deb/*.deb
           ls -la src-tauri/target/release/bundle/appimage/*.AppImage
@@ -108,29 +111,11 @@ jobs:
           v=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' server/Cargo.toml | head -n1)
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Build the Relay Client app (GUI, "install and go")
-        # A small Tauri window: enter the brain's address + token once, click
-        # Connect. It starts this machine's host (exposing its files + shell),
-        # pairs it with the brain, and opens the UI. No terminal needed.
-        # The relay binary is bundled inside the app (as a resource).
-        run: |
-          mkdir -p client/src-tauri/resources
-          cp server/target/release/relay client/src-tauri/resources/relay
-          chmod +x client/src-tauri/resources/relay
-          cd client
-          npm ci
-          npx tauri build --bundles deb,appimage
-          ls -la src-tauri/target/release/bundle/deb/*.deb
-          ls -la src-tauri/target/release/bundle/appimage/*.AppImage
-          cd ..
-
       - name: Rename artifacts
         run: |
           mkdir -p dist
           cp desktop/src-tauri/target/release/bundle/deb/*.deb dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
           cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
-          cp client/src-tauri/target/release/bundle/deb/*.deb dist/RelayClient-${{ steps.version.outputs.version }}-amd64.deb
-          cp client/src-tauri/target/release/bundle/appimage/*.AppImage dist/RelayClient-${{ steps.version.outputs.version }}-x86_64.AppImage
           # The x86_64 host (like the aarch64 one): relay binary + install.sh + start + pwa.
           HOST=dist/relay-host-x86_64-linux
           mkdir -p "$HOST"
@@ -155,6 +140,4 @@ jobs:
           files: |
             dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
             dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
-            dist/RelayClient-${{ steps.version.outputs.version }}-amd64.deb
-            dist/RelayClient-${{ steps.version.outputs.version }}-x86_64.AppImage
             dist/relay-host-x86_64-linux.zip
