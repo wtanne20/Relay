@@ -100,25 +100,35 @@ jobs:
         working-directory: server
         run: cargo build --release --locked
 
-      - name: Build the Relay Client .deb (installable "just works" app)
-        # Packages the relay binary + launcher + menu entry into a .deb that
-        # installs on a laptop. First run: enter the brain's address + token;
-        # it then starts the host, pairs it, and opens the UI.
-        run: |
-          bash dev/build-relay-client.sh
-          ls -la dist/RelayClient-*-amd64.deb
-
       - name: Read version
         id: version
         run: |
           v=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' server/Cargo.toml | head -n1)
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      - name: Build the Relay Client app (GUI, "install and go")
+        # A small Tauri window: enter the brain's address + token once, click
+        # Connect. It starts this machine's host (exposing its files + shell),
+        # pairs it with the brain, and opens the UI. No terminal needed.
+        # The relay binary is bundled inside the app (as a resource).
+        run: |
+          mkdir -p client/src-tauri/resources
+          cp server/target/release/relay client/src-tauri/resources/relay
+          chmod +x client/src-tauri/resources/relay
+          cd client
+          npm ci
+          npx tauri build --bundles deb,appimage
+          ls -la src-tauri/target/release/bundle/deb/*.deb
+          ls -la src-tauri/target/release/bundle/appimage/*.AppImage
+          cd ..
+
       - name: Rename artifacts
         run: |
           mkdir -p dist
           cp desktop/src-tauri/target/release/bundle/deb/*.deb dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
           cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
+          cp client/src-tauri/target/release/bundle/deb/*.deb dist/RelayClient-${{ steps.version.outputs.version }}-amd64.deb
+          cp client/src-tauri/target/release/bundle/appimage/*.AppImage dist/RelayClient-${{ steps.version.outputs.version }}-x86_64.AppImage
           # The x86_64 host (like the aarch64 one): relay binary + install.sh + start + pwa.
           HOST=dist/relay-host-x86_64-linux
           mkdir -p "$HOST"
@@ -144,4 +154,5 @@ jobs:
             dist/Relay-${{ steps.version.outputs.version }}-amd64.deb
             dist/Relay-${{ steps.version.outputs.version }}-x86_64.AppImage
             dist/RelayClient-${{ steps.version.outputs.version }}-amd64.deb
+            dist/RelayClient-${{ steps.version.outputs.version }}-x86_64.AppImage
             dist/relay-host-x86_64-linux.zip

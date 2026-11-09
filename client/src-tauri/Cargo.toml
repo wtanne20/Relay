@@ -1,0 +1,22 @@
+[package]
+name = "relay-client"
+version = "1.0.6"
+description = "Relay Client: connect a Linux machine to a Relay brain"
+edition = "2024"
+
+[[bin]]
+name = "relay-client"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+toml = "0.8"
+
+[profile.release]
+strip = true
