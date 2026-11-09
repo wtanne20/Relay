@@ -380,9 +380,9 @@ export default function SettingsScreen() {
       <SectionTitle title="Projects" />
       <Group>
         <NavRow
-          icon="cellphone"
-          label="Devices"
-          value="Pair a phone or other machine the agent can work in"
+          icon="laptop"
+          label="Computers"
+          value="The brain, and computers linked to it"
           onPress={() => router.push('/devices')}
         />
         <FolderSetting

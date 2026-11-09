@@ -164,6 +164,8 @@ pub struct AgentManager {
     pusher: Pusher,
     /// Paired device hosts; a project's tools may run on one of them.
     devices: crate::device::DeviceRegistry,
+    /// Devices connected to this brain over a link.
+    links: Arc<crate::link::LinkHub>,
     /// Where pictures attached to prompts are kept.
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
@@ -187,6 +189,7 @@ impl AgentManager {
         pusher: Pusher,
         attachments: PathBuf,
         devices: crate::device::DeviceRegistry,
+        links: Arc<crate::link::LinkHub>,
     ) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -200,6 +203,7 @@ impl AgentManager {
             pusher,
             attachments,
             devices,
+            links,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
         })
@@ -581,16 +585,6 @@ impl AgentManager {
             })
             .collect();
         let skill_dirs: Vec<PathBuf> = found_skills.iter().map(|s| s.dir.clone()).collect();
-        // Plain chats have no folder: no sandbox and no tools.
-        let ctx = if project.is_chats() {
-            None
-        } else {
-            Some(ToolContext {
-                sandbox: Sandbox::new(Path::new(&project.path), &skill_dirs)?,
-                shell: conf.shell.clone(),
-                default_timeout: conf.agent.command_timeout_seconds,
-            })
-        };
         // A project may be bound to a paired device: then its tools run on
         // that machine (its folder, its shell) instead of on this PC. The
         // model, history and approvals all stay here.
@@ -603,44 +597,70 @@ impl AgentManager {
         {
             let d = self.devices.get(id).await?.ok_or_else(|| {
                 anyhow!(
-                    "project is bound to a device that is no longer paired ({}); unbind it or re-pair the device",
-                    id
+                    "this project lives on a device that is no longer paired ({id}); pair it again, or move the project to this computer"
                 )
             })?;
-            Some(crate::device::DeviceClient::new(&d.url, &d.token))
+            // Device projects created before folders existed use the device root.
+            let folder = Some(project.path.as_str()).filter(|p| !p.trim().is_empty());
+            let dc = crate::device::DeviceClient::for_device(&d, &self.links).in_folder(folder);
+            Some((d, dc))
         } else {
             None
+        };
+        // Plain chats have no folder: no sandbox and no file tools. Device
+        // projects keep their folder on the device, not on this computer.
+        let ctx = if project.is_chats() || device.is_some() {
+            None
+        } else {
+            Some(ToolContext {
+                sandbox: Sandbox::new(Path::new(&project.path), &skill_dirs)?,
+                shell: conf.shell.clone(),
+                default_timeout: conf.agent.command_timeout_seconds,
+            })
         };
         let (system, tool_defs) = match (&ctx, &device) {
             (Some(ctx), _) => (
                 build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await,
                 tools::definitions(&conf.agent.tools),
             ),
-            (None, _) => (
+            (None, Some((d, dc))) => {
+                // Fail fast if the device is unreachable, so the user knows now
+                // instead of every tool call failing.
+                let info = dc.info().await.map_err(|e| {
+                    anyhow!(
+                        "{} (where this project's files live) is not reachable: {e}. Check that Relay is running on it and Tailscale is connected, then try again.",
+                        d.name
+                    )
+                })?;
+                let os = info.get("os").and_then(Value::as_str).unwrap_or("linux").to_string();
+                let shell = info.get("shell").and_then(Value::as_str).unwrap_or("sh").to_string();
+                let folder = if project.path.trim().is_empty() {
+                    info.get("root").and_then(Value::as_str).unwrap_or("").to_string()
+                } else {
+                    project.path.clone()
+                };
+                let agents_md = match dc.read_bytes("AGENTS.md").await {
+                    Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+                    Err(_) => None,
+                };
+                let env = PromptEnv {
+                    os,
+                    shell,
+                    machine: Some(d.name.clone()),
+                };
+                (
+                    system_prompt_with(&prompt_path, project, &folder, &found_skills, &env, agents_md)
+                        .await,
+                    tools::definitions(&conf.agent.tools),
+                )
+            }
+            (None, None) => (
                 chat_system_prompt(project),
                 tools::web_definitions(&conf.agent.tools),
             ),
         };
+        let device = device.map(|(_, dc)| dc);
         let mut system = system;
-        if let Some(dc) = &device {
-            // Fail fast if the device is unreachable, so the user knows now
-            // instead of every tool call timing out. (Connect timeout is a
-            // few seconds, so a dead link fails quickly, not for a minute.)
-            let info = dc
-                .info()
-                .await
-                .map_err(|e| {
-                    anyhow!(
-                        "the device this project runs on is not reachable ({e}). Check it is on and Tailscale is connected, then retry; or unbind the project to run on the PC."
-                    )
-                })?;
-            let os = info.get("os").and_then(Value::as_str).unwrap_or("linux");
-            let shell = info.get("shell").and_then(Value::as_str).unwrap_or("sh");
-            let root = info.get("root").and_then(Value::as_str).unwrap_or(&project.path);
-            system.push_str(&format!(
-                "\n# Device\nThis project's tools run on a paired device ({os}), not on this PC. Its folder is {root}; run_command uses {shell}. File paths are relative to that folder.\n"
-            ));
-        }
         let has_web = tool_defs.as_array().is_some_and(|a| {
             a.iter().any(|d| {
                 d.pointer("/function/name")
@@ -1427,28 +1447,57 @@ pub async fn build_system_prompt(
     root: &Path,
     found: &[skills::Skill],
 ) -> String {
+    let mut agents_md = None;
+    for name in ["AGENTS.md", "agents.md"] {
+        if let Ok(text) = tokio::fs::read_to_string(root.join(name)).await {
+            agents_md = Some(text);
+            break;
+        }
+    }
+    let env = PromptEnv {
+        os: if cfg!(windows) { "Windows".into() } else { std::env::consts::OS.into() },
+        shell: if cfg!(windows) { "PowerShell".into() } else { "sh".into() },
+        machine: None,
+    };
+    system_prompt_with(prompt_path, project, &root.display().to_string(), found, &env, agents_md).await
+}
+
+/// Where a project's tools run, for the system prompt.
+struct PromptEnv {
+    os: String,
+    shell: String,
+    /// The paired device's name when the project lives on another machine.
+    machine: Option<String>,
+}
+
+async fn system_prompt_with(
+    prompt_path: &Path,
+    project: &Project,
+    folder: &str,
+    found: &[skills::Skill],
+    env: &PromptEnv,
+    agents_md: Option<String>,
+) -> String {
     let base = tokio::fs::read_to_string(prompt_path)
         .await
         .unwrap_or_else(|_| DEFAULT_SYSTEM_PROMPT.to_string());
     let mut s = base.trim_end().to_string();
-    let os = if cfg!(windows) {
-        "Windows"
-    } else {
-        std::env::consts::OS
-    };
     s.push_str(&format!(
-        "\n\n# Environment\n- Project: {}\n- Project folder: {}\n- OS: {os}; run_command uses PowerShell\n- Today: {}\n",
+        "\n\n# Environment\n- Project: {}\n- Project folder: {folder}\n- OS: {}; run_command uses {}\n- Today: {}\n",
         project.name,
-        root.display(),
+        env.os,
+        env.shell,
         chrono::Local::now().format("%Y-%m-%d"),
     ));
-    for name in ["AGENTS.md", "agents.md"] {
-        if let Ok(text) = tokio::fs::read_to_string(root.join(name)).await {
-            s.push_str("\n# Project instructions (AGENTS.md)\n");
-            s.push_str(text.trim());
-            s.push('\n');
-            break;
-        }
+    if let Some(machine) = &env.machine {
+        s.push_str(&format!(
+            "- Machine: the project's files and commands are on the computer \"{machine}\", not on the computer running the model. Paths are relative to the project folder.\n"
+        ));
+    }
+    if let Some(text) = agents_md {
+        s.push_str("\n# Project instructions (AGENTS.md)\n");
+        s.push_str(text.trim());
+        s.push('\n');
     }
     if !project.instructions.trim().is_empty() {
         s.push_str("\n# Notes for this project (from the Relay app)\n");

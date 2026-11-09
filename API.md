@@ -22,6 +22,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
+- [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
 - [WebSocket](#websocket-get-sessionsidws): `GET /sessions/{id}/ws` and every event type
 - [Objects](#objects): Project, Session, Message, ModelStatus
@@ -187,7 +188,18 @@ Turn skills off with `PATCH /settings` `{"disabled_skills": ["pdf"]}`.
 
 ## Projects
 
-A project is a name plus an absolute folder path on the PC. The agent's tools are confined to that folder.
+A project is a name plus an absolute folder path. The folder is on the brain, or on a
+[linked computer](#linked-computers) when `device_id` is set. The agent's tools are confined to that folder.
+
+Every project in a response carries `location`, which computer its folder is on:
+
+```json
+{ "kind": "brain", "name": "DESKTOP-WILL", "online": true }
+{ "kind": "device", "device_id": "c687…", "name": "laptop", "online": false }
+{ "kind": "none" }
+```
+
+(`none` is the built-in plain-chats space, which has no folder.)
 
 ### `GET /projects`
 
@@ -212,6 +224,13 @@ A project is a name plus an absolute folder path on the PC. The agent's tools ar
 ```
 
 `409` if the folder is already a project.
+
+For a folder on a linked computer, add `device_id`; `path` is then an absolute path on that computer, inside the
+folder it shares (empty: the shared folder itself). The computer must be connected; it checks the folder.
+
+```json
+{ "device_id": "c687…", "path": "/home/will/code/website" }
+```
 
 ### `GET /projects/{id}`
 
@@ -384,6 +403,58 @@ Answers the tool call the agent is waiting on (see `approval_request` below).
 `decision` is `approve`, `approve_all` (this call and every later one in the current task) or `deny`. With
 `deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if nothing is
 waiting or the id doesn't match.
+
+## Linked computers
+
+The brain runs the model, the agent and the history. A linked computer shares one folder with it, and projects
+can keep their files there. The linked computer dials out to the brain over Tailscale and keeps one WebSocket
+open; the brain sends file and command requests down it. Nothing listens on the linked computer.
+
+### `GET /hello` (no token)
+
+Lets a computer on the tailnet find brains. `{"relay": "brain", "name": "DESKTOP-WILL", "version": "1.0.6", "os": "windows"}`
+
+### `POST /devices/pair-code`
+
+Starts pairing: `{"code": "532397", "expires_at": "…", "brain_url": "http://100.101.102.103:8765", "brain_name": "…", "tailscale": true}`.
+The code works once, for ten minutes, and is dropped after five wrong tries.
+
+### `POST /devices/claim` (no token; the code is the proof)
+
+```json
+{ "code": "532397", "name": "laptop", "hostname": "will-laptop", "os": "linux", "arch": "x86_64",
+  "root": "/home/will", "previous_id": null }
+```
+
+`201` with `{"device_id", "device_key", "api_token", "brain_name"}`. `device_key` is this computer's own key for
+the link; removing the device revokes it. `api_token` lets the computer's Relay window open the brain's chats.
+`previous_id` (the id from an earlier pairing with the same brain) keeps the id, so its projects stay bound.
+
+### `GET /devices/link` (WebSocket, `Authorization: Bearer <device_key>`)
+
+The link. Frames are JSON text: the brain sends `{"t":"req","id":7,"m":"GET","p":"/list?path=.","f":"/home/will/app","b":"<base64>"}`
+(`f` is the project folder, `b` the body) and the computer answers `{"t":"res","id":7,"s":200,"b":"<base64>"}`.
+The paths are the `relay host` endpoints (`/info`, `/list`, `/read`, `/write`, `/edit`, `/run`, `/run/{id}`).
+Both sides ping every 15 s and drop the link after 45 s of silence; the computer reconnects with backoff.
+
+### `GET /devices`
+
+```json
+{ "devices": [ { "id": "c687…", "name": "laptop", "hostname": "will-laptop", "connection": "link",
+  "connected": true, "address": "100.64.0.7", "os": "linux", "arch": "x86_64", "root": "/home/will",
+  "shell": "sh", "last_seen": "…", "url": null } ] }
+```
+
+`connection` is `link` (dials in) or `direct` (an older `relay host` the brain calls at `url`, added with
+`POST /devices` and `{name, url, token}`).
+
+### `PATCH /devices/{id}`, `DELETE /devices/{id}`
+
+Rename (`{"name": "…"}`), or forget the computer and revoke its key (its files are not touched).
+
+### `GET /devices/{id}/browse?path=`
+
+Sub-folders of a folder on the computer, for choosing a project folder: `{"path", "root", "folders": ["code", …]}`.
 
 ## Push tokens
 

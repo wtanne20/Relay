@@ -1,6 +1,39 @@
 # Relay — Device Host + File Download + PWA + Linux: Working Notes
 
-> Running log. **Last updated: 2026-11-06 — v1.0.6 released (incl. Linux x64).**
+> Running log. **Last updated: 2026-11-09 — linked computers (one app, code pairing, outgoing link).**
+
+## Linked computers (2026-11-09, branch `claude/project-thread-cz7oc3`)
+
+Goal (owner's words): install the app on e.g. a Linux x86-64 laptop; the AI reads and changes that
+laptop's local files while the main desktop is the brain. Easy to install and connect, for any user.
+Always over Tailscale. Clear indication of which computer is the brain, and which computer a project's
+or chat's files are on. x86 Linux desktop first; aarch64 Proot on the phone next.
+
+What changed:
+- **The link goes the other way.** A linked computer dials *out* to the brain (`GET /devices/link`,
+  WebSocket) and answers file/command requests with the same host router `relay host` serves. No port
+  opened on the laptop, no IP guessing, survives the brain restarting (reconnects with backoff).
+  `server/src/link.rs` (brain hub + device loop + pairing + Tailscale discovery).
+- **Pairing with a 6-digit code.** Brain: Settings > Computers > Link a computer shows a code (10 min,
+  single use, 5 tries). The computer trades it for its own revocable key (`POST /devices/claim`).
+- **Projects have a folder on a computer.** `POST /projects {device_id, path}`; the device confines each
+  request to that folder (`x-relay-folder`), inside what it shares. Browse folders from the brain.
+  Downloads from device projects work too. Every project carries `location`.
+- **One desktop app.** First launch asks "This computer is the brain" or "Use another computer as the
+  brain" (finds brains on the tailnet via `/hello`, takes the code, picks the shared folder). A linked
+  computer starts on login (XDG autostart) and lives in the tray. Existing installs stay brains.
+- **Indicators.** Brain card at the top of the sidebar (and on the phone home + Computers screen):
+  which computer is the brain, and this computer's role/link state. Project rows, the project screen and
+  the chat header show which computer the files are on, with an online dot.
+- CLI for headless/Proot: `relay link --brain <addr> --code <code> [--root DIR]`, then `relay link`;
+  `relay unlink`. Without --brain it lists brains it finds.
+- Removed: the separate Relay Client app (`client/`, `dev/relay-client/`) and `relay pair-device`.
+
+Verified: 88 unit + 13 integration + 6 supervisor tests (new end-to-end test: pair with a code, link,
+create a project on the device, the brain's agent writes a file there, download it, go offline, revoke);
+clippy clean (server + desktop on Linux); `tsc` clean; a real brain + `relay link` on one box; UI
+screenshots of setup, sidebar, Computers, pairing and new-project-on-device.
+NOT verified: the Tauri window on a real Linux desktop or Windows; two machines over real Tailscale.
 
 ## v1.0.6 — RELEASED (2026-11-06) — COMPLETE (6 assets)
 

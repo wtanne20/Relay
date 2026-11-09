@@ -55,24 +55,31 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
-    /// Register this device (host) with a Relay brain so it can be paired.
-    PairDevice {
-        /// The brain's address, e.g. http://my-pc:8765.
+    /// Link this computer to a Relay brain, so the brain's agent can work
+    /// with this computer's files while the brain does the thinking.
+    ///
+    /// First time: `relay link --brain <address> --code <6 digits>` (the brain
+    /// shows the code under Devices). After that, plain `relay link` reconnects.
+    /// Without --brain it looks for brains on your tailnet.
+    Link {
+        /// The brain's address, e.g. 100.101.102.103 or my-desktop (port 8765 is added).
         #[arg(long)]
-        brain: String,
-        /// The brain's token (from its config.toml).
+        brain: Option<String>,
+        /// The 6-digit pairing code shown on the brain.
         #[arg(long)]
-        token: String,
-        /// This device's name (shown in the brain's device list).
-        #[arg(long, default_value = "this-device")]
-        name: String,
-        /// This device's host address (what the brain will connect to).
-        #[arg(long, default_value = "127.0.0.1:8766")]
-        host: String,
-        /// This device's host token (from host.toml).
+        code: Option<String>,
+        /// This computer's name in the brain's device list (default: its host name).
         #[arg(long)]
-        host_token: Option<String>,
+        name: Option<String>,
+        /// The folder the agent may use on this computer (default: your home folder).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Only pair (save the link), don't stay connected.
+        #[arg(long)]
+        pair_only: bool,
     },
+    /// Forget the brain this computer is linked to.
+    Unlink,
 }
 
 #[tokio::main]
@@ -172,58 +179,91 @@ async fn main() -> Result<()> {
             }
             result
         }
-        Command::PairDevice {
-            brain,
-            token,
-            name,
-            host,
-            host_token,
-        } => {
-            // Register this device with the brain's /devices endpoint.
-            let brain = brain.trim_end_matches('/');
-            let host_token = match host_token {
-                Some(t) if !t.trim().is_empty() => t,
-                _ => {
-                    let state_path =
-                        config_path.parent().unwrap_or(Path::new(".")).join("host.toml");
-                    if let Ok(s) = std::fs::read_to_string(&state_path)
-                        && let Ok(v) = toml::from_str::<std::collections::HashMap<String, String>>(&s)
-                        && let Some(t) = v.get("token")
-                        && !t.trim().is_empty()
-                    {
-                        t.clone()
+        Command::Link { brain, code, name, root, pair_only } => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "relay=info,tower_http=warn".into()),
+                )
+                .init();
+            let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let path = relay::link::DeviceConfig::path_in(&dir);
+            let cfg = match (brain, code) {
+                (Some(brain), Some(code)) => {
+                    let cfg = relay::link::pair_and_save(
+                        &path,
+                        &brain,
+                        &code,
+                        name.as_deref(),
+                        root.as_deref(),
+                    )
+                    .await?;
+                    println!(
+                        "\n  Paired with {} ({}).\n  This computer is \"{}\"; the agent may use {}.\n",
+                        if cfg.brain_name.is_empty() { "the brain" } else { &cfg.brain_name },
+                        cfg.brain_url,
+                        cfg.name,
+                        cfg.root.display()
+                    );
+                    cfg
+                }
+                (None, None) if relay::link::DeviceConfig::load(&path).is_some() => {
+                    relay::link::DeviceConfig::load(&path)
+                        .ok_or_else(|| anyhow::anyhow!("not linked yet"))?
+                }
+                (None, Some(_)) => anyhow::bail!("--code needs --brain too"),
+                (_, None) => {
+                    println!("\n  Looking for Relay brains on your tailnet...");
+                    let found = relay::link::discover_brains().await;
+                    if found.is_empty() {
+                        println!("  None found. Check that Relay is running on your main computer and");
+                        println!("  that Tailscale is connected on both, then run:");
                     } else {
-                        anyhow::bail!(
-                            "no host token. Start the host first (`relay host`), \
-                             or pass --host-token."
-                        )
+                        for b in &found {
+                            println!("    {}  {}  (Relay {})", b.name, b.url, b.version);
+                        }
+                        println!("\n  On the brain, open Devices > Add a computer to get a code, then run:");
                     }
+                    println!("    relay link --brain <address> --code <6 digits>\n");
+                    return Ok(());
                 }
             };
-            let body = serde_json::json!({
-                "name": name,
-                "url": host,
-                "token": host_token,
-            });
-            let client = reqwest::Client::new();
-            let resp = client
-                .post(format!("{brain}/devices"))
-                .header("Authorization", format!("Bearer {token}"))
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("could not reach the brain at {brain}: {e}"))?;
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            if status.is_success() {
-                println!("Paired with the brain. This device is now in its device list.");
-                println!("  Name:  {name}");
-                println!("  Host:  {host}");
-                println!("  Brain: {brain}");
-                Ok(())
-            } else {
-                anyhow::bail!("brain returned {status}: {text}")
+            if pair_only {
+                return Ok(());
             }
+            println!(
+                "  Linking to {} at {} (Ctrl+C to stop)...",
+                if cfg.brain_name.is_empty() { "the brain" } else { &cfg.brain_name },
+                cfg.brain_url
+            );
+            let shutdown = tokio_util::sync::CancellationToken::new();
+            let stop = shutdown.clone();
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                stop.cancel();
+            });
+            relay::link::run_device_link(cfg, shutdown, |state| match state {
+                relay::link::LinkState::Connected => println!("  Connected."),
+                relay::link::LinkState::Offline { message } => {
+                    println!("  Brain not reachable ({message}); retrying...")
+                }
+                relay::link::LinkState::Revoked => println!(
+                    "  The brain no longer knows this computer. Pair again with a new code."
+                ),
+                relay::link::LinkState::Connecting => {}
+            })
+            .await
+        }
+        Command::Unlink => {
+            let dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let path = relay::link::DeviceConfig::path_in(&dir);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+                println!("Unlinked. Remove this computer from the brain's Devices list too.");
+            } else {
+                println!("This computer is not linked to a brain.");
+            }
+            Ok(())
         }
     }
 }

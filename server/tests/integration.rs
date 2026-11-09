@@ -1422,3 +1422,168 @@ async fn the_model_loads_only_when_a_chat_needs_it() {
     let h2 = Harness::launch(Default::default(), "idle_unload_minutes = 0").await;
     h2.wait_model("ready").await;
 }
+
+/// A computer pairs with a 6-digit code, dials in to the brain, and a
+/// project whose folder is on that computer has its files written there by
+/// the brain's agent, without the brain ever connecting to the computer.
+#[tokio::test]
+async fn linked_device_pairs_with_a_code_and_hosts_a_project() {
+    let h = Harness::start().await;
+
+    // The brain says who it is, without a token (for discovery).
+    let hello: Value = h
+        .http
+        .get(format!("{}/hello", h.base))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("hello")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(hello["relay"], "brain");
+    assert_eq!(h.get("/info").await["role"], "brain");
+
+    // The "laptop": a home folder with a project folder in it.
+    let home = h.dir.join("laptop-home");
+    let app = home.join("code/app");
+    std::fs::create_dir_all(&app).expect("mkdir");
+    std::fs::write(app.join("AGENTS.md"), "Laptop rules.").expect("agents");
+    let dev_cfg = h.dir.join("laptop-data/device.toml");
+
+    // Without an active code, or with a wrong one, pairing is refused.
+    let err = relay::link::pair_and_save(&dev_cfg, &h.base, "123456", Some("laptop"), Some(&home))
+        .await
+        .expect_err("no code yet");
+    assert!(format!("{err:#}").contains("no pairing code"), "{err:#}");
+    let (s, v) = h.post("/devices/pair-code", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let code = v["code"].as_str().expect("code").to_string();
+    assert_eq!(code.len(), 6);
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    assert!(
+        relay::link::pair_and_save(&dev_cfg, &h.base, wrong, Some("laptop"), Some(&home))
+            .await
+            .is_err()
+    );
+    let cfg = relay::link::pair_and_save(&dev_cfg, &h.base, &code, Some("laptop"), Some(&home))
+        .await
+        .expect("pair");
+    assert_eq!(cfg.api_token, h.token, "the window gets the brain's API token");
+    assert_eq!(relay::link::DeviceConfig::load(&dev_cfg).as_ref(), Some(&cfg));
+    // The code is single-use.
+    assert!(
+        relay::link::pair_and_save(&dev_cfg, &h.base, &code, Some("laptop"), Some(&home))
+            .await
+            .is_err()
+    );
+
+    // Paired but not connected yet: listed, offline.
+    let devices = h.get("/devices").await;
+    assert_eq!(devices["devices"][0]["name"], "laptop");
+    assert_eq!(devices["devices"][0]["connection"], "link");
+    assert_eq!(devices["devices"][0]["connected"], false);
+
+    // The laptop dials in.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let states = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = states.clone();
+    tokio::spawn(relay::link::run_device_link(cfg.clone(), shutdown.clone(), move |s| {
+        seen.lock().unwrap().push(s)
+    }));
+    let mut connected = false;
+    for _ in 0..100 {
+        if h.get("/devices").await["devices"][0]["connected"] == true {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(connected, "device never connected");
+    assert!(states.lock().unwrap().contains(&relay::link::LinkState::Connected));
+    let device_id = cfg.device_id.clone();
+
+    // Browse the laptop's folders from the brain.
+    let b = h.get(&format!("/devices/{device_id}/browse")).await;
+    assert_eq!(b["folders"], json!(["code"]), "{b}");
+
+    // A project on the laptop; it says where it lives.
+    let (s, v) = h
+        .post(
+            "/projects",
+            json!({"device_id": device_id, "path": app.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["project"]["name"], "app");
+    assert_eq!(v["project"]["location"]["kind"], "device");
+    assert_eq!(v["project"]["location"]["name"], "laptop");
+    assert_eq!(v["project"]["location"]["online"], true);
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+    // A folder outside what the laptop shares is refused.
+    let (s, _) = h
+        .post(
+            "/projects",
+            json!({"device_id": device_id, "path": h.dir.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(s, 400);
+
+    // The brain's agent writes a file in the laptop's project folder.
+    let (_, v) = h.post(&format!("/projects/{pid}/sessions"), json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    ws.next().await;
+    let (s, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "create hello.txt containing hi"}),
+        )
+        .await;
+    assert_eq!(s, 202, "{v}");
+    let events = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(
+        events.last().map(|e| e["status"].clone()),
+        Some(json!("done")),
+        "{events:#?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("hello.txt")).expect("written on the laptop"),
+        "hi"
+    );
+    // Files on the laptop download through the brain.
+    let r = h
+        .http
+        .get(format!("{}/projects/{pid}/download?path=hello.txt", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .expect("download");
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.expect("body"), "hi");
+
+    // The laptop goes away: the project shows offline and prompts fail fast.
+    shutdown.cancel();
+    let mut offline = false;
+    for _ in 0..100 {
+        if h.get(&format!("/projects/{pid}")).await["project"]["location"]["online"] == false {
+            offline = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(offline, "device never went offline");
+
+    // Removing the device revokes its key.
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/devices/{device_id}"), None).await;
+    assert_eq!(s, 200);
+    let mut req = format!("{}/devices/link", h.ws_base)
+        .into_client_request()
+        .expect("req");
+    req.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", cfg.device_key).parse().expect("header"),
+    );
+    assert!(tokio_tungstenite::connect_async(req).await.is_err());
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

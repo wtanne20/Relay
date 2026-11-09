@@ -19,6 +19,7 @@ import { AttachMenu, AttachmentStrip, useAttachments } from '../components/Attac
 import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
 import { UpdateCard } from '../components/UpdateCard';
 import { m3, radius, space, type } from '../components/theme';
+import { BrainBanner, LocationChip } from '../components/Location';
 import { Avatar, Banner, Button, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
@@ -337,6 +338,11 @@ export default function Home() {
             {wide ? <Logo size={40} /> : null}
             <Text style={[type.displaySmall, wide && styles.greetingWide]}>{greeting()}</Text>
           </View>
+          {!wide ? (
+            <View style={styles.brainPhone}>
+              <BrainBanner onPress={() => open('/devices')} />
+            </View>
+          ) : null}
 
           <View style={styles.composer}>
             <View style={styles.topRow}>
@@ -500,7 +506,7 @@ export default function Home() {
           </View>
           {projects?.length === 0 ? (
             <Text style={[type.bodyMedium, styles.empty]}>
-              A project is a folder on your PC the agent can work in. Give one a name and Relay makes the folder.
+              A project is a folder the agent can work in, on the brain or on any computer linked to it.
             </Text>
           ) : null}
           {projects?.length ? (
@@ -538,9 +544,12 @@ export default function Home() {
                       ) : (
                         <Avatar label={p.name} size={32} />
                       )}
-                      <Text style={[type.bodyLarge, styles.grow]} numberOfLines={1}>
-                        {p.name}
-                      </Text>
+                      <View style={styles.grow}>
+                        <Text style={type.bodyLarge} numberOfLines={1}>
+                          {p.name}
+                        </Text>
+                        <LocationChip location={p.location} compact />
+                      </View>
                     </Pressable>
                     {selecting ? null : (
                       <IconButton icon="dots-vertical" label={`Remove ${p.name}`} onPress={() => confirmDelete(p)} />
@@ -611,8 +620,8 @@ export default function Home() {
       <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
-        onCreate={async (name, path) => {
-          const p = await client.createProject(name, path);
+        onCreate={async (name, path, deviceId) => {
+          const p = await client.createProject(name, path, deviceId);
           setAdding(false);
           choose(p.id);
           emit('projects');
@@ -686,6 +695,7 @@ function PairCard() {
 }
 
 const styles = StyleSheet.create({
+  brainPhone: { marginBottom: space.md },
   flex: { flex: 1, backgroundColor: m3.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },

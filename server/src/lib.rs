@@ -9,6 +9,7 @@ pub mod files;
 pub mod hub;
 pub mod images;
 pub mod libraries;
+pub mod link;
 pub mod migrate;
 pub mod mockup;
 pub mod model_manager;
@@ -63,6 +64,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     let model = ModelManager::start(shared.clone(), hardware.clone());
     let pusher = Pusher::new(db.clone(), shared.clone());
     let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
+    let links = Arc::new(link::LinkHub::default());
     let agent = agent::AgentManager::new(
         db.clone(),
         model.clone(),
@@ -70,6 +72,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         pusher.clone(),
         images::dir(&data_dir),
         device::DeviceRegistry::new(db.clone()),
+        Arc::clone(&links),
     );
     let state: AppState = Arc::new(AppInner {
         cfg: shared,
@@ -85,6 +88,8 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         downloads: Default::default(),
         updates: Default::default(),
         devices,
+        links,
+        pair_code: std::sync::Mutex::new(None),
         data_dir,
         web_root: ui::web_root(),
     });

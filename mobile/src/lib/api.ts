@@ -9,6 +9,7 @@ import type {
   ApprovalDecision,
   DeepPartial,
   Device,
+  PairCode,
   Message,
   ModelFile,
   ModelStatus,
@@ -219,8 +220,9 @@ export class RelayClient {
     return (await this.request<{ projects: Project[] }>('GET', '/projects')).projects;
   }
   /** With an empty path, the server creates a folder named after the project in the projects folder. */
-  async createProject(name: string, path: string): Promise<Project> {
-    return (await this.request<{ project: Project }>('POST', '/projects', { name, path })).project;
+  async createProject(name: string, path: string, deviceId?: string): Promise<Project> {
+    const body = deviceId ? { name, path, device_id: deviceId } : { name, path };
+    return (await this.request<{ project: Project }>('POST', '/projects', body, 30000)).project;
   }
   async project(id: string): Promise<Project> {
     return (await this.request<{ project: Project }>('GET', `/projects/${encodeURIComponent(id)}`)).project;
@@ -248,6 +250,17 @@ export class RelayClient {
   }
   async removeDevice(id: string): Promise<void> {
     await this.request('DELETE', `/devices/${encodeURIComponent(id)}`);
+  }
+  /** A fresh 6-digit code a new computer pairs with (valid ten minutes). */
+  pairCode(): Promise<PairCode> {
+    return this.request<PairCode>('POST', '/devices/pair-code', {});
+  }
+  renameDevice(id: string, name: string): Promise<{ device: Device }> {
+    return this.request('PATCH', `/devices/${encodeURIComponent(id)}`, { name });
+  }
+  /** Sub-folders of a folder on a device ('' = the folder it shares). */
+  browseDevice(id: string, path: string): Promise<{ path: string; root: string; folders: string[] }> {
+    return this.request('GET', `/devices/${encodeURIComponent(id)}/browse?path=${encodeURIComponent(path)}`, undefined, 20000);
   }
   /** Re-checks the link and refreshes last_seen. */
   async pingDevice(id: string): Promise<{ connected: boolean; error?: string }> {
