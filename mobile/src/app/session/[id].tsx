@@ -22,6 +22,7 @@ import {
   CompactingRow,
   LoadingModelRow,
   noteStart,
+  ContinueDivider,
   SummaryDivider,
   UserBubble,
 } from '../../components/ChatItems';
@@ -44,6 +45,7 @@ type Item =
   | { key: string; kind: 'user'; message: Message }
   | { key: string; kind: 'turn'; messages: Message[]; latest: boolean }
   | { key: string; kind: 'summary'; message: Message }
+  | { key: string; kind: 'continue'; message: Message }
   | { key: string; kind: 'compacting' }
   | { key: string; kind: 'loading' };
 
@@ -117,6 +119,7 @@ export default function ChatScreen() {
     for (const m of stream.messages) {
       if (m.role === 'user') out.push({ key: `m${m.id}`, kind: 'user', message: m });
       else if (m.role === 'summary') out.push({ key: `s${m.id}`, kind: 'summary', message: m });
+      else if (m.role === 'continue') out.push({ key: `c${m.id}`, kind: 'continue', message: m });
       else if (m.role === 'assistant') {
         const prev = out[out.length - 1];
         if (prev?.kind === 'turn') prev.messages.push(m);
@@ -335,6 +338,7 @@ export default function ChatScreen() {
               renderItem={({ item }) => {
                 if (item.kind === 'user') return <UserBubble message={item.message} />;
                 if (item.kind === 'summary') return <SummaryDivider message={item.message} />;
+                if (item.kind === 'continue') return <ContinueDivider message={item.message} />;
                 if (item.kind === 'compacting') return <CompactingRow />;
                 if (item.kind === 'loading') return <LoadingModelRow />;
                 return (

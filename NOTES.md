@@ -18,6 +18,17 @@ with an app that looks and works like the Windows one. It is the same Tauri app,
 - Install in Proot: `apt install ./Relay-1.0.8-arm64.deb`, then `relay-desktop` from the X11 session.
 NOT verified on a real phone yet (CI build only).
 
+Also in 1.0.8:
+- Mockups: reset CSS (margin 0, border-box) before the model's styles; the desktop frame
+  (`sandbox="allow-same-origin"`, still no scripts) measures scrollWidth and shrinks wider designs to fit;
+  MOCKUP_HINT says the page is the screen (no bezel, no fixed widths wider than the size).
+- Long replies: `reply_reserve` keeps ctx/4 (max 16k) free when max_tokens is 0. A reply that stops
+  with `finish_reason=length` is continued up to `MAX_CONTINUES` (2) times via a `continue` message
+  (sent to the model as a user message, shown as a divider). `is_looping` (repeated sentences, or the
+  last 200 chars seen 3x; code blocks ignored) decides between "carry on, here is the end of your
+  thought (repeats removed)" and "you were looping, state your plan and act" + presence penalty >= 1.5
+  for the rest of the task. After the cap, `CUT_OFF_NOTE` is appended instead.
+
 
 ## Linked computers (2026-11-09, branch `claude/project-thread-cz7oc3`)
 
