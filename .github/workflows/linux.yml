@@ -90,6 +90,9 @@ jobs:
         working-directory: desktop
         run: |
           npm ci
+          # The target cache keeps old versions' bundles; start clean so the
+          # copy below finds exactly this version's .deb and .AppImage.
+          rm -rf src-tauri/target/release/bundle
           npx tauri build --bundles deb,appimage
           ls -la src-tauri/target/release/bundle/deb/*.deb
           ls -la src-tauri/target/release/bundle/appimage/*.AppImage
