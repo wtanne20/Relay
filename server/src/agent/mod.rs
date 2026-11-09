@@ -683,6 +683,10 @@ impl AgentManager {
 
         let mut step = 0;
         let mut retried = false;
+        // Cut-off replies continued automatically so far, and whether one of
+        // them was a loop (then repetition is penalized harder from here on).
+        let mut continues = 0;
+        let mut loop_guard = false;
         let mut pictures: HashMap<String, String> = HashMap::new();
         while step < conf.agent.max_steps {
             if cancel.is_cancelled() {
@@ -697,10 +701,12 @@ impl AgentManager {
             self.load_pictures(&history, &mut pictures).await;
             let mut body = request_body(&conf, &system, &history, &tool_defs, &pictures);
             let mut bytes = compact::prompt_bytes(&body);
+            // Room kept free for the reply (thinking included): compaction
+            // starts early enough that a long thought isn't cut off.
             let reserve = if conf.sampling.max_tokens > 0 {
                 u64::from(conf.sampling.max_tokens)
             } else {
-                0
+                reply_reserve(ctx_tokens)
             };
             let room = ctx_tokens.saturating_sub(reserve) as f64;
             if bytes as f64 * tokens_per_byte > room * compact::TRIGGER {
@@ -724,6 +730,11 @@ impl AgentManager {
                 if cancel.is_cancelled() {
                     return Ok(LoopEnd::Stopped);
                 }
+            }
+
+            if loop_guard {
+                let p = body["presence_penalty"].as_f64().unwrap_or(0.0).max(LOOP_PRESENCE_PENALTY);
+                body["presence_penalty"] = json!(p);
             }
 
             *lock(draft) = Draft::default();
@@ -790,7 +801,7 @@ impl AgentManager {
             retried = false;
             step += 1;
 
-            let (turn, stopped) = match result {
+            let (mut turn, stopped) = match result {
                 llm::StreamResult::Complete(t) => (t, false),
                 llm::StreamResult::Cancelled(t) => (t, true),
             };
@@ -801,6 +812,26 @@ impl AgentManager {
             }
             if stopped && turn.content.is_empty() && turn.reasoning.is_empty() {
                 return Ok(LoopEnd::Stopped);
+            }
+            // The model ran out of context mid-reply. Continue it (a couple
+            // of times at most), dropping a thought that was going in circles
+            // instead of feeding the loop back; after that, say so instead of
+            // passing the unfinished text off as the answer.
+            let mut follow_up = None;
+            if !stopped && turn.tool_calls.is_empty() && turn.finish_reason.as_deref() == Some("length") {
+                // Code legitimately repeats lines, so only prose counts.
+                let looped = is_looping(&turn.reasoning) || is_looping(&outside_code(&turn.content));
+                if continues < MAX_CONTINUES {
+                    continues += 1;
+                    tracing::warn!(looped, "reply cut off by a full context; continuing ({continues}/{MAX_CONTINUES})");
+                    if looped {
+                        loop_guard = true;
+                    }
+                    follow_up = Some(continue_prompt(&turn.reasoning, looped));
+                } else {
+                    tracing::warn!(looped, "reply cut off by a full context; not continuing again");
+                    turn.content.push_str(CUT_OFF_NOTE);
+                }
             }
 
             let assistant = NewMessage {
@@ -820,6 +851,16 @@ impl AgentManager {
 
             if stopped {
                 return Ok(LoopEnd::Stopped);
+            }
+            if let Some(text) = follow_up {
+                let note = NewMessage {
+                    role: CONTINUE_ROLE.into(),
+                    content: text,
+                    ..Default::default()
+                };
+                let saved = self.save(&session.id, note).await?;
+                self.emit(&session.id, Event::Message { message: saved });
+                continue;
             }
             if turn.tool_calls.is_empty() {
                 self.emit(
@@ -1531,10 +1572,105 @@ pub const WEB_HINT: &str = "\n# Web\nYou can search the web with web_search and 
 /// Sent when thinking is set to Brief.
 pub const BRIEF_THINKING_HINT: &str = "\n# Thinking\nKeep your private thinking brief: a few short sentences to plan the next step, then act. Don't draft the answer or re-check things you already know while thinking.\n";
 
+/// Added to a reply the model couldn't finish because its context filled up.
+pub const CUT_OFF_NOTE: &str = "\n\n---\n*Relay: this reply was cut off because the model ran out of context (it may have been going in circles). Say \"continue\" to pick up from here, or start a new chat. A presence penalty of about 1 to 1.5 (Settings > Agent settings) helps against loops.*";
+
+/// How many times one request's cut-off reply is continued automatically.
+const MAX_CONTINUES: usize = 2;
+/// Presence penalty used for the rest of a task once the model has looped.
+const LOOP_PRESENCE_PENALTY: f64 = 1.5;
+/// Relay's own "carry on" note after a cut-off reply. The model sees it as a
+/// user message; the chat shows it as a small marker.
+pub const CONTINUE_ROLE: &str = "continue";
+/// How much of an unfinished thought is handed back (characters).
+const THOUGHT_TAIL: usize = 3000;
+
+/// A thought's sentences and lines, normalized, for spotting repeats.
+/// Short fragments ("ok", "wait") repeat naturally and are left out.
+fn segments(text: &str) -> Vec<String> {
+    text.split(['\n', '.', '?', '!'])
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase())
+        .filter(|s| s.chars().count() >= 20)
+        .collect()
+}
+
+/// True when the end of a text keeps saying the same things: of its last
+/// 30 longer sentences, fewer than half are new, or its last 200 characters
+/// already appeared twice before.
+fn is_looping(text: &str) -> bool {
+    let segs = segments(text);
+    if segs.len() >= 12 {
+        let tail = &segs[segs.len().saturating_sub(30)..];
+        let unique: HashSet<&String> = tail.iter().collect();
+        if unique.len() * 2 < tail.len() {
+            return true;
+        }
+    }
+    let chars: Vec<char> = text.trim_end().chars().collect();
+    if chars.len() >= 1000 {
+        let end: String = chars[chars.len() - 200..].iter().collect();
+        if text.matches(end.as_str()).count() >= 3 {
+            return true;
+        }
+    }
+    false
+}
+
+/// The text outside ``` code blocks.
+fn outside_code(text: &str) -> String {
+    text.split("```").step_by(2).collect::<Vec<_>>().join("\n")
+}
+
+/// The text with sentences and lines it already said dropped (first time
+/// kept), so a loop isn't handed back to the model word for word.
+fn without_repeats(text: &str) -> String {
+    let mut seen = HashSet::new();
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let mut kept = String::new();
+        for part in line.split_inclusive(['.', '?', '!']) {
+            let key = part.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            if key.chars().count() < 20 || seen.insert(key) {
+                kept.push_str(part);
+            }
+        }
+        if !kept.trim().is_empty() || line.trim().is_empty() {
+            out.push_str(&kept);
+        }
+    }
+    out
+}
+
+/// The note that carries a cut-off reply on: the end of the unfinished
+/// thought (repeats removed) so nothing is redone from scratch, or, after a
+/// loop, an instruction to stop circling and act.
+fn continue_prompt(reasoning: &str, looped: bool) -> String {
+    if looped {
+        return "(Relay) Your last reply was cut off because the context filled up while you were repeating yourself in a loop. Don't go over that reasoning again. In a few sentences, state your plan, then act or give the answer.".into();
+    }
+    let thought = without_repeats(reasoning);
+    let chars: Vec<char> = thought.trim().chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(THOUGHT_TAIL)..].iter().collect();
+    let mut text = String::from(
+        "(Relay) Your last reply was cut off because the context filled up. Continue from where you stopped: don't start over or repeat what you already wrote, keep your thinking short, and finish.",
+    );
+    if !tail.trim().is_empty() {
+        text.push_str("\n\nThe end of your thinking so far:\n");
+        text.push_str(tail.trim());
+    }
+    text
+}
+
+/// Context kept free for the reply when no max_tokens is set: a quarter of
+/// the context, at most 16k tokens.
+fn reply_reserve(ctx_tokens: u64) -> u64 {
+    (ctx_tokens / 4).min(16_384)
+}
+
 /// Tells the model how to offer a file for download.
 pub const DOWNLOAD_HINT: &str = "\n# File downloads\nWhen you create a file the user may want to keep — an APK, a zip, a report, an image — offer it as a download link on its own line, using this exact format: [Download <filename>](relay-download://<path-relative-to-project>). The Relay app turns that into a download button. Only use this for files you actually created in the project folder; never for files on the web or outside the project.\n";
 
-pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. Keep any explanation short and outside the block.\n";
+pub const MOCKUP_HINT: &str = "\n# UI mockups\nWhen the user asks to see a design, screen or layout, show it as one self-contained ```html code block in your reply: inline CSS only, no scripts, no external files, fonts or images (use CSS shapes, emoji or inline SVG instead). Relay draws it as a picture in the chat. For a phone screen, add <meta name=\"relay-size\" content=\"390x844\"> in the head. The picture is exactly that size (1280x800 without the tag), and the page itself is the screen: don't draw a device frame or bezel around it, don't add outer padding or margins to center it, and don't give anything a fixed width wider than the size; use width:100% and flex or grid so it fills the screen. Keep any explanation short and outside the block.\n";
 
 /// Converts stored history to OpenAI chat messages. Tool calls without a
 /// stored result (e.g. after a crash) get a synthetic result so the request
@@ -1685,6 +1821,19 @@ mod tests {
     #[test]
     fn request_uses_current_settings() {
         let mut conf = Config::default();
+        assert_eq!(reply_reserve(65_536), 16_384);
+        let fresh = (0..40).map(|i| format!("Step {i}: check the file number {i} for the config value.")).collect::<Vec<_>>().join(" ");
+        assert!(!is_looping(&fresh));
+        let circle = "Wait, maybe the config is loaded from the home folder. Let me check again. ".repeat(30);
+        assert!(is_looping(&format!("{fresh} {circle}")));
+        let once = without_repeats(&circle);
+        assert_eq!(once.matches("loaded from the home folder").count(), 1);
+        assert!(continue_prompt(&circle, true).contains("loop"));
+        let rows = "<div class=\"row\">an item in the list</div>\n".repeat(60);
+        assert!(!is_looping(&outside_code(&format!("Here it is:\n```html\n{rows}```\nDone."))));
+        let carried = continue_prompt(&fresh, false);
+        assert!(carried.contains("Step 39") && carried.len() < THOUGHT_TAIL + 400);
+        assert_eq!(reply_reserve(8_192), 2_048);
         conf.sampling.temperature = 0.1;
         conf.sampling.max_tokens = 512;
         conf.agent.thinking = false;

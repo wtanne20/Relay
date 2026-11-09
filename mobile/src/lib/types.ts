@@ -136,7 +136,7 @@ export interface ToolCall {
 export interface Message {
   id: number;
   session_id: string;
-  role: 'user' | 'assistant' | 'tool' | 'summary';
+  role: 'user' | 'assistant' | 'tool' | 'summary' | 'continue';
   content: string;
   reasoning?: string;
   tool_calls?: ToolCall[];

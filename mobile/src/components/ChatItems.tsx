@@ -78,6 +78,42 @@ export function SummaryDivider({ message }: { message: Message }) {
   );
 }
 
+/**
+ * Relay carried on a reply that was cut off when the model's context filled
+ * up. Tap to see what it told the model.
+ */
+export function ContinueDivider({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const looped = /loop/i.test(message.content.split('\n')[0] ?? '');
+  return (
+    <View style={styles.summary}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        style={styles.summaryRow}
+      >
+        <View style={styles.summaryLine} />
+        <Icon name={looped ? 'sync-alert' : 'play-circle-outline'} size={16} color={m3.onSurfaceVariant} />
+        <Text style={styles.summaryLabel}>
+          {looped ? 'Reply was going in circles, restarted it' : 'Reply was cut off, continued it'}
+        </Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color={m3.onSurfaceVariant} />
+        <View style={styles.summaryLine} />
+      </Pressable>
+      {open ? (
+        <View style={styles.summaryBody}>
+          <Text style={styles.summaryNote}>
+            The model ran out of context in the middle of its reply, so Relay told it to carry on. This is what it
+            was sent.
+          </Text>
+          <Markdown text={message.content.replace(/^\(Relay\) /, '')} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 /** Shown while Relay writes a summary. */
 export function CompactingRow() {
   return (

@@ -14,6 +14,10 @@
 //! can still reach a brain, and a linked computer stays linked); "Quit Relay"
 //! in the tray stops everything and exits.
 //!
+//! Inside Proot on an Android phone (a Linux desktop shown through Termux:X11
+//! or VNC) there is no tray and no D-Bus, so there the window is the app:
+//! closing it quits, and WebKit is told to render in software.
+//!
 //! If another Relay is already serving on the configured port (for example
 //! `relay serve` in a console), a brain window simply connects to it.
 
@@ -201,7 +205,55 @@ fn quit(app: AppHandle) {
     begin_quit(&app);
 }
 
+/// True inside Proot on Android: Relay is a Linux program there, but the
+/// "computer" is a phone with no tray, no D-Bus session and no GPU access.
+/// Detected by the Android kernel (its version string says so) or by
+/// running under ptrace, which is how Proot works. RELAY_PROOT=1 or 0
+/// overrides the guess.
+fn in_proot() -> bool {
+    static PROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PROOT.get_or_init(|| {
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        if let Some(v) = std::env::var_os("RELAY_PROOT") {
+            return v != "0" && !v.is_empty();
+        }
+        let android_kernel = std::fs::read_to_string("/proc/version")
+            .map(|v| v.to_ascii_lowercase().contains("android"))
+            .unwrap_or(false);
+        let traced = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("TracerPid:"))
+                    .map(|v| v.trim() != "0")
+            })
+            .unwrap_or(false);
+        android_kernel || traced
+    })
+}
+
+/// WebKitGTK settings that let the window draw inside Proot: no GPU, no
+/// DMA-BUF and no compositing there. Only sets what the user hasn't set.
+fn prepare_proot_webview() {
+    for (key, value) in [
+        ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ("LIBGL_ALWAYS_SOFTWARE", "1"),
+    ] {
+        if std::env::var_os(key).is_none() {
+            // SAFETY: called first thing in main, before any other thread exists.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+}
+
 fn main() {
+    let proot = in_proot();
+    if proot {
+        prepare_proot_webview();
+    }
     let config_path = relay::config::default_config_path();
     let data_dir = config_path
         .parent()
@@ -214,6 +266,9 @@ fn main() {
         && (config_path.exists() || data_dir.join("relay.db").exists());
     let logs = data_dir.join("logs");
     init_logging(Some(logs));
+    if proot {
+        tracing::info!("running inside Proot: no tray, closing the window quits");
+    }
 
     let (brain_cfg, load_error) = if is_brain {
         match LoadedConfig::load(&config_path) {
@@ -258,7 +313,13 @@ fn main() {
             quit
         ])
         .setup(move |app| {
-            build_tray(app.handle())?;
+            // No tray in Proot (nothing to show it); elsewhere a missing tray
+            // is not worth refusing to open the window over.
+            if !in_proot()
+                && let Err(e) = build_tray(app.handle())
+            {
+                tracing::warn!("no tray icon: {e}");
+            }
             if let Some(cfg) = brain_cfg {
                 start_brain(app.handle(), cfg);
             } else if let Some(dev) = device {
@@ -270,8 +331,11 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window keeps Relay running in the tray.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            // Closing the window keeps Relay running in the tray. In Proot
+            // there is no tray to bring it back from, so closing quits.
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && !in_proot()
+            {
                 let quitting = window.app_handle().state::<Desktop>().quitting.load(Ordering::SeqCst);
                 if !quitting {
                     api.prevent_close();
@@ -490,7 +554,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// linked after a restart. Uses the XDG autostart folder every desktop
 /// (GNOME, KDE, XFCE, ...) reads. Elsewhere this does nothing.
 fn set_autostart(on: bool) {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(target_os = "linux") || in_proot() {
         return;
     }
     let dir = std::env::var_os("XDG_CONFIG_HOME")
