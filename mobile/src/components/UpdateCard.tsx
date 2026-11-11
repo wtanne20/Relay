@@ -21,7 +21,7 @@ export function UpdateCard({ client, onlyWhenAvailable }: { client: RelayClient 
   const busy = u.phase.kind === 'downloading' || u.phase.kind === 'installing';
   if (onlyWhenAvailable && !u.available && !busy) return null;
 
-  const mine = updateKind === 'android' ? appVersion() : (u.info?.current ?? null);
+  const mine = updateKind === 'desktop' ? (u.info?.current ?? null) : appVersion();
   let status: string;
   if (u.phase.kind === 'downloading') status = `Downloading… ${Math.round(u.phase.progress * 100)}%`;
   else if (u.phase.kind === 'installing')

@@ -12,12 +12,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Platform } from 'react-native';
 
 import { describeError, type RelayClient } from './api';
-import { isDesktop } from './desktop';
+import { desktopPlatform } from './desktop';
 import type { ReleaseAsset, UpdateInfo } from './types';
 
 export type UpdateKind = 'desktop' | 'android' | 'other';
 
-export const updateKind: UpdateKind = isDesktop ? 'desktop' : Platform.OS === 'android' ? 'android' : 'other';
+// Only the Windows app installs updates itself; the Linux app (AppImage or
+// .deb) and browsers open the release page instead.
+export const updateKind: UpdateKind =
+  desktopPlatform === 'Windows' ? 'desktop' : Platform.OS === 'android' ? 'android' : 'other';
 
 /** This app's own version. */
 export function appVersion(): string {
@@ -59,7 +62,7 @@ export function updateAvailable(info: UpdateInfo | null): boolean {
   if (!info?.latest) return false;
   if (updateKind === 'android') return newer(info.latest.version, appVersion()) && !!assetFor(info);
   if (updateKind === 'desktop') return info.available && !!assetFor(info);
-  return info.available;
+  return newer(info.latest.version, appVersion());
 }
 
 export type Phase =

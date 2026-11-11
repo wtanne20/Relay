@@ -22,7 +22,7 @@ import { Banner, Button, Field, Icon, type IconName } from '../components/ui';
 import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
-import { desktop, isDesktop } from '../lib/desktop';
+import { desktop, desktopPlatform, isDesktop } from '../lib/desktop';
 import { usePageStyle } from '../lib/layout';
 import { formatDuration } from '../lib/format';
 import { disablePush, enablePush, pushSupported } from '../lib/push';
@@ -524,7 +524,7 @@ export default function SettingsScreen() {
         />
       )}
       <Text style={[type.bodySmall, styles.footer]}>
-        Relay {isDesktop ? 'for Windows' : 'for phone'} {Constants.expoConfig?.version ?? ''}
+        Relay {desktopPlatform ? `for ${desktopPlatform}` : 'for phone'} {Constants.expoConfig?.version ?? ''}
       </Text>
     </ScrollView>
   );
