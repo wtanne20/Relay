@@ -226,12 +226,23 @@ pub struct HostConfig {
     pub root: PathBuf,
     pub shell: String,
     pub default_timeout: u64,
+    /// Where this computer keeps its document index; None uses Relay's
+    /// usual data folder.
+    pub data_dir: Option<PathBuf>,
 }
 
 /// The `relay host` router: file + shell tools over HTTP, confined to
 /// `root`, guarded by the host's own bearer token.
 pub fn host_app(cfg: HostConfig) -> Result<Router> {
     let sandbox = Arc::new(Sandbox::new(&cfg.root, &[])?);
+    let data_dir = cfg.data_dir.clone().unwrap_or_else(crate::config::default_data_dir);
+    let kb = match crate::knowledge::Index::open(&data_dir.join("knowledge.db")) {
+        Ok(i) => Some(i),
+        Err(e) => {
+            tracing::warn!("document search is unavailable on this computer: {e:#}");
+            None
+        }
+    };
     Ok(Router::new()
         .route("/info", get(info))
         .route("/list", get(list))
@@ -240,6 +251,10 @@ pub fn host_app(cfg: HostConfig) -> Result<Router> {
         .route("/edit", post(edit))
         .route("/run", post(run_start))
         .route("/run/{id}", get(run_status).delete(run_cancel))
+        .route("/kb/status", post(kb_status))
+        .route("/kb/search", post(kb_search))
+        .route("/kb/read", post(kb_read))
+        .route("/kb/forget", post(kb_forget))
         .layer(middleware::from_fn_with_state(
             cfg.clone(),
             auth,
@@ -248,6 +263,7 @@ pub fn host_app(cfg: HostConfig) -> Result<Router> {
             cfg,
             sandbox,
             runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            kb,
         }))
 }
 
@@ -256,6 +272,8 @@ struct HostState {
     cfg: HostConfig,
     sandbox: Arc<Sandbox>,
     runs: Arc<std::sync::Mutex<HashMap<String, RunJob>>>,
+    /// This computer's document index.
+    kb: Option<Arc<crate::knowledge::Index>>,
 }
 
 impl HostState {
@@ -284,6 +302,90 @@ impl HostState {
         }
         Ok(Arc::new(Sandbox::new(&dir, &[])?))
     }
+}
+
+// ---------------------------------------------------------------- documents
+
+impl HostState {
+    fn kb(&self) -> ApiResult<&Arc<crate::knowledge::Index>> {
+        self.kb
+            .as_ref()
+            .ok_or_else(|| DeviceError::Internal("document search is unavailable on this computer".into()))
+    }
+
+    /// A chosen folder as its index key, if it exists inside this device's root.
+    fn kb_folder(&self, folder: &str) -> Result<String, String> {
+        let dir = self.sandbox.resolve_existing(folder, Access::Read).map_err(|_| {
+            format!(
+                "{folder} does not exist on this computer, or is outside the folder Relay may use ({})",
+                self.sandbox.root.display()
+            )
+        })?;
+        crate::knowledge::folder_key(&dir).map_err(|e| format!("{e:#}"))
+    }
+
+    fn kb_folders(&self, folders: &[String]) -> Vec<String> {
+        folders.iter().filter_map(|f| self.kb_folder(f).ok()).collect()
+    }
+}
+
+async fn kb_status(
+    State(st): State<HostState>,
+    Json(req): Json<crate::knowledge::KbRequest>,
+) -> ApiResult<Json<Value>> {
+    let kb = st.kb()?;
+    let mut out = Vec::new();
+    for f in &req.folders {
+        match st.kb_folder(f) {
+            Ok(key) => {
+                let mut s = crate::knowledge::handle_status(kb, vec![key], req.force).await;
+                if let Some(mut s) = s.pop() {
+                    // Answer with the folder as the brain knows it.
+                    s.path = f.clone();
+                    out.push(s);
+                }
+            }
+            Err(e) => out.push(crate::knowledge::FolderStatus {
+                path: f.clone(),
+                error: Some(e),
+                ..Default::default()
+            }),
+        }
+    }
+    Ok(Json(json!({ "folders": out })))
+}
+
+async fn kb_search(
+    State(st): State<HostState>,
+    Json(mut req): Json<crate::knowledge::KbRequest>,
+) -> ApiResult<Json<Value>> {
+    let kb = st.kb()?;
+    req.folders = st.kb_folders(&req.folders);
+    Ok(Json(crate::knowledge::handle_search(kb, req).await?))
+}
+
+async fn kb_read(
+    State(st): State<HostState>,
+    Json(mut req): Json<crate::knowledge::KbRequest>,
+) -> ApiResult<Json<Value>> {
+    req.folders = st.kb_folders(&req.folders);
+    let text = crate::knowledge::handle_read(req)
+        .await
+        .map_err(|e| DeviceError::BadRequest(format!("{e:#}")))?;
+    Ok(Json(json!({ "text": text })))
+}
+
+async fn kb_forget(
+    State(st): State<HostState>,
+    Json(req): Json<crate::knowledge::KbRequest>,
+) -> ApiResult<Json<Value>> {
+    let kb = st.kb()?;
+    for f in &req.folders {
+        if let Ok(key) = st.kb_folder(f) {
+            crate::knowledge::handle_forget(kb, key).await?;
+        }
+    }
+    Ok(Json(json!({ "ok": true })))
 }
 
 type ApiResult<T> = Result<T, DeviceError>;
@@ -938,6 +1040,19 @@ impl DeviceClient {
         let bytes = self.call("POST", path, Some(body)).await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
+
+    /// One document-index request (`/kb/status`, `/kb/search`, ...).
+    pub async fn kb(&self, action: &str, req: &crate::knowledge::KbRequest) -> Result<Value> {
+        self.post(&format!("/kb/{action}"), serde_json::to_value(req)?)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("answered 404") {
+                    anyhow::anyhow!("Relay on this computer is too old to search documents; update it")
+                } else {
+                    e
+                }
+            })
+    }
 }
 
 fn anyhow_err<T: std::fmt::Display>(e: T) -> anyhow::Error {
@@ -1015,6 +1130,7 @@ mod tests {
             root: root.clone(),
             shell: "sh".into(),
             default_timeout: 30,
+            data_dir: Some(std::env::temp_dir().join(format!("relay-host-{}", uuid::Uuid::new_v4()))),
         };
         let app = host_app(cfg).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1080,6 +1196,7 @@ mod tests {
             root: dir.clone(),
             shell: if cfg!(windows) { "cmd".into() } else { "sh".into() },
             default_timeout: 30,
+            data_dir: Some(dir.join(".relay")),
         };
         let app = host_app(cfg).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

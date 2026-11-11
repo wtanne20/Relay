@@ -79,6 +79,7 @@ pub fn catalog() -> Vec<(&'static str, &'static str)> {
         ("run_command", "Run PowerShell commands"),
         ("web_search", "Search the web"),
         ("fetch_url", "Read web pages"),
+        ("search_documents", "Search your documents (folders you made searchable)"),
     ]
 }
 

@@ -266,6 +266,10 @@ pub struct DeviceConfig {
     /// Shell for run_command.
     #[serde(default = "default_shell")]
     pub shell: String,
+    /// The folder `device.toml` is in; this computer's document index lives
+    /// there too. Not saved (it's wherever the file is).
+    #[serde(skip)]
+    pub data_dir: Option<PathBuf>,
 }
 
 fn default_shell() -> String {
@@ -279,7 +283,9 @@ impl DeviceConfig {
 
     pub fn load(path: &std::path::Path) -> Option<Self> {
         let text = std::fs::read_to_string(path).ok()?;
-        toml::from_str(&text).ok()
+        let mut cfg: Self = toml::from_str(&text).ok()?;
+        cfg.data_dir = path.parent().map(std::path::Path::to_path_buf);
+        Some(cfg)
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
@@ -344,6 +350,7 @@ pub async fn run_device_link(
         root: cfg.root.clone(),
         shell: cfg.shell.clone(),
         default_timeout: 120,
+        data_dir: cfg.data_dir.clone(),
     })?;
 
     let url = link_url(&cfg.brain_url);
@@ -643,6 +650,7 @@ pub async fn pair_and_save(
         root,
         name,
         shell: previous.map(|p| p.shell).unwrap_or_else(default_shell),
+        data_dir: path.parent().map(std::path::Path::to_path_buf),
     };
     cfg.save(path)?;
     Ok(cfg)
@@ -787,6 +795,7 @@ mod tests {
             root: PathBuf::from("/home/me"),
             name: "laptop".into(),
             shell: "sh".into(),
+            data_dir: Some(dir.clone()),
         };
         cfg.save(&path).unwrap();
         assert_eq!(DeviceConfig::load(&path), Some(cfg));

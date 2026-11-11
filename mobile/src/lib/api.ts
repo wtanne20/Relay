@@ -1,5 +1,8 @@
 import type { Credentials } from './storage';
 import type {
+  DocumentFolder,
+  DocumentSearch,
+  FolderListing,
   HubDownload,
   InstallState,
   UpdateInfo,
@@ -269,6 +272,35 @@ export class RelayClient {
   /** Re-checks the link and refreshes last_seen. */
   async pingDevice(id: string): Promise<{ connected: boolean; error?: string }> {
     return this.request('POST', `/devices/${encodeURIComponent(id)}/ping`, {});
+  }
+
+  // ----- documents (folders the agent can search) -----
+  async documentFolders(): Promise<DocumentFolder[]> {
+    return (await this.request<{ folders: DocumentFolder[] }>('GET', '/knowledge', undefined, 30000)).folders;
+  }
+  async addDocumentFolder(path: string, deviceId: string): Promise<DocumentFolder> {
+    return (
+      await this.request<{ folder: DocumentFolder }>('POST', '/knowledge', { path, device_id: deviceId }, 30000)
+    ).folder;
+  }
+  async removeDocumentFolder(id: string): Promise<void> {
+    await this.request('DELETE', `/knowledge/${encodeURIComponent(id)}`);
+  }
+  async reindexDocumentFolder(id: string): Promise<DocumentFolder> {
+    return (await this.request<{ folder: DocumentFolder }>('POST', `/knowledge/${encodeURIComponent(id)}/reindex`, {}, 30000))
+      .folder;
+  }
+  searchDocuments(q: string): Promise<DocumentSearch> {
+    return this.request('GET', `/knowledge/search?q=${encodeURIComponent(q)}&limit=8`, undefined, 30000);
+  }
+  /** Sub-folders of a folder on the brain ('' device) or a linked computer ('' path = home). */
+  browseFolders(deviceId: string, path: string): Promise<FolderListing> {
+    return this.request(
+      'GET',
+      `/knowledge/browse?device_id=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(path)}`,
+      undefined,
+      20000,
+    );
   }
 
   // ----- sessions -----

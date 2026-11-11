@@ -532,7 +532,7 @@ async fn settings_skills_and_approvals() {
     let s = h.get("/settings").await;
     assert_eq!(s["settings"]["agent"]["max_steps"], 50);
     assert_eq!(s["settings"]["sampling"]["temperature"], 0.6);
-    assert_eq!(s["tools"].as_array().map(Vec::len), Some(7));
+    assert_eq!(s["tools"].as_array().map(Vec::len), Some(8));
     assert!(
         s["settings"].get("token").is_none(),
         "token must not be exposed"
@@ -1665,6 +1665,41 @@ async fn linked_device_pairs_with_a_code_and_hosts_a_project() {
     assert_eq!(r.status(), 200);
     assert_eq!(r.text().await.expect("body"), "hi");
 
+    // The laptop's notes become searchable; the files stay on the laptop.
+    let notes = home.join("notes");
+    std::fs::create_dir_all(&notes).expect("mkdir");
+    std::fs::write(notes.join("bike.md"), "# Bike\nThe bike lock code is 4471.\n").expect("note");
+    let (s, v) = h
+        .post("/knowledge", json!({"device_id": device_id, "path": notes.to_string_lossy()}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["folder"]["computer"], "laptop");
+    let kid = v["folder"]["id"].as_str().expect("id").to_string();
+    // Folders outside what the laptop shares are refused.
+    let (s, v) = h
+        .post("/knowledge", json!({"device_id": device_id, "path": h.dir.to_string_lossy()}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let mut found = Value::Null;
+    for _ in 0..100 {
+        let r = h.get("/knowledge/search?q=bike%20lock").await;
+        if r["hits"].as_array().is_some_and(|a| !a.is_empty()) {
+            found = r;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(found["hits"][0]["computer"], "laptop", "{found}");
+    assert_eq!(found["hits"][0]["rel"], "bike.md");
+    assert!(found["hits"][0]["text"].as_str().unwrap_or("").contains("4471"));
+    // The index lives with the laptop's data, not the brain's.
+    assert!(h.dir.join("laptop-data/knowledge.db").exists());
+    let list = h.get("/knowledge").await;
+    assert_eq!(list["folders"][0]["status"]["files"], 1, "{list}");
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{kid}"), None).await;
+    assert_eq!(s, 204);
+    assert_eq!(h.get("/knowledge").await["folders"], json!([]));
+
     // The laptop goes away: the project shows offline and prompts fail fast.
     shutdown.cancel();
     let mut offline = false;
@@ -1688,5 +1723,79 @@ async fn linked_device_pairs_with_a_code_and_hosts_a_project() {
         format!("Bearer {}", cfg.device_key).parse().expect("header"),
     );
     assert!(tokio_tungstenite::connect_async(req).await.is_err());
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
+async fn documents_are_indexed_searched_and_given_to_the_agent() {
+    let h = Harness::start().await;
+    let docs = h.dir.join("docs");
+    std::fs::create_dir_all(docs.join("taxes")).expect("mkdir");
+    std::fs::write(
+        docs.join("taxes/2025.md"),
+        "# Taxes 2025\n\nAccountant: Dana Ruiz.\nFiling deadline is April 15.\n",
+    )
+    .expect("write");
+    std::fs::write(docs.join("recipes.txt"), "Pancakes: flour, milk, eggs.\n").expect("write");
+
+    // Nothing searchable yet: chats don't get the document tools.
+    assert_eq!(h.get("/knowledge").await["folders"], json!([]));
+
+    let (s, v) = h.post("/knowledge", json!({"path": docs.to_string_lossy()})).await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["folder"]["id"].as_str().expect("id").to_string();
+    assert_eq!(v["folder"]["device_id"], "");
+    // The same folder (or one inside it) can't be added twice.
+    let (s, v) = h
+        .post("/knowledge", json!({"path": docs.join("taxes").to_string_lossy()}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, _) = h.post("/knowledge", json!({"path": h.dir.join("missing").to_string_lossy()})).await;
+    assert_eq!(s, 400);
+
+    // Indexing runs in the background.
+    let mut indexed = false;
+    for _ in 0..100 {
+        let l = h.get("/knowledge").await;
+        if l["folders"][0]["status"]["indexed_at"].is_string() && l["folders"][0]["status"]["indexing"] == false {
+            assert_eq!(l["folders"][0]["status"]["files"], 2, "{l}");
+            indexed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(indexed, "never indexed");
+    let r = h.get("/knowledge/search?q=accountant").await;
+    assert_eq!(r["hits"][0]["rel"], "taxes/2025.md", "{r}");
+    assert_eq!(r["hits"][0]["start"], 1);
+
+    // A plain chat can search them: the agent gets the tools and a hint.
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("chat id").to_string();
+    let mut ws = h.ws(&sid).await;
+    ws.next().await;
+    let (s, v) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "docs: who is my accountant"}))
+        .await;
+    assert_eq!(s, 202, "{v}");
+    let events = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(events.last().map(|e| e["status"].clone()), Some(json!("done")), "{events:#?}");
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    let tool = msgs["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .cloned()
+        .expect("a tool result");
+    let out = tool["content"].as_str().expect("content");
+    assert!(out.contains("taxes/2025.md (lines 1-4)"), "{out}");
+    assert!(out.contains("Dana Ruiz"), "{out}");
+
+    let (s, _) = h.req(reqwest::Method::POST, &format!("/knowledge/{id}/reindex"), None).await;
+    assert_eq!(s, 200);
+    let (s, v) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{id}"), None).await;
+    assert_eq!(s, 204, "{v}");
+    assert!(h.get("/knowledge/search?q=accountant").await["hits"].as_array().is_some_and(|a| a.is_empty()));
     let _ = std::fs::remove_dir_all(&h.dir);
 }

@@ -201,6 +201,7 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     upgrade(&conn)?;
     crate::device::ensure_schema(&conn)?;
     crate::approvals::ensure_schema(&conn)?;
+    crate::knowledge::ensure_schema(&conn)?;
     Ok(conn)
 }
 

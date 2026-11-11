@@ -20,6 +20,8 @@ const TOOL_ICON: Record<string, IconName> = {
   list_dir: 'folder-outline',
   web_search: 'magnify',
   fetch_url: 'web',
+  search_documents: 'file-search-outline',
+  read_document: 'file-document-outline',
 };
 
 export function UserBubble({ message }: { message: Message }) {
@@ -308,9 +310,22 @@ function stepsSummary(calls: ToolCall[]): string {
   const n = (...names: string[]) => calls.filter((c) => names.includes(c.name)).length;
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
   const parts: string[] = [];
-  const known = n('run_command', 'read_file', 'edit_file', 'write_file', 'list_dir', 'web_search', 'fetch_url');
+  const known = n(
+    'run_command',
+    'read_file',
+    'edit_file',
+    'write_file',
+    'list_dir',
+    'web_search',
+    'fetch_url',
+    'search_documents',
+    'read_document',
+  );
   if (n('web_search')) parts.push(`searched the web ${n('web_search') === 1 ? 'once' : `${n('web_search')} times`}`);
   if (n('fetch_url')) parts.push(`read ${plural(n('fetch_url'), 'page')}`);
+  if (n('search_documents'))
+    parts.push(`searched your documents ${n('search_documents') === 1 ? 'once' : `${n('search_documents')} times`}`);
+  if (n('read_document')) parts.push(`read ${plural(n('read_document'), 'document')}`);
   if (n('run_command')) parts.push(`ran ${plural(n('run_command'), 'command')}`);
   if (n('read_file')) parts.push(`read ${plural(n('read_file'), 'file')}`);
   // Files, not attempts: several edits to one file count once.

@@ -9,6 +9,7 @@ pub mod device;
 pub mod files;
 pub mod hub;
 pub mod images;
+pub mod knowledge;
 pub mod libraries;
 pub mod link;
 pub mod migrate;
@@ -66,6 +67,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     let pusher = Pusher::new(db.clone(), shared.clone());
     let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
     let links = Arc::new(link::LinkHub::default());
+    let knowledge = knowledge::KnowledgeBase::new(db.clone(), &data_dir, Arc::clone(&links))?;
     let agent = agent::AgentManager::new(
         db.clone(),
         model.clone(),
@@ -74,6 +76,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         images::dir(&data_dir),
         device::DeviceRegistry::new(db.clone()),
         Arc::clone(&links),
+        Arc::clone(&knowledge),
     );
     let state: AppState = Arc::new(AppInner {
         cfg: shared,
@@ -90,6 +93,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         updates: Default::default(),
         devices,
         links,
+        knowledge,
         pair_code: std::sync::Mutex::new(None),
         data_dir,
         web_root: ui::web_root(),
@@ -273,6 +277,7 @@ pub async fn run_host(opts: HostOptions) -> Result<()> {
         root: opts.root.clone(),
         shell: opts.shell.clone(),
         default_timeout: opts.timeout,
+        data_dir: None,
     })?;
     let listener = tokio::net::TcpListener::bind(&opts.bind).await?;
     println!(

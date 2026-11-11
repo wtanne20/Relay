@@ -51,6 +51,7 @@ const TOOL_ICONS: Record<string, IconName> = {
   run_command: 'console',
   web_search: 'magnify',
   fetch_url: 'web',
+  search_documents: 'file-search-outline',
 };
 
 function same(a: unknown, b: unknown) {

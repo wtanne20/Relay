@@ -278,6 +278,8 @@ export interface ToolToggles {
   run_command: boolean;
   web_search: boolean;
   fetch_url: boolean;
+  /** search_documents and read_document: the folders made searchable. */
+  search_documents: boolean;
 }
 
 export interface AgentSettings {
@@ -443,4 +445,56 @@ export interface UpdateInfo {
   /** The PC can install updates itself (Windows). */
   can_install: boolean;
   install: InstallState;
+}
+
+/** How a searchable folder's index stands (kept on the computer it's on). */
+export interface FolderIndexStatus {
+  path: string;
+  exists: boolean;
+  files: number;
+  chunks: number;
+  indexed_at: string | null;
+  indexing: boolean;
+  done: number;
+  total: number;
+  skipped: number;
+  error: string | null;
+}
+
+/** A folder the agent can search, on the brain or a linked computer. */
+export interface DocumentFolder {
+  id: string;
+  /** Empty for the brain. */
+  device_id: string;
+  path: string;
+  created_at: string;
+  computer: string;
+  online: boolean;
+  status: FolderIndexStatus;
+}
+
+/** One passage a document search found. */
+export interface DocumentHit {
+  computer: string;
+  folder: string;
+  path: string;
+  rel: string;
+  kind: 'text' | 'pdf' | 'docx';
+  start: number;
+  end: number;
+  text: string;
+  score: number;
+}
+
+export interface DocumentSearch {
+  hits: DocumentHit[];
+  notes: string[];
+  indexing: boolean;
+}
+
+export interface FolderListing {
+  path: string;
+  root: string;
+  home?: string;
+  folders: string[];
 }

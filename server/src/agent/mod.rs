@@ -172,6 +172,8 @@ pub struct AgentManager {
     devices: crate::device::DeviceRegistry,
     /// Devices connected to this brain over a link.
     links: Arc<crate::link::LinkHub>,
+    /// The user's searchable folders on all their computers.
+    knowledge: Arc<crate::knowledge::KnowledgeBase>,
     /// Where pictures attached to prompts are kept.
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
@@ -188,6 +190,7 @@ enum LoopEnd {
 }
 
 impl AgentManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
         model: ModelManager,
@@ -196,6 +199,7 @@ impl AgentManager {
         attachments: PathBuf,
         devices: crate::device::DeviceRegistry,
         links: Arc<crate::link::LinkHub>,
+        knowledge: Arc<crate::knowledge::KnowledgeBase>,
     ) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -210,6 +214,7 @@ impl AgentManager {
             attachments,
             devices,
             links,
+            knowledge,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
         })
@@ -670,6 +675,16 @@ impl AgentManager {
         };
         let device = device.map(|(_, dc)| dc);
         let mut system = system;
+        // The user's searchable folders work in every chat, on any computer.
+        let mut tool_defs = tool_defs;
+        if conf.agent.tools.enabled("search_documents")
+            && let Some(folders) = self.knowledge.describe().await
+        {
+            if let Some(a) = tool_defs.as_array_mut() {
+                a.extend(crate::knowledge::tool_definitions());
+            }
+            system.push_str(&crate::knowledge::prompt_hint(&folders));
+        }
         let has_web = tool_defs.as_array().is_some_and(|a| {
             a.iter().any(|d| {
                 d.pointer("/function/name")
@@ -935,7 +950,7 @@ impl AgentManager {
                                     decision = AuditDecision::AllowedAll;
                                     approval_mode = ApprovalMode::Never;
                                 }
-                                run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
+                                run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
                             }
                             None => {
                                 decision = AuditDecision::Stopped;
@@ -946,7 +961,7 @@ impl AgentManager {
                             }
                         }
                     } else {
-                        run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
+                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
                     }
                 };
                 self.audit(session, project, call, decision, rule_id, output.is_error).await;
@@ -1318,10 +1333,20 @@ impl AgentManager {
 async fn run_tool(
     ctx: Option<&ToolContext>,
     device: Option<&crate::device::DeviceClient>,
+    knowledge: &crate::knowledge::KnowledgeBase,
     call: &db::ToolCall,
     cancel: &CancellationToken,
     search_key: &str,
 ) -> tools::ToolOutput {
+    if crate::knowledge::TOOL_NAMES.contains(&call.name.as_str()) {
+        return tokio::select! {
+            out = crate::knowledge::execute(knowledge, &call.name, &call.arguments) => out,
+            _ = cancel.cancelled() => tools::ToolOutput {
+                content: "cancelled by user".into(),
+                is_error: true,
+            },
+        };
+    }
     if tools::WEB_TOOLS.contains(&call.name.as_str()) {
         return tokio::select! {
             out = tools::execute_web(&call.name, &call.arguments, search_key) => out,
