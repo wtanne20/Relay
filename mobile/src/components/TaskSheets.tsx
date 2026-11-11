@@ -268,8 +268,13 @@ export function ScheduleSheet({
     ]);
   };
 
+  // No days picked means every day, so the first tap turns one day off.
   const toggleDay = (d: number) =>
-    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort()));
+    setDays((cur) => {
+      const all = cur.length ? cur : [1, 2, 3, 4, 5, 6, 7];
+      const next = all.includes(d) ? all.filter((x) => x !== d) : [...all, d].sort();
+      return next.length === 7 ? [] : next.length === 0 ? cur : next;
+    });
 
   return (
     <Sheet visible={visible} onClose={onClose} title={editing ? 'Edit scheduled task' : 'New scheduled task'}>

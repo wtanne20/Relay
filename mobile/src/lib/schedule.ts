@@ -101,6 +101,7 @@ export function whenLabel(iso: string, now = new Date()): string {
 export function queueStatusText(item: QueueItem, place: number): string {
   switch (item.status) {
     case 'queued':
+      if (item.follow_up) return 'Next message, sent when the chat is free';
       return place === 1 ? 'Up next' : `Waiting · #${place} in line`;
     case 'running':
       return item.needs_approval ? 'Needs your approval' : 'Running';

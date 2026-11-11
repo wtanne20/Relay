@@ -430,6 +430,8 @@ export interface QueueItem {
   session_id: string | null;
   session_title: string | null;
   schedule_id: string | null;
+  /** The next message of a busy chat: sent when that chat is free, not in line. */
+  follow_up?: boolean;
   name: string;
   prompt: string;
   status: QueueStatus;

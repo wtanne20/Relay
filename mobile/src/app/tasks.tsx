@@ -106,9 +106,9 @@ export default function TasksScreen() {
 
   const queueRow = (item: QueueItem, i: number) => {
     const icon = itemIcon(item);
-    if (item.status === 'queued') place += 1;
+    if (item.status === 'queued' && !item.follow_up) place += 1;
     const status = queueStatusText(item, place);
-    const time =
+    const timeText =
       item.status === 'queued'
         ? `added ${relativeTime(item.created_at)}`
         : item.status === 'running'
@@ -119,6 +119,7 @@ export default function TasksScreen() {
             ? relativeTime(item.finished_at)
             : '';
     const canOpen = !!item.session_id;
+    const time = item.follow_up && item.status === 'queued' ? '' : timeText;
     return (
       <View key={item.id}>
         {i > 0 ? <View style={styles.divider} /> : null}
@@ -143,20 +144,21 @@ export default function TasksScreen() {
             )}
             <View style={styles.grow}>
               <Text style={type.bodyLarge} numberOfLines={1}>
-                {item.name || 'Task'}
+                {item.follow_up ? `“${item.prompt}”` : item.name || 'Task'}
               </Text>
               <Text
                 style={[type.bodySmall, item.needs_approval && { color: m3.warning }]}
                 numberOfLines={2}
               >
                 {status}
+                {item.follow_up && item.session_title ? ` · ${item.session_title}` : ''}
                 {item.project_id === CHATS_ID ? '' : ` · ${item.project_name}`}
                 {item.schedule_id ? ' · scheduled' : ''}
                 {time ? ` · ${time}` : ''}
               </Text>
             </View>
           </Pressable>
-          {item.status === 'queued' && place > 1 ? (
+          {item.status === 'queued' && !item.follow_up && place > 1 ? (
             <IconButton
               icon="arrow-collapse-up"
               label={`Run ${item.name} next`}

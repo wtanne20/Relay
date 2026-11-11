@@ -458,10 +458,12 @@ export default function ChatScreen() {
               {pending.map((p) => (
                 <View key={p.id} style={styles.pendingRow}>
                   <Icon name="clock-outline" size={16} color={m3.onSurfaceVariant} />
-                  <Text style={[type.bodyMedium, styles.pendingText]} numberOfLines={2}>
-                    {p.prompt}
-                  </Text>
-                  <Text style={type.bodySmall}>Sends when the agent is done</Text>
+                  <View style={styles.pendingText}>
+                    <Text style={[type.bodyMedium, { color: m3.onSurface }]} numberOfLines={2}>
+                      {p.prompt}
+                    </Text>
+                    <Text style={type.bodySmall}>Sends when the agent is done</Text>
+                  </View>
                   <IconButton icon="close" size={18} label="Don't send this message" onPress={() => cancelPending(p)} />
                 </View>
               ))}
@@ -656,11 +658,11 @@ const styles = StyleSheet.create({
   pendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
-    flexWrap: 'wrap',
+    gap: space.md,
     paddingLeft: space.md,
+    paddingVertical: space.xs,
     borderRadius: radius.md,
     backgroundColor: m3.surfaceContainerHigh,
   },
-  pendingText: { flex: 1, minWidth: 120, color: m3.onSurface },
+  pendingText: { flex: 1, minWidth: 0 },
 });
