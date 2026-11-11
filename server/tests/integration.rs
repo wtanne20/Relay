@@ -491,6 +491,39 @@ async fn system_prompt_includes_agents_md_and_skills() {
 }
 
 #[tokio::test]
+async fn voice_prompts_ask_for_spoken_replies() {
+    let h = Harness::start().await;
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+
+    let mut reply = async |body: Value| {
+        let (st, v) = h.post(&format!("/sessions/{sid}/prompt"), body).await;
+        assert_eq!(st, 202, "{v}");
+        let events = ws.until_status(&["done", "error"]).await;
+        events
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "message" && e["message"]["role"] == "assistant")
+            .map(|e| e["message"]["content"].as_str().unwrap_or("").to_string())
+            .expect("a reply")
+    };
+    assert_eq!(
+        reply(json!({"content": "which reply style?"})).await,
+        "Style: written"
+    );
+    assert_eq!(
+        reply(json!({"content": "which reply style?", "voice": true})).await,
+        "Style: spoken"
+    );
+    // It applies to that prompt only.
+    assert_eq!(
+        reply(json!({"content": "which reply style?"})).await,
+        "Style: written"
+    );
+}
+
+#[tokio::test]
 async fn settings_skills_and_approvals() {
     let h = Harness::start().await;
     let patch = |body: Value| h.req(reqwest::Method::PATCH, "/settings", Some(body));

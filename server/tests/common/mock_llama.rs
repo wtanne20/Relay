@@ -258,6 +258,16 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 ));
             }
             chunks.push(chunk(json!({}), Some("tool_calls")));
+        } else if lower.contains("which reply style") {
+            // Says which formatting instructions it was given.
+            let style = if system.contains("# Voice conversation")
+                && !system.contains("# How to format answers")
+            {
+                "spoken"
+            } else {
+                "written"
+            };
+            chunks.extend(text_chunks(&format!("Style: {style}")));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));

@@ -115,6 +115,19 @@ Pictures go to the model's vision and documents as text, as with the composer's 
 listen to audio or watch video yet, so for a voice note it gets only the file's name and size. Files over 25 MB
 are left out. iPhone sharing needs a separate share extension and isn't built yet.
 
+### Voice mode (phone)
+
+Tap the **voice** button in the composer (it shows while the message box is empty) to talk to the agent hands-free,
+in a chat or from the home screen. Relay listens until you pause, sends what you said, waits for the agent, reads
+the reply aloud and listens again. Approvals are read out too: say "allow", "deny" or "allow everything", or tap the
+buttons. Say "goodbye" (or tap ✕) to leave; the chat keeps everything that was said.
+
+Speech is turned into text and read aloud **on the phone** (Android's and iOS's own offline speech recognition and
+text-to-speech), and voice prompts ask the model for short spoken answers instead of formatted text. If the phone
+has no offline recognizer, or its language pack isn't downloaded, voice mode offers to download it (Android) or to
+use the phone's online speech service instead, which you have to choose. Voice mode needs a phone app built from this version or later (it adds native speech
+modules); it isn't offered in the desktop app.
+
 ---
 
 ## Downloads

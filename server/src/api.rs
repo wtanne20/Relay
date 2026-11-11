@@ -2041,6 +2041,10 @@ struct Prompt {
     images: Vec<String>,
     #[serde(default)]
     files: Vec<crate::files::NewFile>,
+    /// Sent from voice mode: the reply is read aloud, so it's asked for in
+    /// plain spoken sentences.
+    #[serde(default)]
+    voice: bool,
 }
 
 async fn send_prompt(
@@ -2050,7 +2054,7 @@ async fn send_prompt(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let message = s
         .agent
-        .start(&id, body.content, body.images, body.files)
+        .start(&id, body.content, body.images, body.files, body.voice)
         .await?;
     // Carrying on with an archived chat brings it back to the lists.
     let sid = id.clone();

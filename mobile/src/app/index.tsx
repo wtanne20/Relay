@@ -27,6 +27,7 @@ import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
 import { enterToSend, useWide } from '../lib/layout';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
+import { voiceAvailable } from '../lib/voice';
 
 const LAST_TARGET = 'relay.lastTarget';
 const CHATS_SHOWN = 12;
@@ -126,6 +127,7 @@ export default function Home() {
 
   const project = projects?.find((p) => p.id === target) ?? null;
   const canSend = (!!text.trim() || pics.items.length > 0) && !busy;
+  const canTalk = voiceAvailable();
   const open = (href: Parameters<typeof router.push>[0]) => (wide ? router.replace(href) : router.push(href));
 
   const send = async () => {
@@ -148,6 +150,24 @@ export default function Home() {
       pics.clear();
       emit('chats');
       open({ pathname: '/session/[id]', params: { id: s.id, title: s.title } });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** A new chat in the chosen place, opened in voice mode. */
+  const talk = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const s = await client.createSession(project?.id ?? CHATS_ID);
+      if (model) await client.setSessionModel(s.id, model);
+      setModel(null);
+      emit('chats');
+      open({ pathname: '/session/[id]', params: { id: s.id, title: s.title, voice: '1' } });
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -383,6 +403,21 @@ export default function Home() {
                 <AttachMenu onPick={pics.pick} disabled={busy} />
                 <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
               </View>
+              {canTalk && !canSend ? (
+                <Pressable
+                  onPress={talk}
+                  disabled={busy}
+                  style={[styles.send, styles.sendOn]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Start a voice chat"
+                >
+                  {busy ? (
+                    <ActivityIndicator color={m3.onPrimary} />
+                  ) : (
+                    <Icon name="account-voice" size={22} color={m3.onPrimary} />
+                  )}
+                </Pressable>
+              ) : (
               <Pressable
                 onPress={send}
                 disabled={!canSend}
@@ -396,6 +431,7 @@ export default function Home() {
                   <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
                 )}
               </Pressable>
+              )}
             </View>
 
             {picking ? (
