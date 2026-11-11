@@ -55,6 +55,7 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
             prompt TEXT NOT NULL,
             repeat TEXT NOT NULL,
             same_chat INTEGER NOT NULL DEFAULT 0,
+            allow_all INTEGER NOT NULL DEFAULT 0,
             enabled INTEGER NOT NULL DEFAULT 1,
             next_run TEXT,
             last_run TEXT,
@@ -72,6 +73,7 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
             error TEXT,
             position INTEGER NOT NULL DEFAULT 0,
             follow_up INTEGER NOT NULL DEFAULT 0,
+            allow_all INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             started_at TEXT,
             finished_at TEXT
@@ -87,6 +89,19 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
             title TEXT NOT NULL
         );",
     )?;
+    // Added after the first version of these tables.
+    for table in ["schedules", "queue"] {
+        let has = c
+            .prepare(&format!(
+                "SELECT 1 FROM pragma_table_info('{table}') WHERE name = 'allow_all'"
+            ))?
+            .exists([])?;
+        if !has {
+            c.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN allow_all INTEGER NOT NULL DEFAULT 0"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -223,6 +238,9 @@ pub struct Schedule {
     pub repeat: Repeat,
     /// Every run continues one chat instead of starting a new one.
     pub same_chat: bool,
+    /// Runs don't stop to ask before acting (the "Ask before acting"
+    /// setting is skipped for them).
+    pub allow_all: bool,
     pub enabled: bool,
     pub next_run: Option<String>,
     pub last_run: Option<String>,
@@ -232,7 +250,7 @@ pub struct Schedule {
     pub created_at: String,
 }
 
-const SCHEDULE_SELECT: &str = "SELECT s.id, s.project_id, p.name, s.name, s.prompt, s.repeat, s.same_chat, s.enabled, s.next_run, s.last_run, s.last_session_id, x.status, s.created_at
+const SCHEDULE_SELECT: &str = "SELECT s.id, s.project_id, p.name, s.name, s.prompt, s.repeat, s.same_chat, s.enabled, s.next_run, s.last_run, s.last_session_id, x.status, s.created_at, s.allow_all
     FROM schedules s JOIN projects p ON p.id = s.project_id LEFT JOIN sessions x ON x.id = s.last_session_id";
 
 fn schedule_row(r: &Row) -> rusqlite::Result<Schedule> {
@@ -251,6 +269,7 @@ fn schedule_row(r: &Row) -> rusqlite::Result<Schedule> {
         last_session_id: r.get(10)?,
         last_status: r.get(11)?,
         created_at: r.get(12)?,
+        allow_all: r.get::<_, i64>(13)? != 0,
     })
 }
 
@@ -286,6 +305,8 @@ pub struct QueueItem {
     /// A message for a chat that was busy: it is sent as soon as that chat
     /// is free, without waiting for other queued tasks.
     pub follow_up: bool,
+    /// Runs without stopping to ask before acting.
+    pub allow_all: bool,
     pub name: String,
     pub prompt: String,
     /// queued, running, done, error or stopped.
@@ -299,7 +320,7 @@ pub struct QueueItem {
     pub needs_approval: bool,
 }
 
-const QUEUE_SELECT: &str = "SELECT q.id, q.project_id, p.name, q.session_id, x.title, q.schedule_id, q.name, q.prompt, q.status, q.error, q.created_at, q.started_at, q.finished_at, q.follow_up
+const QUEUE_SELECT: &str = "SELECT q.id, q.project_id, p.name, q.session_id, x.title, q.schedule_id, q.name, q.prompt, q.status, q.error, q.created_at, q.started_at, q.finished_at, q.follow_up, q.allow_all
     FROM queue q JOIN projects p ON p.id = q.project_id LEFT JOIN sessions x ON x.id = q.session_id";
 
 fn queue_row(r: &Row) -> rusqlite::Result<QueueItem> {
@@ -318,6 +339,7 @@ fn queue_row(r: &Row) -> rusqlite::Result<QueueItem> {
         started_at: r.get(11)?,
         finished_at: r.get(12)?,
         follow_up: r.get::<_, i64>(13)? != 0,
+        allow_all: r.get::<_, i64>(14)? != 0,
         needs_approval: false,
     })
 }
@@ -365,6 +387,7 @@ pub struct NewItem {
     pub session_id: Option<String>,
     pub schedule_id: Option<String>,
     pub follow_up: bool,
+    pub allow_all: bool,
     pub name: String,
     pub prompt: String,
 }
@@ -377,8 +400,8 @@ pub fn enqueue(c: &Connection, n: &NewItem) -> Result<QueueItem> {
         |r| r.get(0),
     )?;
     c.execute(
-        "INSERT INTO queue (id, project_id, session_id, schedule_id, name, prompt, status, position, created_at, follow_up) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7, ?8, ?9)",
-        params![id, n.project_id, n.session_id, n.schedule_id, n.name, n.prompt, position, db::now(), n.follow_up as i64],
+        "INSERT INTO queue (id, project_id, session_id, schedule_id, name, prompt, status, position, created_at, follow_up, allow_all) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7, ?8, ?9, ?10)",
+        params![id, n.project_id, n.session_id, n.schedule_id, n.name, n.prompt, position, db::now(), n.follow_up as i64, n.allow_all as i64],
     )?;
     get_queue_item(c, &id)?.ok_or_else(|| anyhow::anyhow!("queued item vanished"))
 }
@@ -584,6 +607,7 @@ impl Tasks {
                                 session_id,
                                 schedule_id: Some(s.id.clone()),
                                 follow_up: false,
+                                allow_all: s.allow_all,
                                 name: s.name.clone(),
                                 prompt: s.prompt.clone(),
                             },
@@ -638,7 +662,7 @@ impl Tasks {
             };
             match self
                 .agent
-                .start(&sid, item.prompt.clone(), Vec::new(), Vec::new())
+                .start_task(&sid, item.prompt.clone(), item.allow_all)
                 .await
             {
                 Ok(_) => {
@@ -768,6 +792,9 @@ struct AddToQueue {
     #[serde(default)]
     name: Option<String>,
     prompt: String,
+    /// Run without stopping to ask before acting.
+    #[serde(default)]
+    allow_all: bool,
 }
 
 async fn add_to_queue(
@@ -778,6 +805,7 @@ async fn add_to_queue(
     let given = clean_name(body.name)?;
     let session_id = body.session_id.filter(|x| !x.trim().is_empty());
     let project_id = body.project_id.filter(|x| !x.trim().is_empty());
+    let allow_all = body.allow_all;
     let item =
         s.db.call(move |c| {
             let (project_id, session_id, name) = match session_id {
@@ -813,6 +841,7 @@ async fn add_to_queue(
                     session_id,
                     schedule_id: None,
                     follow_up,
+                    allow_all,
                     name,
                     prompt,
                 },
@@ -895,6 +924,8 @@ struct ScheduleBody {
     #[serde(default)]
     same_chat: Option<bool>,
     #[serde(default)]
+    allow_all: Option<bool>,
+    #[serde(default)]
     enabled: Option<bool>,
 }
 
@@ -933,6 +964,7 @@ async fn create_schedule(
         .filter(|x| !x.trim().is_empty())
         .unwrap_or_else(|| db::CHATS_PROJECT_ID.to_string());
     let same_chat = body.same_chat.unwrap_or(false);
+    let allow_all = body.allow_all.unwrap_or(false);
     let repeat_json =
         serde_json::to_string(&repeat).map_err(|e| ApiError::Internal(e.to_string()))?;
     let schedule = s
@@ -943,8 +975,8 @@ async fn create_schedule(
             }
             let id = uuid::Uuid::new_v4().to_string();
             c.execute(
-                "INSERT INTO schedules (id, project_id, name, prompt, repeat, same_chat, enabled, next_run, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![id, pid, name, prompt, repeat_json, same_chat as i64, enabled as i64, next, db::now()],
+                "INSERT INTO schedules (id, project_id, name, prompt, repeat, same_chat, enabled, next_run, created_at, allow_all) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![id, pid, name, prompt, repeat_json, same_chat as i64, enabled as i64, next, db::now(), allow_all as i64],
             )?;
             get_schedule(c, &id)
         })
@@ -996,6 +1028,7 @@ async fn update_schedule(
         .filter(|x| !x.trim().is_empty())
         .unwrap_or(current.project_id.clone());
     let same_chat = body.same_chat.unwrap_or(current.same_chat);
+    let allow_all = body.allow_all.unwrap_or(current.allow_all);
     let repeat_json =
         serde_json::to_string(&repeat).map_err(|e| ApiError::Internal(e.to_string()))?;
     let schedule = s
@@ -1005,8 +1038,8 @@ async fn update_schedule(
                 return Ok(Err(ApiError::NotFound("project")));
             }
             c.execute(
-                "UPDATE schedules SET project_id = ?1, name = ?2, prompt = ?3, repeat = ?4, same_chat = ?5, enabled = ?6, next_run = ?7 WHERE id = ?8",
-                params![pid, name, prompt, repeat_json, same_chat as i64, enabled as i64, next, id],
+                "UPDATE schedules SET project_id = ?1, name = ?2, prompt = ?3, repeat = ?4, same_chat = ?5, enabled = ?6, next_run = ?7, allow_all = ?8 WHERE id = ?9",
+                params![pid, name, prompt, repeat_json, same_chat as i64, enabled as i64, next, allow_all as i64, id],
             )?;
             Ok(get_schedule(c, &id)?.ok_or(ApiError::NotFound("schedule")))
         })
@@ -1057,6 +1090,7 @@ async fn run_schedule(
                     session_id,
                     schedule_id: Some(sch.id),
                     follow_up: false,
+                    allow_all: sch.allow_all,
                     name: sch.name,
                     prompt: sch.prompt,
                 },
@@ -1213,6 +1247,7 @@ mod tests {
                     session_id: None,
                     schedule_id: None,
                     follow_up: false,
+                    allow_all: false,
                     name: name.into(),
                     prompt: "do it".into(),
                 },

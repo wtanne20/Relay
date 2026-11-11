@@ -1744,3 +1744,106 @@ async fn queued_and_scheduled_tasks_run_in_the_background() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(h.get("/queue").await["items"].as_array().map(Vec::len), Some(0));
 }
+
+#[tokio::test]
+async fn allow_everything_tasks_skip_approval() {
+    let h = Harness::start().await;
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"agent": {"approval": "commands"}})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    let dir = h.dir.join("unattended");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let (_, v) = h
+        .post("/projects", json!({"path": dir.to_string_lossy()}))
+        .await;
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+
+    // With "allow everything" the command runs without asking.
+    let (s, v) = h
+        .post(
+            "/queue",
+            json!({"prompt": "run: echo ok > allowed.txt", "project_id": pid, "allow_all": true}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], true);
+    let q = h.wait_queue_idle().await;
+    assert_eq!(q["items"][0]["status"], "done", "{q}");
+    assert!(dir.join("allowed.txt").exists());
+
+    // Without it, the task waits for approval like any other chat.
+    let (s, v) = h
+        .post(
+            "/queue",
+            json!({"prompt": "run: echo no > asked.txt", "project_id": pid}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], false);
+    let id = v["item"]["id"].clone();
+    let mut asked = false;
+    for _ in 0..100 {
+        let q = h.get("/queue").await;
+        let it = q["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|i| i["id"] == id)
+            .cloned()
+            .expect("item");
+        if it["needs_approval"] == true {
+            asked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(asked, "the task never asked for approval");
+    let (s, _) = h
+        .req(reqwest::Method::DELETE, &format!("/queue/{}", id.as_str().expect("id")), None)
+        .await;
+    assert_eq!(s, 200);
+    h.wait_queue_idle().await;
+    assert!(!dir.join("asked.txt").exists());
+
+    // Schedules keep the switch, and their runs carry it.
+    let (s, v) = h
+        .post(
+            "/schedules",
+            json!({"prompt": "run: echo ok > scheduled.txt", "project_id": pid, "allow_all": true,
+                   "repeat": {"kind": "every", "minutes": 60}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], true);
+    let sid = v["schedule"]["id"].as_str().expect("id").to_string();
+    let (s, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/schedules/{sid}"),
+            Some(json!({"name": "Renamed"})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], true);
+    let (s, v) = h.post(&format!("/schedules/{sid}/run"), json!({})).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], true);
+    h.wait_queue_idle().await;
+    assert!(dir.join("scheduled.txt").exists());
+
+    let (s, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/schedules/{sid}"),
+            Some(json!({"allow_all": false})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], false);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
