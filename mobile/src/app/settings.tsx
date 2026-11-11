@@ -358,6 +358,18 @@ export default function SettingsScreen() {
           value="Find and download models from Hugging Face"
           onPress={() => router.push('/hub')}
         />
+        <NavRow
+          icon="call-split"
+          label="Model routing"
+          value="A small model for quick questions, a big one for real work"
+          onPress={() => router.push('/routing')}
+        />
+        <NavRow
+          icon="speedometer"
+          label="Speed and memory"
+          value="Tokens per second, and memory use on each computer"
+          onPress={() => router.push('/stats')}
+        />
         <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
       </Group>
 

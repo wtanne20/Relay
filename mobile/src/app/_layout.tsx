@@ -152,6 +152,8 @@ export default function RootLayout() {
               <Stack.Screen name="archived" options={{ title: 'Archived' }} />
               <Stack.Screen name="devices" options={{ title: 'Computers' }} />
               <Stack.Screen name="libraries" options={{ title: 'Model libraries' }} />
+              <Stack.Screen name="routing" options={{ title: 'Model routing' }} />
+              <Stack.Screen name="stats" options={{ title: 'Speed and memory' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
             </Stack>
           </Shell>

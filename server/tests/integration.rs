@@ -1058,6 +1058,74 @@ async fn plain_chats_titles_and_models() {
 }
 
 #[tokio::test]
+async fn routing_settings_and_speed_stats() {
+    let h = Harness::start().await;
+
+    // Routing is off until turned on, and its models must be real files.
+    let v = h.get("/settings").await;
+    assert_eq!(v["settings"]["routing"]["enabled"], false);
+    assert_eq!(v["settings"]["routing"]["quick_max_words"], 60);
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"quick_model": "C:/nope.gguf"}})),
+        )
+        .await;
+    assert_eq!(st, 400);
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"quick_max_words": 0}})),
+        )
+        .await;
+    assert_eq!(st, 400);
+    std::fs::create_dir_all(h.dir.join("data/models")).expect("mkdir");
+    let small = h.dir.join("data/models/Small-Q4.gguf");
+    std::fs::write(&small, b"GGUF").expect("write");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"enabled": true, "quick_model": small.to_string_lossy()}})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["settings"]["routing"]["enabled"], true);
+    assert_eq!(v["model_restarting"], false, "routing doesn't restart the model");
+
+    // Every reply records which model wrote it and how fast.
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    let (st, v) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "hi"}))
+        .await;
+    assert_eq!(st, 202, "{v}");
+    ws.until_status(&["done", "error"]).await;
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    let reply = msgs["messages"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .rfind(|m| m["role"] == "assistant")
+        .expect("a reply")
+        .clone();
+    assert_eq!(reply["stats"]["tokens"], 10, "{reply}");
+    assert_eq!(reply["stats"]["tokens_per_sec"], 40.0);
+    assert!(reply["stats"]["model"].is_string());
+
+    let stats = h.get("/stats").await;
+    let speed = &stats["speeds"][0];
+    assert_eq!(speed["replies"], 1, "{stats}");
+    assert_eq!(speed["avg_tokens_per_sec"], 40.0);
+    assert!(stats["brain"]["memory"]["total_mb"].as_u64().unwrap_or(0) > 0);
+    assert!(stats["devices"].is_array());
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
 async fn model_libraries_add_move_and_remove() {
     let h = Harness::start().await;
     let builtin = h.dir.join("data/models");

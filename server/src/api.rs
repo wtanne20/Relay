@@ -188,6 +188,7 @@ pub fn router(state: AppState) -> Router {
         .route("/info", get(info))
         .route("/pairing", get(pairing))
         .route("/model", get(model_status))
+        .route("/stats", get(stats))
         .route("/model/restart", post(model_restart))
         .route("/model/load", post(model_load))
         .route("/model/unload", post(model_unload))
@@ -390,6 +391,7 @@ const EDITABLE_SECTIONS: &[&str] = &[
     "disabled_skills",
     "projects_folder",
     "models_folder",
+    "routing",
 ];
 
 fn settings_view(c: &Config) -> Value {
@@ -401,6 +403,7 @@ fn settings_view(c: &Config) -> Value {
         "disabled_skills": c.disabled_skills,
         "projects_folder": c.projects_folder,
         "models_folder": c.models_folder,
+        "routing": c.routing,
     })
 }
 
@@ -476,6 +479,7 @@ async fn patch_settings(
         disabled_skills: Vec<String>,
         projects_folder: String,
         models_folder: String,
+        routing: crate::config::RoutingConfig,
     }
     let mut next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
@@ -508,6 +512,18 @@ async fn patch_settings(
             )));
         }
     }
+    next.routing.quick_model = next.routing.quick_model.trim().to_string();
+    next.routing.heavy_model = next.routing.heavy_model.trim().to_string();
+    for (label, path, old) in [
+        ("quick model", &next.routing.quick_model, &current.routing.quick_model),
+        ("big model", &next.routing.heavy_model, &current.routing.heavy_model),
+    ] {
+        if !path.is_empty() && path != old && !Path::new(path).is_file() {
+            return Err(ApiError::BadRequest(format!(
+                "the {label} must be an existing .gguf file on the PC: {path}"
+            )));
+        }
+    }
     let projects_folder = if next.projects_folder.trim().is_empty() {
         String::new()
     } else if next.projects_folder == current.projects_folder {
@@ -535,6 +551,7 @@ async fn patch_settings(
         c.disabled_skills = next.disabled_skills;
         c.projects_folder = projects_folder;
         c.models_folder = models_folder;
+        c.routing = next.routing;
     })?;
     if restart {
         s.model.settings_changed().await;
@@ -1367,6 +1384,56 @@ async fn model_status(State(s): State<AppState>) -> Json<Value> {
     v["vision"] = json!(crate::images::mmproj_for(Path::new(&path)).is_some());
     v["default_model"] = json!(default);
     Json(v)
+}
+
+/// Performance: how fast each model writes, and memory use on the brain and
+/// on every linked computer that is online.
+async fn stats(State(s): State<AppState>) -> Json<Value> {
+    let status = s.model.status();
+    // Relay only knows the process it launched.
+    let pid = if status.external { None } else { status.pid };
+    let (memory, gpus) = tokio::join!(
+        tokio::task::spawn_blocking(move || crate::stats::memory(pid)),
+        crate::stats::gpu_memory()
+    );
+    let devices = s.devices.list().await.unwrap_or_default();
+    let checks = devices.iter().map(|d| {
+        let online = device_online(&s, d);
+        let client = crate::device::DeviceClient::for_device(d, &s.links);
+        async move {
+            let memory = if online {
+                tokio::time::timeout(std::time::Duration::from_secs(4), client.info())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .and_then(|i| i.get("memory").cloned())
+            } else {
+                None
+            };
+            json!({
+                "id": d.id,
+                "name": d.name,
+                "os": d.os,
+                "connected": online,
+                "memory": memory,
+            })
+        }
+    });
+    let devices = futures_util::future::join_all(checks).await;
+    Json(json!({
+        "brain": {
+            "name": crate::link::hostname(),
+            "os": std::env::consts::OS,
+            "model": {
+                "state": status.state,
+                "file": Path::new(&status.model_path).file_name().map(|n| n.to_string_lossy().into_owned()),
+            },
+            "memory": memory.ok().flatten(),
+            "gpus": gpus,
+        },
+        "speeds": s.model.speeds().list(),
+        "devices": devices,
+    }))
 }
 
 async fn model_restart(State(s): State<AppState>) -> (StatusCode, Json<Value>) {

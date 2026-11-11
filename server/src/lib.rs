@@ -17,6 +17,7 @@ pub mod process_guard;
 pub mod push;
 pub mod setup;
 pub mod skills;
+pub mod stats;
 pub mod tools;
 pub mod ui;
 pub mod updates;

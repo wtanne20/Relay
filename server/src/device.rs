@@ -363,6 +363,7 @@ async fn info(State(st): State<HostState>) -> ApiResult<Json<Value>> {
         "hostname": crate::link::hostname(),
         "shell": st.cfg.shell,
         "version": env!("CARGO_PKG_VERSION"),
+        "memory": tokio::task::spawn_blocking(|| crate::stats::memory(None)).await.ok().flatten(),
     })))
 }
 
