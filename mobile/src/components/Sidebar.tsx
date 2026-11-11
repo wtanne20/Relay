@@ -305,6 +305,11 @@ function Row({
           >
             {label}
           </Text>
+          {busy ? (
+            <Text style={[type.bodySmall, styles.working]} numberOfLines={1}>
+              Working…
+            </Text>
+          ) : null}
           {where ? (
             <View style={styles.where}>
               <Icon name="laptop" size={13} color={m3.onSurfaceVariant} />
@@ -324,6 +329,7 @@ function Row({
 }
 
 const styles = StyleSheet.create({
+  working: { color: m3.primary },
   side: {
     width: 288,
     backgroundColor: m3.surfaceContainerLow,
