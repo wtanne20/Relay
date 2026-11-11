@@ -106,6 +106,19 @@ shows the exact command (or the file and the change) with **Allow**, **Deny** an
 task**, and you get a push notification ("… needs your approval"). Denied calls are reported to the model, which
 then tries another approach or asks you. Stopping the task while it waits cancels it.
 
+### Voice mode (phone)
+
+Tap the **voice** button in the composer (it shows while the message box is empty) to talk to the agent hands-free,
+in a chat or from the home screen. Relay listens until you pause, sends what you said, waits for the agent, reads
+the reply aloud and listens again. Approvals are read out too: say "allow", "deny" or "allow everything", or tap the
+buttons. Say "goodbye" (or tap ✕) to leave; the chat keeps everything that was said.
+
+Speech is turned into text and read aloud **on the phone** (Android's and iOS's own offline speech recognition and
+text-to-speech), and voice prompts ask the model for short spoken answers instead of formatted text. If the phone
+has no offline recognizer, or its language pack isn't downloaded, voice mode offers to download it (Android) or to
+use the phone's online speech service instead, which you have to choose. Voice mode needs a phone app built from this version or later (it adds native speech
+modules); it isn't offered in the desktop app.
+
 ---
 
 ## Downloads

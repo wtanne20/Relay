@@ -19,6 +19,15 @@ function tauri(): TauriGlobal | null {
 /** True inside the Relay desktop app. */
 export const isDesktop = tauri() !== null;
 
+/** The desktop app's operating system, for labels ("Relay for Linux"). */
+export const desktopOs: 'Windows' | 'Linux' | 'macOS' = (() => {
+  const nav = (globalThis as { navigator?: { userAgent?: string; platform?: string } }).navigator;
+  const ua = `${nav?.platform ?? ''} ${nav?.userAgent ?? ''}`;
+  if (/win/i.test(ua)) return 'Windows';
+  if (/mac/i.test(ua)) return 'macOS';
+  return 'Linux';
+})();
+
 export interface LocalConnection extends Credentials {
   data_dir: string;
 }

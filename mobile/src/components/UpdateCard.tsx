@@ -1,6 +1,7 @@
 import { ActivityIndicator, Linking, StyleSheet, Text, View } from 'react-native';
 
 import type { RelayClient } from '../lib/api';
+import { desktopOs } from '../lib/desktop';
 import { appVersion, updateKind, useUpdates } from '../lib/updates';
 import { m3, radius, space, type } from './theme';
 import { Button, Icon } from './ui';
@@ -27,7 +28,7 @@ export function UpdateCard({ client, onlyWhenAvailable }: { client: RelayClient 
   else if (u.phase.kind === 'installing')
     status =
       updateKind === 'desktop'
-        ? 'Installing. Windows may ask for permission; Relay closes and opens again by itself.'
+        ? `Installing. ${desktopOs === 'Windows' ? 'Windows' : 'Your computer'} may ask for permission; Relay closes and opens again by itself.`
         : 'Follow Android’s prompt to install the update.';
   else if (u.phase.kind === 'error') status = u.phase.message;
   else if (u.checking && !u.info) status = 'Checking for updates…';

@@ -27,6 +27,7 @@ import {
   UserBubble,
 } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { VoiceMode } from '../../components/VoiceMode';
 import { LocationChip, locationLabel, useHere } from '../../components/Location';
 import { AttachMenu, AttachmentStrip, useAttachments } from '../../components/Attachments';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
@@ -37,8 +38,9 @@ import { useClient } from '../../lib/connection';
 import { DownloadProvider } from '../../lib/download';
 import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
 import { emit } from '../../lib/events';
-import { CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
+import { type ApprovalDecision, CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
+import { voiceAvailable } from '../../lib/voice';
 import { setViewing, watchChat } from '../../lib/watch';
 
 type Item =
@@ -51,7 +53,7 @@ type Item =
 
 export default function ChatScreen() {
   const client = useClient();
-  const { id, title: initialTitle } = useLocalSearchParams<{ id: string; title?: string }>();
+  const { id, title: initialTitle, voice } = useLocalSearchParams<{ id: string; title?: string; voice?: string }>();
   const insets = useSafeAreaInsets();
   const stream = useSessionStream(client, id);
   const wide = useWide();
@@ -66,6 +68,8 @@ export default function ChatScreen() {
   const [project, setProject] = useState<Project | null>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const canTalk = voiceAvailable();
+  const [talking, setTalking] = useState(canTalk && voice === '1');
 
   useEffect(() => {
     if (!client) {
@@ -160,6 +164,34 @@ export default function ChatScreen() {
       }
     } finally {
       setSending(false);
+    }
+  };
+
+  /** Voice mode: sends what was said, and returns the stored message's id. */
+  const sendSpoken = async (text: string): Promise<number | null> => {
+    setSendError(null);
+    try {
+      const res = await client.sendPrompt(id, text, [], [], true);
+      stream.applyMessages([res.message]);
+      stream.markRunning();
+      if (stream.link !== 'live') stream.reconnect();
+      return res.message.id;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && !/another chat/i.test(e.message)) stream.setStatus('running');
+      setSendError(describeError(e));
+      return null;
+    }
+  };
+
+  const decide = async (decision: ApprovalDecision) => {
+    const pending = stream.approval;
+    if (!pending) return;
+    try {
+      await client.answerApproval(id, pending.tool_call_id, decision);
+      stream.setApproval(null);
+    } catch (e) {
+      setSendError(describeError(e));
+      if (e instanceof ApiError && e.status === 409) stream.setApproval(null);
     }
   };
 
@@ -382,17 +414,7 @@ export default function ChatScreen() {
             <ApprovalCard
               key={stream.approval.tool_call_id}
               approval={stream.approval}
-              onDecide={async (decision) => {
-                const pending = stream.approval;
-                if (!pending) return;
-                try {
-                  await client.answerApproval(id, pending.tool_call_id, decision);
-                  stream.setApproval(null);
-                } catch (e) {
-                  setSendError(describeError(e));
-                  if (e instanceof ApiError && e.status === 409) stream.setApproval(null);
-                }
-              }}
+              onDecide={decide}
             />
           ) : null}
 
@@ -447,6 +469,15 @@ export default function ChatScreen() {
                       <Icon name="stop" size={22} color={m3.onErrorContainer} />
                     )}
                   </Pressable>
+                ) : canTalk && !canSend && !sending ? (
+                  <Pressable
+                    onPress={() => setTalking(true)}
+                    style={({ pressed }) => [styles.action, styles.send, pressed && { opacity: 0.85 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Talk in voice mode"
+                  >
+                    <Icon name="account-voice" size={22} color={m3.onPrimary} />
+                  </Pressable>
                 ) : (
                   <Pressable
                     onPress={send}
@@ -471,6 +502,20 @@ export default function ChatScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      <VoiceMode
+        visible={talking}
+        onClose={() => setTalking(false)}
+        onSend={sendSpoken}
+        onStop={stop}
+        onDecide={decide}
+        status={stream.status}
+        messages={stream.messages}
+        approval={stream.approval}
+        taskError={stream.taskError}
+        draftText={stream.draft?.content ?? ''}
+        activity={activityLabel(stream, running)}
+        plain={plain}
+      />
       <ModelSheet
         visible={picking}
         onClose={() => setPicking(false)}
@@ -487,6 +532,32 @@ export default function ChatScreen() {
       />
     </View>
   );
+}
+
+const TOOL_ACTIVITY: Record<string, string> = {
+  run_command: 'Running a command…',
+  read_file: 'Reading files…',
+  list_dir: 'Looking through files…',
+  write_file: 'Writing a file…',
+  edit_file: 'Editing a file…',
+  web_search: 'Searching the web…',
+  fetch_url: 'Reading a web page…',
+};
+
+/** What the agent is doing now, in a few words (for voice mode). */
+function activityLabel(stream: ReturnType<typeof useSessionStream>, running: boolean): string | null {
+  if (!running) return null;
+  if (stream.loadingModel) return 'Loading the model…';
+  if (stream.compacting) return 'Tidying up the chat…';
+  const writing = stream.draft?.tool_calls?.filter((c) => c.name).pop()?.name;
+  if (writing) return TOOL_ACTIVITY[writing] ?? 'Working on it…';
+  const last = stream.messages[stream.messages.length - 1];
+  // A tool call with no result yet is what's running now.
+  if (last?.role === 'assistant' && last.tool_calls?.length) {
+    const name = last.tool_calls[last.tool_calls.length - 1].name;
+    return TOOL_ACTIVITY[name] ?? 'Working on it…';
+  }
+  return null;
 }
 
 const styles = StyleSheet.create({

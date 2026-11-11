@@ -371,6 +371,9 @@ Stores the prompt and starts the agent as a background task (it keeps running if
 { "content": "Run the tests and fix any failures" }
 ```
 
+Optional: `"voice": true` marks a prompt spoken in the phone's voice mode. For that prompt only, the model is asked
+to answer in short plain spoken sentences (no Markdown, code or links), because the phone reads the reply aloud.
+
 ```json
 {
   "message": { "id": 45, "session_id": "c2d7…", "role": "user", "content": "Run the tests and fix any failures", "created_at": "…" },

@@ -323,11 +323,18 @@ export class RelayClient {
       `/sessions/${encodeURIComponent(id)}/messages?${q.toString()}`,
     );
   }
-  sendPrompt(id: string, content: string, images: string[] = [], files: { name: string; data: string }[] = []) {
+  /** `voice`: sent from voice mode, so the reply comes in plain spoken sentences. */
+  sendPrompt(
+    id: string,
+    content: string,
+    images: string[] = [],
+    files: { name: string; data: string }[] = [],
+    voice = false,
+  ) {
     return this.request<{ message: Message; status: string }>(
       'POST',
       `/sessions/${encodeURIComponent(id)}/prompt`,
-      files.length ? { content, images, files } : { content, images },
+      { content, images, ...(files.length ? { files } : {}), ...(voice ? { voice } : {}) },
       images.length || files.length ? 120000 : undefined,
     );
   }
