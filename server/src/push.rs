@@ -36,6 +36,23 @@ impl Pusher {
     /// Fire-and-forget notification for a finished task or a pending
     /// approval.
     pub fn notify(&self, project: &Project, session_id: &str, session_title: &str, status: &str) {
+        self.send_note(project, session_id, session_title, status, None);
+    }
+
+    /// A tool call waiting for approval. The notification gets Allow and
+    /// Deny buttons; it carries the call's id (to answer it), not the call.
+    pub fn notify_approval(&self, project: &Project, session_id: &str, session_title: &str, tool_call_id: &str) {
+        self.send_note(project, session_id, session_title, "approval", Some(tool_call_id.to_string()));
+    }
+
+    fn send_note(
+        &self,
+        project: &Project,
+        session_id: &str,
+        session_title: &str,
+        status: &str,
+        tool_call_id: Option<String>,
+    ) {
         if !self.enabled() {
             return;
         }
@@ -46,6 +63,7 @@ impl Pusher {
             session_id: session_id.to_string(),
             session_title: session_title.to_string(),
             status: status.to_string(),
+            tool_call_id,
         };
         tokio::spawn(async move {
             if let Err(e) = this.send(payload).await {
@@ -88,6 +106,8 @@ pub struct Notification {
     pub session_id: String,
     pub session_title: String,
     pub status: String,
+    /// For an approval: the call to answer from the notification's buttons.
+    pub tool_call_id: Option<String>,
 }
 
 impl Notification {
@@ -99,7 +119,7 @@ impl Notification {
             "approval" => "needs your approval",
             other => other,
         };
-        json!({
+        let mut v = json!({
             "to": token,
             "title": self.project_name,
             "body": format!("{} {}", self.session_title, label),
@@ -111,7 +131,13 @@ impl Notification {
                 "session_id": self.session_id,
                 "status": self.status,
             }
-        })
+        });
+        if let Some(id) = &self.tool_call_id {
+            // The app registers this category with Allow and Deny buttons.
+            v["categoryId"] = json!("approval");
+            v["data"]["tool_call_id"] = json!(id);
+        }
+        v
     }
 }
 
@@ -127,6 +153,7 @@ mod tests {
             session_id: "s".into(),
             session_title: "Fix build".into(),
             status: "done".into(),
+            tool_call_id: None,
         };
         let v = n.to_expo("ExponentPushToken[x]");
         assert_eq!(v["title"], "Relay");
@@ -146,7 +173,11 @@ mod tests {
             session_id: "s".into(),
             session_title: "Fix build".into(),
             status: "approval".into(),
+            tool_call_id: Some("call_1".into()),
         };
-        assert_eq!(n.to_expo("t")["body"], "Fix build needs your approval");
+        let v = n.to_expo("t");
+        assert_eq!(v["body"], "Fix build needs your approval");
+        assert_eq!(v["categoryId"], "approval");
+        assert_eq!(v["data"]["tool_call_id"], "call_1");
     }
 }

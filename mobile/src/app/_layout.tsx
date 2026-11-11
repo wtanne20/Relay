@@ -11,7 +11,7 @@ import { accent, m3, onAccentChange, space } from '../components/theme';
 import { IconButton } from '../components/ui';
 import { useWide } from '../lib/layout';
 import { ConnectionProvider, useConnection } from '../lib/connection';
-import { configureNotificationHandler, refreshPushRegistration } from '../lib/push';
+import { answerFromNotification, configureNotificationHandler, refreshPushRegistration } from '../lib/push';
 
 configureNotificationHandler();
 
@@ -36,14 +36,22 @@ function PushBridge() {
 
   useEffect(() => {
     if (!response) return;
-    const id = response.notification.request.identifier;
+    const id = `${response.notification.request.identifier}:${response.actionIdentifier}`;
     if (handled.current === id) return;
+    if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
+      // Allow / Deny: answer it here, without opening the chat. Waits for
+      // the connection when the app was started by the button.
+      if (!client) return;
+      handled.current = id;
+      answerFromNotification(client, response).catch(() => undefined);
+      return;
+    }
     handled.current = id;
     const data = response.notification.request.content.data as { session_id?: unknown } | undefined;
     if (typeof data?.session_id === 'string') {
       router.push({ pathname: '/session/[id]', params: { id: data.session_id } });
     }
-  }, [response]);
+  }, [response, client]);
 
   useEffect(() => {
     if (client) refreshPushRegistration(client).catch(() => undefined);
@@ -146,6 +154,8 @@ export default function RootLayout() {
               <Stack.Screen name="scan" options={{ title: 'Scan QR code', headerTransparent: true }} />
               <Stack.Screen name="pair" options={{ title: '' }} />
               <Stack.Screen name="agent" options={{ title: 'Agent settings' }} />
+              <Stack.Screen name="approvals" options={{ title: 'Always allowed' }} />
+              <Stack.Screen name="activity" options={{ title: 'Activity' }} />
               <Stack.Screen name="models" options={{ title: 'Choose model' }} />
               <Stack.Screen name="hub" options={{ title: 'Download models' }} />
               <Stack.Screen name="system-prompt" options={{ title: 'System prompt' }} />

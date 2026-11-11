@@ -10,6 +10,7 @@ const QUESTION: Record<string, string> = {
   run_command: 'Run this command?',
   write_file: 'Write this file?',
   edit_file: 'Make this edit?',
+  fetch_url: 'Open this web page?',
 };
 
 /** Shown above the composer while the agent waits for permission. */
@@ -77,6 +78,16 @@ export function ApprovalCard({
           style={styles.grow}
         />
       </View>
+      {approval.suggested_rule ? (
+        <Button
+          title={`Always allow: ${lowerFirst(approval.suggested_rule.label ?? approval.suggested_rule.pattern)}`}
+          icon="check-all"
+          variant="tonal"
+          onPress={() => decide('always_allow')}
+          loading={busy === 'always_allow'}
+          disabled={busy !== null}
+        />
+      ) : null}
       <Button
         title="Allow everything for this task"
         variant="text"
@@ -87,6 +98,11 @@ export function ApprovalCard({
     </View>
   );
 }
+
+const lowerFirst = (s: string) => {
+  const t = s.length > 60 ? `${s.slice(0, 59)}…` : s;
+  return t ? t[0].toLowerCase() + t.slice(1) : t;
+};
 
 const styles = StyleSheet.create({
   card: {

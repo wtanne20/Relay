@@ -22,7 +22,7 @@ import { Banner, Button, Field, Icon, type IconName } from '../components/ui';
 import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
-import { desktop, isDesktop } from '../lib/desktop';
+import { desktop, desktopOsName, isDesktop } from '../lib/desktop';
 import { usePageStyle } from '../lib/layout';
 import { formatDuration } from '../lib/format';
 import { disablePush, enablePush, pushSupported } from '../lib/push';
@@ -375,6 +375,18 @@ export default function SettingsScreen() {
           value="Instructions the agent always follows"
           onPress={() => router.push('/system-prompt')}
         />
+        <NavRow
+          icon="shield-check-outline"
+          label="Always allowed"
+          value="Commands, folders and sites the agent doesn't ask about"
+          onPress={() => router.push('/approvals')}
+        />
+        <NavRow
+          icon="history"
+          label="Activity"
+          value="Everything the agent did, and who allowed it"
+          onPress={() => router.push('/activity')}
+        />
       </Group>
 
       <SectionTitle title="Projects" />
@@ -524,7 +536,7 @@ export default function SettingsScreen() {
         />
       )}
       <Text style={[type.bodySmall, styles.footer]}>
-        Relay {isDesktop ? 'for Windows' : 'for phone'} {Constants.expoConfig?.version ?? ''}
+        Relay for {isDesktop ? desktopOsName() : 'phone'} {Constants.expoConfig?.version ?? ''}
       </Text>
     </ScrollView>
   );

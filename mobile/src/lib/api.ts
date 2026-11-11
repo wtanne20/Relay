@@ -6,7 +6,11 @@ import type {
   ModelLibrary,
   HubFile,
   HubRepo,
+  ActivityFilter,
   ApprovalDecision,
+  ApprovalRule,
+  AuditEntry,
+  RuleDraft,
   DeepPartial,
   Device,
   PairCode,
@@ -346,12 +350,36 @@ export class RelayClient {
     return this.request<{ stopping: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/stop`, {});
   }
 
-  answerApproval(id: string, toolCallId: string, decision: ApprovalDecision, note?: string) {
-    return this.request<{ ok: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/approval`, {
-      tool_call_id: toolCallId,
-      decision,
-      note,
-    });
+  answerApproval(id: string, toolCallId: string, decision: ApprovalDecision, note?: string, rule?: RuleDraft) {
+    return this.request<{ ok: boolean; rule?: ApprovalRule | null }>(
+      'POST',
+      `/sessions/${encodeURIComponent(id)}/approval`,
+      { tool_call_id: toolCallId, decision, note, rule },
+    );
+  }
+
+  // ----- always-allow rules and activity -----
+  approvalRules() {
+    return this.request<{ rules: ApprovalRule[] }>('GET', '/approval-rules');
+  }
+  addApprovalRule(rule: RuleDraft) {
+    return this.request<ApprovalRule>('POST', '/approval-rules', rule);
+  }
+  deleteApprovalRule(id: number) {
+    return this.request<{ ok: boolean }>('DELETE', `/approval-rules/${id}`);
+  }
+  activity(q: { before?: number; filter?: ActivityFilter; projectId?: string; sessionId?: string; limit?: number } = {}) {
+    const p = new URLSearchParams();
+    if (q.before) p.set('before', String(q.before));
+    if (q.filter) p.set('filter', q.filter);
+    if (q.projectId) p.set('project_id', q.projectId);
+    if (q.sessionId) p.set('session_id', q.sessionId);
+    if (q.limit) p.set('limit', String(q.limit));
+    const qs = p.toString();
+    return this.request<{ entries: AuditEntry[]; has_more: boolean }>('GET', `/activity${qs ? `?${qs}` : ''}`);
+  }
+  clearActivity() {
+    return this.request<{ removed: number }>('DELETE', '/activity');
   }
 
   // ----- mockups -----

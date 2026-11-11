@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::approvals::{self, AuditDecision};
 use crate::config::{ApprovalMode, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig};
 use crate::db::{self, Db, Message, NewMessage, Project, Session};
 use crate::model_manager::{ModelManager, ModelState};
@@ -96,6 +97,9 @@ pub struct PendingApproval {
     pub name: String,
     pub arguments: String,
     pub requested_at: String,
+    /// What "Always allow" would save for this call, if it can be covered
+    /// by a rule.
+    pub suggested_rule: Option<approvals::RuleDraft>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -104,6 +108,8 @@ pub enum Decision {
     Approve,
     /// Approve this and every later tool call in the current task.
     ApproveAll,
+    /// Approve this, and save a rule so calls like it aren't asked again.
+    AlwaysAllow,
     Deny,
 }
 
@@ -873,7 +879,11 @@ impl AgentManager {
             }
 
             for call in &turn.tool_calls {
+                // How this call got to run (or didn't), for the activity log.
+                let mut decision = AuditDecision::Auto;
+                let mut rule_id = None;
                 let output = if cancel.is_cancelled() {
+                    decision = AuditDecision::Stopped;
                     tools::ToolOutput {
                         content: "cancelled by user before running".into(),
                         is_error: true,
@@ -887,7 +897,11 @@ impl AgentManager {
                             arguments: call.arguments.clone(),
                         },
                     );
+                    if needs_approval(approval_mode, &call.name) {
+                        rule_id = self.matching_rule(call, project).await;
+                    }
                     if !conf.agent.tools.enabled(&call.name) {
+                        decision = AuditDecision::Off;
                         tools::ToolOutput {
                             content: format!(
                                 "error: the {} tool is turned off in Relay's settings",
@@ -895,30 +909,42 @@ impl AgentManager {
                             ),
                             is_error: true,
                         }
+                    } else if rule_id.is_some() {
+                        decision = AuditDecision::Rule;
+                        run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
                     } else if needs_approval(approval_mode, &call.name) {
                         match self.ask_approval(session, project, call, approval, cancel).await {
-                            Some((Decision::Deny, note)) => tools::ToolOutput {
-                                content: match note {
-                                    Some(n) if !n.trim().is_empty() => format!("the user denied this tool call: {n}"),
-                                    _ => "the user denied this tool call. Do not retry it; ask or try another approach.".into(),
-                                },
-                                is_error: true,
-                            },
+                            Some((Decision::Deny, note)) => {
+                                decision = AuditDecision::Denied;
+                                tools::ToolOutput {
+                                    content: match note {
+                                        Some(n) if !n.trim().is_empty() => format!("the user denied this tool call: {n}"),
+                                        _ => "the user denied this tool call. Do not retry it; ask or try another approach.".into(),
+                                    },
+                                    is_error: true,
+                                }
+                            }
                             Some((d, _)) => {
+                                decision = AuditDecision::Allowed;
                                 if d == Decision::ApproveAll {
+                                    decision = AuditDecision::AllowedAll;
                                     approval_mode = ApprovalMode::Never;
                                 }
                                 run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
                             }
-                            None => tools::ToolOutput {
-                                content: "cancelled by user before running".into(),
-                                is_error: true,
-                            },
+                            None => {
+                                decision = AuditDecision::Stopped;
+                                tools::ToolOutput {
+                                    content: "cancelled by user before running".into(),
+                                    is_error: true,
+                                }
+                            }
                         }
                     } else {
                         run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
                     }
                 };
+                self.audit(session, project, call, decision, rule_id, output.is_error).await;
                 let truncated = output.content.chars().count() > EVENT_RESULT_CHARS;
                 self.emit(
                     &session.id,
@@ -971,6 +997,7 @@ impl AgentManager {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
             requested_at: db::now(),
+            suggested_rule: approvals::suggest(call, project),
         };
         let (tx, rx) = oneshot::channel();
         *lock(slot) = Some(ApprovalSlot {
@@ -986,7 +1013,7 @@ impl AgentManager {
             .ok()
             .flatten()
             .unwrap_or_else(|| session.title.clone());
-        self.pusher.notify(project, &session.id, &title, "approval");
+        self.pusher.notify_approval(project, &session.id, &title, &call.id);
         let answer = tokio::select! {
             r = rx => r.ok(),
             _ = cancel.cancelled() => None,
@@ -996,10 +1023,64 @@ impl AgentManager {
             &session.id,
             Event::ApprovalResolved {
                 tool_call_id: call.id.clone(),
-                approved: matches!(answer, Some((Decision::Approve | Decision::ApproveAll, _))),
+                approved: matches!(
+                    answer,
+                    Some((Decision::Approve | Decision::ApproveAll | Decision::AlwaysAllow, _))
+                ),
             },
         );
         answer
+    }
+
+    /// The "always allow" rule that covers this call, if any. A database
+    /// error just means asking as usual.
+    async fn matching_rule(&self, call: &db::ToolCall, project: &Project) -> Option<i64> {
+        let (call, project) = (call.clone(), project.clone());
+        match self
+            .db
+            .call(move |c| approvals::matching_rule(c, &call, &project))
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("checking approval rules failed: {e:#}");
+                None
+            }
+        }
+    }
+
+    /// Adds a tool call to the activity log. Best effort: the task goes on
+    /// if it can't be written.
+    async fn audit(
+        &self,
+        session: &Session,
+        project: &Project,
+        call: &db::ToolCall,
+        decision: AuditDecision,
+        rule_id: Option<i64>,
+        is_error: bool,
+    ) {
+        let (session, project, call) = (session.clone(), project.clone(), call.clone());
+        let r = self
+            .db
+            .call(move |c| {
+                approvals::record(
+                    c,
+                    &approvals::NewAudit {
+                        project: &project,
+                        session_id: &session.id,
+                        session_title: &session.title,
+                        call: &call,
+                        decision,
+                        rule_id,
+                        is_error,
+                    },
+                )
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::warn!("writing the activity log failed: {e:#}");
+        }
     }
 
     /// Names a chat in a few plain words from its first exchange. Best
