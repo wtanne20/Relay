@@ -12,7 +12,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,14 +28,15 @@ import {
 import { ApprovalCard } from '../../components/ApprovalCard';
 import { VoiceMode } from '../../components/VoiceMode';
 import { LocationChip, locationLabel, useHere } from '../../components/Location';
-import { AttachMenu, AttachmentStrip, useAttachments } from '../../components/Attachments';
-import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
+import { useAttachments } from '../../components/Attachments';
+import { Composer } from '../../components/Composer';
+import { ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { m3, radius, space, type } from '../../components/theme';
 import { Banner, Icon, IconButton, StatusBadge } from '../../components/ui';
 import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
 import { DownloadProvider } from '../../lib/download';
-import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
+import { usePageStyle, useWide } from '../../lib/layout';
 import { autoRow, useRouting } from '../../lib/routing';
 import { emit } from '../../lib/events';
 import { type ApprovalDecision, CHATS_ID, type Message, type Project, type QueueItem, type Session } from '../../lib/types';
@@ -258,7 +258,6 @@ export default function ChatScreen() {
 
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
-  const canSend = (!!input.trim() || pics.items.length > 0) && !sending;
   const cancelPending = async (item: QueueItem) => {
     setPending((cur) => cur.filter((p) => p.id !== item.id));
     try {
@@ -503,102 +502,34 @@ export default function ChatScreen() {
           ) : null}
 
           <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, wide ? space.lg : space.sm) }]}>
-            <View style={styles.composer}>
-              <AttachmentStrip items={pics.items} onRemove={pics.remove} />
-              <TextInput
-                style={styles.input}
-                value={input}
-                onChangeText={setInput}
-                placeholder={
-                  stream.approval
-                    ? 'Waiting for your answer…'
-                    : running
-                      ? plain
-                        ? 'Writing…'
-                        : 'Agent is working…'
-                      : plain
-                        ? 'Message Relay'
-                        : 'Message the agent'
-                }
-                placeholderTextColor={m3.outline}
-                selectionColor={m3.primary}
-                cursorColor={m3.primary}
-                multiline
-                autoCapitalize="sentences"
-                autoFocus={wide}
-                onKeyPress={enterToSend(send)}
-                accessibilityLabel="Prompt"
-              />
-              <View style={styles.composerRow}>
-                <View style={styles.composerHint}>
-                  <AttachMenu onPick={pics.pick} disabled={sending} />
-                  <ModelChip
-                    model={session?.model}
-                    fallback={project?.model ?? loaded}
-                    auto={!!routing && !project?.model}
-                    onPress={() => setPicking(true)}
-                    disabled={!session}
-                  />
-                </View>
-                {running && input.trim() ? (
-                  <Pressable
-                    onPress={send}
-                    disabled={sending}
-                    style={({ pressed }) => [styles.action, styles.queue, pressed && { opacity: 0.85 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Send when the agent is done"
-                  >
-                    {sending ? (
-                      <ActivityIndicator color={m3.onSecondaryContainer} />
-                    ) : (
-                      <Icon name="clock-plus-outline" size={22} color={m3.onSecondaryContainer} />
-                    )}
-                  </Pressable>
-                ) : null}
-                {running ? (
-                  <Pressable
-                    onPress={stop}
-                    disabled={stopping}
-                    style={({ pressed }) => [styles.action, styles.stop, (pressed || stopping) && { opacity: 0.7 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Stop the agent"
-                  >
-                    {stopping ? (
-                      <ActivityIndicator color={m3.onErrorContainer} />
-                    ) : (
-                      <Icon name="stop" size={22} color={m3.onErrorContainer} />
-                    )}
-                  </Pressable>
-                ) : canTalk && !canSend && !sending ? (
-                  <Pressable
-                    onPress={() => setTalking(true)}
-                    style={({ pressed }) => [styles.action, styles.send, pressed && { opacity: 0.85 }]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Talk in voice mode"
-                  >
-                    <Icon name="account-voice" size={22} color={m3.onPrimary} />
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    onPress={send}
-                    disabled={!canSend}
-                    style={({ pressed }) => [
-                      styles.action,
-                      canSend ? styles.send : styles.sendOff,
-                      pressed && { opacity: 0.85 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Send"
-                  >
-                    {sending ? (
-                      <ActivityIndicator color={m3.onPrimary} />
-                    ) : (
-                      <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
-                    )}
-                  </Pressable>
-                )}
-              </View>
-            </View>
+            <Composer
+              value={input}
+              onChangeText={setInput}
+              onSend={send}
+              placeholder={
+                stream.approval
+                  ? 'Waiting for your answer…'
+                  : running
+                    ? plain
+                      ? 'Writing…'
+                      : 'Agent is working…'
+                    : plain
+                      ? 'Message Relay'
+                      : 'Message the agent'
+              }
+              attachments={pics}
+              busy={sending}
+              model={{
+                value: session?.model,
+                fallback: project?.model ?? loaded,
+                auto: !!routing && !project?.model,
+                onPress: () => setPicking(true),
+                disabled: !session,
+              }}
+              onTalk={() => setTalking(true)}
+              running={running ? { onStop: stop, stopping } : undefined}
+              autoFocus={wide}
+            />
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -716,30 +647,6 @@ const styles = StyleSheet.create({
   emptyTitle: { textAlign: 'center' },
   emptyBody: { textAlign: 'center', color: m3.onSurfaceVariant },
   composerWrap: { paddingHorizontal: space.md, paddingTop: space.xs },
-  composer: {
-    backgroundColor: m3.surfaceContainerHigh,
-    borderRadius: radius.xl,
-    paddingTop: space.sm,
-    paddingBottom: space.sm,
-    paddingHorizontal: space.sm,
-  },
-  input: {
-    minHeight: 44,
-    maxHeight: 180,
-    color: m3.onSurface,
-    fontSize: 16,
-    lineHeight: 22,
-    paddingHorizontal: space.md,
-    paddingTop: space.sm,
-    paddingBottom: space.xs,
-  },
-  composerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
-  composerHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: space.xs, flex: 1, minWidth: 0 },
-  action: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  send: { backgroundColor: m3.primary },
-  sendOff: { backgroundColor: m3.surfaceContainerHighest },
-  stop: { backgroundColor: m3.errorContainer, borderRadius: 14 },
-  queue: { backgroundColor: m3.secondaryContainer },
   pending: { paddingHorizontal: space.lg, gap: space.xs, marginBottom: space.xs },
   pendingRow: {
     flexDirection: 'row',

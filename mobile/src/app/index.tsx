@@ -15,8 +15,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
 import { alert } from '../components/Dialogs';
-import { AttachMenu, AttachmentStrip, useAttachments } from '../components/Attachments';
-import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
+import { useAttachments } from '../components/Attachments';
+import { Composer } from '../components/Composer';
+import { ModelSheet, modelLabel } from '../components/ModelPicker';
 import { UpdateCard } from '../components/UpdateCard';
 import { m3, radius, space, type } from '../components/theme';
 import { BrainBanner, LocationChip } from '../components/Location';
@@ -25,11 +26,10 @@ import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
-import { enterToSend, useWide } from '../lib/layout';
+import { useWide } from '../lib/layout';
 import { autoRow, useRouting } from '../lib/routing';
 import { loadLastTarget, saveLastTarget } from '../lib/storage';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
-import { voiceAvailable } from '../lib/voice';
 
 const CHATS_SHOWN = 12;
 
@@ -145,8 +145,6 @@ export default function Home() {
   if (!client) return <Redirect href="/connect" />;
 
   const project = projects?.find((p) => p.id === target) ?? null;
-  const canSend = (!!text.trim() || pics.items.length > 0) && !busy;
-  const canTalk = voiceAvailable();
   const open = (href: Parameters<typeof router.push>[0]) => (wide ? router.replace(href) : router.push(href));
 
   const send = async () => {
@@ -418,7 +416,35 @@ export default function Home() {
             </View>
           ) : null}
 
-          <View style={styles.composer}>
+          <Composer
+            ref={input}
+            roomy
+            phone={!wide}
+            value={text}
+            onChangeText={setText}
+            onSend={send}
+            placeholder={project ? `What should we do in ${project.name}?` : 'Ask anything'}
+            attachments={pics}
+            busy={busy}
+            model={{
+              value: model,
+              fallback: project?.model ?? loaded,
+              auto: !!routing && !project?.model,
+              onPress: () => setPickingModel(true),
+            }}
+            onTalk={talk}
+            talkLabel="Start a voice chat"
+            sendLabel="Start chat"
+            autoFocus={wide}
+            extraActions={
+              <IconButton
+                icon="tray-plus"
+                label="Add to queue instead: it runs when earlier tasks are done"
+                onPress={queue}
+                disabled={!text.trim() || pics.items.length > 0 || busy}
+              />
+            }
+            header={
             <View style={styles.topRow}>
               <Pressable
                 onPress={() => setPicking((v) => !v)}
@@ -449,67 +475,8 @@ export default function Home() {
                 />
               </Pressable>
             </View>
-            <AttachmentStrip items={pics.items} onRemove={pics.remove} />
-            <TextInput
-              ref={input}
-              style={[styles.input, !wide && styles.inputPhone]}
-              value={text}
-              onChangeText={setText}
-              onKeyPress={enterToSend(send)}
-              placeholder={project ? `What should we do in ${project.name}?` : 'Ask anything'}
-              placeholderTextColor={m3.outline}
-              selectionColor={m3.primary}
-              multiline
-              autoFocus={wide}
-              accessibilityLabel="Prompt"
-            />
-            <View style={styles.row}>
-              <View style={styles.modelSlot}>
-                <AttachMenu onPick={pics.pick} disabled={busy} />
-                <ModelChip
-                  model={model}
-                  fallback={project?.model ?? loaded}
-                  auto={!!routing && !project?.model}
-                  onPress={() => setPickingModel(true)}
-                />
-              </View>
-              <IconButton
-                icon="tray-plus"
-                label="Add to queue instead: it runs when earlier tasks are done"
-                onPress={queue}
-                disabled={!text.trim() || pics.items.length > 0 || busy}
-              />
-              {canTalk && !canSend ? (
-                <Pressable
-                  onPress={talk}
-                  disabled={busy}
-                  style={[styles.send, styles.sendOn]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Start a voice chat"
-                >
-                  {busy ? (
-                    <ActivityIndicator color={m3.onPrimary} />
-                  ) : (
-                    <Icon name="account-voice" size={22} color={m3.onPrimary} />
-                  )}
-                </Pressable>
-              ) : (
-              <Pressable
-                onPress={send}
-                disabled={!canSend}
-                style={[styles.send, canSend ? styles.sendOn : styles.sendOff]}
-                accessibilityRole="button"
-                accessibilityLabel="Start chat"
-              >
-                {busy ? (
-                  <ActivityIndicator color={m3.onPrimary} />
-                ) : (
-                  <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
-                )}
-              </Pressable>
-              )}
-            </View>
-
+            }
+          >
             {picking ? (
               <View style={[styles.menu, !wide && styles.menuPhone]}>
                 {menuItem(CHATS_ID, 'chat-outline', 'Chat', 'Ask anything. No files or code')}
@@ -532,7 +499,7 @@ export default function Home() {
                 </Pressable>
               </View>
             ) : null}
-          </View>
+          </Composer>
 
           <Text style={[type.bodySmall, styles.hint]}>
             {project
@@ -854,25 +821,6 @@ const styles = StyleSheet.create({
   },
   helloPhone: { justifyContent: 'flex-start', marginHorizontal: space.xs, marginBottom: space.xs },
   greetingWide: { fontSize: 40, lineHeight: 48 },
-  composer: {
-    backgroundColor: m3.surfaceContainerHigh,
-    borderRadius: radius.xl,
-    padding: space.md,
-    zIndex: 10,
-    borderWidth: 1,
-    borderColor: m3.outlineVariant,
-  },
-  input: {
-    minHeight: 56,
-    maxHeight: 320,
-    color: m3.onSurface,
-    fontSize: 17,
-    lineHeight: 25,
-    paddingHorizontal: space.md,
-    paddingTop: space.sm,
-  },
-  inputPhone: { minHeight: 44, fontSize: 16, lineHeight: 22 },
-  row: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm, marginTop: space.sm },
   topRow: { flexDirection: 'row', alignItems: 'center' },
   target: {
     flexDirection: 'row',
@@ -888,7 +836,6 @@ const styles = StyleSheet.create({
   },
   targetLabel: { flexShrink: 1, color: m3.onSurfaceVariant },
   targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
-  modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 },
   hover: { backgroundColor: m3.hover },
   selected: { backgroundColor: m3.secondaryContainer },
   checkSlot: { width: 32, alignItems: 'center' },
@@ -924,9 +871,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 6,
   },
-  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  sendOn: { backgroundColor: m3.primary },
-  sendOff: { backgroundColor: m3.surfaceContainerHighest },
   menu: {
     position: 'absolute',
     top: space.md + 40,

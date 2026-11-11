@@ -1,17 +1,25 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { alert } from '../components/Dialogs';
-import { useBrainInfo, useHere } from '../components/Location';
+import {
+  ComputerPicker,
+  FolderBrowser,
+  OfflineBanner,
+  samePath,
+  useComputers,
+  useFolderBrowser,
+} from '../components/FolderPicker';
+import { useHere } from '../components/Location';
 import { Sheet } from '../components/Sheet';
 import { m3, radius, space, type } from '../components/theme';
-import { Banner, Button, EmptyState, Field, Icon, IconButton, type IconName } from '../components/ui';
+import { Banner, Button, EmptyState, Field, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useClient } from '../lib/connection';
 import { basename, relativeTime } from '../lib/format';
 import { usePageStyle } from '../lib/layout';
-import type { Device, DocumentFolder, DocumentSearch, FolderListing } from '../lib/types';
+import type { DocumentFolder, DocumentSearch } from '../lib/types';
 
 /**
  * Your documents: folders on any of your computers that the agent can
@@ -319,51 +327,18 @@ function AddFolderSheet({
   onAdded: () => void;
 }) {
   const client = useClient();
-  const brain = useBrainInfo();
-  const here = useHere();
-  const [devices, setDevices] = useState<Device[]>([]);
-  /** '' = the brain; otherwise a device id. */
-  const [where, setWhere] = useState('');
-  const [folder, setFolder] = useState<FolderListing | null>(null);
-  const [browsing, setBrowsing] = useState(false);
+  const { devices, where, setWhere, device } = useComputers(visible);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!visible || !client) return;
-    setError(null);
-    client
-      .devices()
-      .then((ds) => {
-        setDevices(ds);
-        // On a linked computer, its own folders are the likely choice.
-        setWhere(here.deviceId && ds.some((d) => d.id === here.deviceId) ? here.deviceId : '');
-      })
-      .catch(() => setDevices([]));
-  }, [visible, client, here.deviceId]);
-
-  const browse = useCallback(
-    async (path: string) => {
-      if (!client) return;
-      setBrowsing(true);
-      setError(null);
-      try {
-        setFolder(await client.browseFolders(where, path));
-      } catch (e) {
-        setError(describeError(e));
-      } finally {
-        setBrowsing(false);
-      }
-    },
-    [client, where],
-  );
+  const load = useMemo(() => (client ? (path: string) => client.browseFolders(where, path) : null), [client, where]);
+  const { folder, browsing, browse, clear } = useFolderBrowser(load, setError);
 
   useEffect(() => {
     if (visible) {
-      setFolder(null);
+      clear();
       browse('');
     }
-  }, [visible, browse]);
+  }, [visible, browse, clear]);
 
   const add = async () => {
     if (!client || !folder) return;
@@ -379,87 +354,13 @@ function AddFolderSheet({
     }
   };
 
-  const sep = folder?.path.includes('\\') ? '\\' : '/';
-  const join = (a: string, b: string) => `${a.replace(/[\\/]+$/, '')}${sep}${b}`;
-  const parent = (p: string) => {
-    const up = p.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '');
-    // "C:" alone means the current folder on that drive; keep the slash.
-    return /^[A-Za-z]:$/.test(up) ? `${up}\\` : up || sep;
-  };
-  const atRoot = !folder || folder.path.replace(/[\\/]+$/, '') === folder.root.replace(/[\\/]+$/, '');
-  const device = devices.find((d) => d.id === where);
-  const already = folder
-    ? taken.find((t) => t.device_id === where && samePath(t.path, folder.path))
-    : undefined;
+  const already = folder ? taken.find((t) => t.device_id === where && samePath(t.path, folder.path)) : undefined;
 
   return (
     <Sheet visible={visible} onClose={onClose} title="Add a folder to search">
-      {devices.length > 0 ? (
-        <>
-          <Text style={[type.labelLarge, styles.label]}>Computer</Text>
-          <View style={styles.places}>
-            <Place
-              icon="brain"
-              label={here.isBrain ? 'This computer (brain)' : `${brain?.hostname || 'Brain'} (brain)`}
-              selected={where === ''}
-              online
-              onPress={() => setWhere('')}
-            />
-            {devices.map((d) => (
-              <Place
-                key={d.id}
-                icon="laptop"
-                label={d.id === here.deviceId ? `This computer (${d.name})` : d.name}
-                selected={where === d.id}
-                online={!!d.connected}
-                onPress={() => setWhere(d.id)}
-              />
-            ))}
-          </View>
-        </>
-      ) : null}
-      {device && !device.connected ? (
-        <Banner message={`${device.name} is offline. Open Relay on it (and check Tailscale), then try again.`} />
-      ) : null}
-      {folder ? (
-        <View style={styles.browser}>
-          <View style={styles.crumbRow}>
-            <IconButton
-              icon="arrow-up"
-              label="Up one folder"
-              size={18}
-              disabled={atRoot}
-              onPress={() => browse(parent(folder.path))}
-            />
-            <Text style={[type.bodyMedium, styles.grow]} numberOfLines={1} ellipsizeMode="head">
-              {folder.path}
-            </Text>
-            {browsing ? <ActivityIndicator size="small" color={m3.primary} /> : null}
-          </View>
-          <ScrollView style={styles.folderList}>
-            {folder.folders.length === 0 ? (
-              <Text style={[type.bodySmall, styles.pad]}>No folders inside.</Text>
-            ) : null}
-            {folder.folders.map((name) => (
-              <Pressable
-                key={name}
-                onPress={() => browse(join(folder.path, name))}
-                style={({ pressed }) => [styles.folderRow, pressed && styles.pressed]}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${name}`}
-              >
-                <Icon name="folder-outline" size={18} />
-                <Text style={[type.bodyMedium, styles.grow]} numberOfLines={1}>
-                  {name}
-                </Text>
-                <Icon name="chevron-right" size={18} color={m3.outline} />
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-      ) : browsing ? (
-        <ActivityIndicator color={m3.primary} style={{ marginVertical: space.xl }} />
-      ) : null}
+      <ComputerPicker label="Computer" devices={devices} value={where} onChange={setWhere} />
+      <OfflineBanner device={device} />
+      <FolderBrowser folder={folder} browsing={browsing} onBrowse={browse} />
       <Text style={[type.bodySmall, styles.muted]}>
         Relay reads text, Markdown, PDF and Word files (and code). Hidden folders and tool folders like node_modules are
         skipped.
@@ -477,41 +378,6 @@ function AddFolderSheet({
         />
       </View>
     </Sheet>
-  );
-}
-
-function samePath(a: string, b: string) {
-  const n = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  return n(a) === n(b);
-}
-
-function Place({
-  icon,
-  label,
-  selected,
-  online,
-  onPress,
-}: {
-  icon: IconName;
-  label: string;
-  selected: boolean;
-  online: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.place, selected && styles.placeOn, pressed && styles.pressed]}
-      accessibilityRole="radio"
-      accessibilityState={{ selected }}
-      accessibilityLabel={`${label}${online ? '' : ', offline'}`}
-    >
-      <Icon name={icon} size={18} color={selected ? m3.onSecondaryContainer : m3.onSurfaceVariant} />
-      <Text style={[type.labelLarge, { color: selected ? m3.onSecondaryContainer : m3.onSurface }]} numberOfLines={1}>
-        {label}
-      </Text>
-      {icon !== 'brain' ? <View style={[styles.dot, { backgroundColor: online ? m3.success : m3.outline }]} /> : null}
-    </Pressable>
   );
 }
 
@@ -537,37 +403,5 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   hit: { padding: space.lg, gap: 2 },
   hitHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  label: { color: m3.onSurfaceVariant, marginBottom: space.sm },
-  places: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.md },
-  place: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: m3.outlineVariant,
-    maxWidth: '100%',
-  },
-  placeOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
-  pressed: { opacity: 0.7 },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-  browser: {
-    borderWidth: 1,
-    borderColor: m3.outlineVariant,
-    borderRadius: radius.md,
-    marginBottom: space.md,
-    overflow: 'hidden',
-  },
-  crumbRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.xs,
-    paddingRight: space.md,
-    backgroundColor: m3.surfaceContainerHigh,
-  },
-  folderList: { maxHeight: 260 },
-  folderRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingHorizontal: space.md, paddingVertical: 10 },
   sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.md },
 });
