@@ -245,6 +245,7 @@ mod tests {
             covers_upto: None,
             images: vec![],
             files: vec![],
+            stats: None,
         }
     }
 

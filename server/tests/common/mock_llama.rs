@@ -284,7 +284,11 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
     }
     chunks.push(format!(
         "data: {}\n\n",
-        json!({"choices": [], "usage": {"prompt_tokens": tokens, "completion_tokens": 10}})
+        json!({
+            "choices": [],
+            "usage": {"prompt_tokens": tokens, "completion_tokens": 10},
+            "timings": {"prompt_n": tokens, "prompt_per_second": 500.0, "predicted_n": 10, "predicted_per_second": 40.0}
+        })
     ));
     chunks.push("data: [DONE]\n\n".to_string());
 

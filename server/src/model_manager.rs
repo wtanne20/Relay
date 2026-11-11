@@ -95,6 +95,8 @@ pub struct ModelManager {
     status: Arc<RwLock<ModelStatus>>,
     tx: mpsc::Sender<Cmd>,
     activity: Arc<Activity>,
+    /// How fast each model has written replies.
+    speeds: Arc<crate::stats::Speeds>,
 }
 
 impl ModelManager {
@@ -134,7 +136,13 @@ impl ModelManager {
             status,
             tx,
             activity,
+            speeds: Arc::default(),
         }
+    }
+
+    /// Writing speeds per model since Relay started.
+    pub fn speeds(&self) -> &crate::stats::Speeds {
+        &self.speeds
     }
 
     /// Notes that the model is wanted (a chat was opened or a prompt sent),

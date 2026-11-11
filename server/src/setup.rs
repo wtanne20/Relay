@@ -86,7 +86,7 @@ pub fn parse_cuda_version(s: &str) -> Option<(u32, u32)> {
     })
 }
 
-async fn run_capture(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) async fn run_capture(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())

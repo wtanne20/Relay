@@ -150,6 +150,56 @@ export interface Message {
   images?: string[];
   /** Other files attached to a user message. */
   files?: FileRef[];
+  /** On an assistant message: which model wrote it, and how fast. */
+  stats?: ReplyStats;
+}
+
+export interface ReplyStats {
+  /** The model's file name. */
+  model: string;
+  /** Set when model routing picked the model. */
+  route?: 'quick' | 'heavy';
+  tokens?: number;
+  tokens_per_sec?: number;
+  prompt_per_sec?: number;
+}
+
+/** Sends quick questions to a small model and everything else to a big one. */
+export interface RoutingSettings {
+  enabled: boolean;
+  quick_model: string;
+  /** "" = the default model. */
+  heavy_model: string;
+  quick_max_words: number;
+}
+
+export interface MemoryUse {
+  total_mb: number;
+  used_mb: number;
+  /** Used by llama-server, when it runs on that computer. */
+  model_mb?: number;
+}
+
+export interface ModelSpeed {
+  model: string;
+  replies: number;
+  tokens: number;
+  avg_tokens_per_sec: number;
+  last_tokens_per_sec: number;
+  last_prompt_per_sec?: number | null;
+  last_at: string;
+}
+
+export interface StatsResponse {
+  brain: {
+    name: string;
+    os: string;
+    model: { state: ModelStatus['state']; file: string | null };
+    memory: MemoryUse | null;
+    gpus: { name: string; total_mb: number; used_mb: number }[];
+  };
+  speeds: ModelSpeed[];
+  devices: { id: string; name: string; os: string; connected: boolean; memory: MemoryUse | null }[];
 }
 
 export interface FileRef {
@@ -332,6 +382,7 @@ export interface Settings {
   projects_folder: string;
   /** Where Relay saves models; empty = its data folder. */
   models_folder?: string;
+  routing: RoutingSettings;
 }
 
 export interface SettingsResponse {

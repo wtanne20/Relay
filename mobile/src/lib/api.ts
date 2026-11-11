@@ -25,6 +25,7 @@ import type {
   Session,
   Settings,
   SettingsResponse,
+  StatsResponse,
   SkillInfo,
   RecentSession,
 } from './types';
@@ -149,6 +150,11 @@ export class RelayClient {
   /** Frees the GPU; the model loads again when a chat is opened. */
   unloadModel() {
     return this.request<{ ok: boolean }>('POST', '/model/unload');
+  }
+
+  /** Model speeds and memory use on the brain and linked computers. */
+  stats() {
+    return this.request<StatsResponse>('GET', '/stats', undefined, 15000);
   }
 
   // ----- agent settings -----

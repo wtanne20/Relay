@@ -196,6 +196,8 @@ export default function RootLayout() {
               <Stack.Screen name="devices" options={{ title: 'Computers' }} />
               <Stack.Screen name="libraries" options={{ title: 'Model libraries' }} />
               <Stack.Screen name="documents" options={{ title: 'Your documents' }} />
+              <Stack.Screen name="routing" options={{ title: 'Model routing' }} />
+              <Stack.Screen name="stats" options={{ title: 'Speed and memory' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
               <Stack.Screen name="share" options={{ title: 'Send to Relay' }} />
             </Stack>

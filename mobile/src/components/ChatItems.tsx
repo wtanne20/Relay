@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { toolDetails, toolSummary } from '../lib/format';
 import { fileChange, partialArgs, readArgs, type FileChange } from '../lib/liveCode';
-import type { Draft, Message, ToolCall } from '../lib/types';
+import type { Draft, Message, ReplyStats, ToolCall } from '../lib/types';
 import { MessageFiles, MessagePicture } from './Attachments';
 import { ChangesLine, CodeChange } from './CodeChange';
 import { Markdown } from './Markdown';
@@ -452,6 +452,7 @@ export const AssistantTurn = memo(function AssistantTurn({
       {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} seconds={answerSeconds} /> : null}
       {answer ? <Markdown text={answer} /> : null}
       {changes.length ? <ChangesLine changes={changes} /> : null}
+      {lastIsAnswer && last.stats ? <ReplyMeta stats={last.stats} /> : null}
       {!showSteps && !answer && running ? (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />
@@ -463,6 +464,21 @@ export const AssistantTurn = memo(function AssistantTurn({
     </View>
   );
 });
+
+/** "Qwen3-4B · 52 tok/s · quick": which model answered, and how fast. */
+function ReplyMeta({ stats }: { stats: ReplyStats }) {
+  const parts = [stats.model.replace(/\.gguf$/i, '')];
+  if (stats.tokens_per_sec) parts.push(`${Math.round(stats.tokens_per_sec)} tok/s`);
+  if (stats.route) parts.push(stats.route === 'quick' ? 'quick question' : 'big model');
+  return (
+    <View style={styles.replyMeta} accessibilityLabel={`Answered by ${parts.join(', ')}`}>
+      <Icon name={stats.route === 'quick' ? 'lightning-bolt-outline' : 'chip'} size={13} color={m3.outline} />
+      <Text style={[type.bodySmall, styles.replyMetaText]} numberOfLines={1}>
+        {parts.join(' · ')}
+      </Text>
+    </View>
+  );
+}
 
 export function DraftBlock({ content, reasoning }: { content: string; reasoning: string }) {
   return (
@@ -483,6 +499,8 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
 }
 
 const styles = StyleSheet.create({
+  replyMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.xs },
+  replyMetaText: { color: m3.outline, flexShrink: 1 },
   summary: { marginVertical: space.lg },
   summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, minHeight: 36 },
   summaryLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant },

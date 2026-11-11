@@ -17,7 +17,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 
 ## Contents
 
-- [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`
+- [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
 - [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
@@ -86,6 +86,30 @@ Stops llama-server (if Relay launched it) and starts it again; also clears the
 
 ---
 
+### `GET /stats`
+
+Speed and memory, for the Speed and memory screen. Speeds count since Relay started; each linked computer that is
+online is asked for its memory (older versions answer `null`).
+
+```json
+{
+  "brain": {
+    "name": "DESKTOP-1", "os": "windows",
+    "model": { "state": "ready", "file": "Qwen3-4B-Q4_K_M.gguf" },
+    "memory": { "total_mb": 65448, "used_mb": 21004, "model_mb": 3120 },
+    "gpus": [ { "name": "NVIDIA GeForce RTX 5090", "total_mb": 32607, "used_mb": 9210 } ]
+  },
+  "speeds": [
+    { "model": "Qwen3-4B-Q4_K_M.gguf", "replies": 12, "tokens": 4810, "avg_tokens_per_sec": 141.2,
+      "last_tokens_per_sec": 138.9, "last_prompt_per_sec": 2210.0, "last_at": "2026-11-11T06:10:00.000Z" }
+  ],
+  "devices": [ { "id": "…", "name": "Laptop", "os": "linux", "connected": true,
+                 "memory": { "total_mb": 15890, "used_mb": 6020 } } ]
+}
+```
+
+`memory.model_mb` is llama-server's memory, when Relay started it. `gpus` is empty without `nvidia-smi`.
+
 ## Agent settings
 
 Everything here is saved to `config.toml` on the PC.
@@ -130,6 +154,13 @@ Everything here is saved to `config.toml` on the PC.
 - `llama.*` become llama-server arguments: `-m <model_path> --port <port> --jinja -ngl <gpu_layers>
   -c <context_size> --flash-attn <flash_attn> --cache-type-k <cache_type_k> --cache-type-v <cache_type_v>
   <extra_args…> --host 127.0.0.1`.
+
+- `routing`: `{enabled, quick_model, heavy_model, quick_max_words}`. With `enabled` and a `quick_model`, a prompt in a
+  chat or project that doesn't pick its own model goes to `quick_model` when it looks like a quick question, and
+  to `heavy_model` (empty = the default model) otherwise. Project work (tools), attachments, code, prompts longer
+  than `quick_max_words` (default 60), requests like "write", "fix" or "summarize", and any chat that already
+  needed the big model count as heavy. A quick question uses the big model when that one is already loaded, and
+  routing uses the loaded model instead of waiting while another chat runs. Changes apply from the next prompt.
 
 The token, bind address, shell and extra skill folders are not exposed and can't be changed through the API.
 
@@ -799,6 +830,7 @@ not a sandbox.
 | `tool_call_id`, `tool_name` | string | tool results |
 | `is_error` | boolean (omitted when false) | tool results |
 | `created_at` | string | always |
+| `stats` | `{model, route?, tokens?, tokens_per_sec?, prompt_per_sec?}` | assistant: the model's file name, `quick`/`heavy` when routing picked it, and llama-server's timings |
 
 ### ModelStatus
 

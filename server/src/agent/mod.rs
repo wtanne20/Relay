@@ -3,6 +3,7 @@
 
 pub mod compact;
 pub mod llm;
+pub mod route;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ pub const EVENT_RESULT_CHARS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Events are sent once each over a channel; boxing the message buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Status {
         status: String,
@@ -337,18 +340,52 @@ impl AgentManager {
         let Some((session, project)) = found else {
             return Err(StartError::NotFound);
         };
-        // The chat's model, else the project's, else the default one (which
-        // may not be the loaded one after another chat switched).
-        let wanted = session
+        // The chat's model, else the project's, else (with routing on) the
+        // quick or the big model, else the default one (which may not be the
+        // loaded one after another chat switched).
+        let chosen = session
             .model
             .clone()
             .filter(|m| !m.trim().is_empty())
             .or_else(|| project.model.clone())
-            .filter(|m| !m.trim().is_empty())
-            .or_else(|| Some(self.cfg.get().llama.default_model().to_string()))
             .filter(|m| !m.trim().is_empty());
+        let conf = self.cfg.get();
+        let routing = &conf.routing;
+        let route = if chosen.is_none()
+            && routing.enabled
+            && !routing.quick_model.trim().is_empty()
+            && !self.model.status().external
+        {
+            let sid = session.id.clone();
+            let was_heavy = self.db.call(move |c| db::was_routed_heavy(c, &sid)).await?;
+            let (r, why) = route::classify(&route::Ask {
+                prompt: &prompt,
+                attachments: !images.is_empty() || !files.is_empty(),
+                has_folder: !project.is_chats(),
+                was_heavy,
+                quick_max_words: routing.quick_max_words,
+            });
+            tracing::info!(session = %session.id, route = ?r, why, "routed");
+            Some(r)
+        } else {
+            None
+        };
+        let heavy_model = if routing.heavy_model.trim().is_empty() {
+            conf.llama.default_model().to_string()
+        } else {
+            routing.heavy_model.clone()
+        };
+        let mut wanted = match route {
+            Some(route::Route::Quick) if Path::new(&routing.quick_model).is_file() => {
+                Some(routing.quick_model.clone())
+            }
+            Some(_) => Some(heavy_model.clone()),
+            None => chosen.or_else(|| Some(conf.llama.default_model().to_string())),
+        }
+        .filter(|m| !m.trim().is_empty());
 
-        if !images.is_empty() && !self.model.status().external {
+        let has_images = !images.is_empty();
+        if has_images && !self.model.status().external {
             let target = wanted
                 .clone()
                 .unwrap_or_else(|| self.cfg.get().llama.model_path);
@@ -399,6 +436,21 @@ impl AgentManager {
             // Only one model is loaded at a time, so a switch waits for
             // other chats to finish.
             let loaded = self.cfg.get().llama.model_path;
+            // (Pictures need the model checked for vision above.)
+            if let Some(r) = route.filter(|_| !has_images) {
+                let loaded_now = self.model.status().state != ModelState::Idle;
+                let differs = wanted.as_ref().is_some_and(|w| !same_path(w, &loaded));
+                // Routing never makes a chat wait: while another chat runs,
+                // or when a quick question finds the big model already
+                // loaded (it answers just as well, and reloading is slower),
+                // use the loaded model.
+                if differs
+                    && (!running.is_empty()
+                        || (r == route::Route::Quick && loaded_now && same_path(&heavy_model, &loaded)))
+                {
+                    wanted = Some(loaded.clone());
+                }
+            }
             let switch = wanted
                 .as_ref()
                 .filter(|w| !same_path(w, &loaded) && !self.model.status().external);
@@ -487,7 +539,7 @@ impl AgentManager {
 
         let this = self.clone();
         tokio::spawn(async move {
-            this.run_task(session, project, cancel, draft, approval, voice)
+            this.run_task(session, project, route, cancel, draft, approval, voice)
                 .await
         });
         Ok(user_msg)
@@ -522,6 +574,7 @@ impl AgentManager {
         self: Arc<Self>,
         session: Session,
         project: Project,
+        route: Option<route::Route>,
         cancel: CancellationToken,
         draft: Arc<Mutex<Draft>>,
         approval: Arc<Mutex<Option<ApprovalSlot>>>,
@@ -531,7 +584,7 @@ impl AgentManager {
         // Keep the model loaded until the task, its title and any summary are done.
         let _hold = self.model.hold();
         let result = self
-            .agent_loop(&session, &project, &cancel, &draft, &approval, voice)
+            .agent_loop(&session, &project, route, &cancel, &draft, &approval, voice)
             .await;
         let (status, error) = match result {
             Ok(LoopEnd::Done) => ("done", None),
@@ -580,6 +633,7 @@ impl AgentManager {
         &self,
         session: &Session,
         project: &Project,
+        route: Option<route::Route>,
         cancel: &CancellationToken,
         draft: &Arc<Mutex<Draft>>,
         approval: &Arc<Mutex<Option<ApprovalSlot>>>,
@@ -860,6 +914,13 @@ impl AgentManager {
                 }
             }
 
+            let model = Some(file_name(&self.model.status().model_path))
+                .filter(|n| !n.is_empty())
+                // A llama-server Relay didn't start, with no model set.
+                .unwrap_or_else(|| "llama-server".into());
+            if let (Some(n), Some(tps)) = (turn.gen_tokens, turn.gen_per_sec) {
+                self.model.speeds().record(&model, n, tps, turn.prompt_per_sec);
+            }
             let assistant = NewMessage {
                 role: "assistant".into(),
                 content: turn.content.clone(),
@@ -869,6 +930,16 @@ impl AgentManager {
                 } else {
                     turn.tool_calls.clone()
                 },
+                stats: Some(db::ReplyStats {
+                    model,
+                    route: route.map(|r| match r {
+                        route::Route::Quick => "quick".into(),
+                        route::Route::Heavy => "heavy".into(),
+                    }),
+                    tokens: turn.gen_tokens,
+                    tokens_per_sec: turn.gen_per_sec.map(|v| (v * 10.0).round() / 10.0),
+                    prompt_per_sec: turn.prompt_per_sec.map(|v| v.round()),
+                }),
                 ..Default::default()
             };
             let saved = self.save(&session.id, assistant).await?;
@@ -1908,6 +1979,7 @@ mod tests {
             covers_upto: None,
             images: vec![],
             files: vec![],
+            stats: None,
         }
     }
 
