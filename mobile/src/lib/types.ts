@@ -549,3 +549,56 @@ export interface FolderListing {
   home?: string;
   folders: string[];
 }
+
+/** When a scheduled task runs. Times are the brain's local time. */
+export type Repeat =
+  /** One time, at a local date and time ("2026-11-12T08:00"). */
+  | { kind: 'once'; at: string }
+  /** At a time of day ("08:00") on weekdays 1 (Monday) to 7 (Sunday); empty = every day. */
+  | { kind: 'daily'; time: string; days: number[] }
+  | { kind: 'every'; minutes: number };
+
+export interface Schedule {
+  id: string;
+  project_id: string;
+  project_name: string;
+  name: string;
+  prompt: string;
+  repeat: Repeat;
+  /** Every run continues one chat instead of starting a new one. */
+  same_chat: boolean;
+  enabled: boolean;
+  next_run: string | null;
+  last_run: string | null;
+  last_session_id: string | null;
+  last_status: string | null;
+  created_at: string;
+}
+
+export type QueueStatus = 'queued' | 'running' | 'done' | 'error' | 'stopped';
+
+export interface QueueItem {
+  id: string;
+  project_id: string;
+  project_name: string;
+  session_id: string | null;
+  session_title: string | null;
+  schedule_id: string | null;
+  /** The next message of a busy chat: sent when that chat is free, not in line. */
+  follow_up?: boolean;
+  name: string;
+  prompt: string;
+  status: QueueStatus;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Running, and waiting for you to allow a tool call. */
+  needs_approval?: boolean;
+}
+
+export interface QueueResponse {
+  items: QueueItem[];
+  queued: number;
+  running: number;
+}

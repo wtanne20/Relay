@@ -181,6 +181,8 @@ pub struct AgentManager {
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     running: Mutex<HashMap<String, RunningTask>>,
+    /// Signalled whenever a task ends (the task queue starts the next one).
+    pub finished: tokio::sync::Notify,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -220,6 +222,7 @@ impl AgentManager {
             knowledge,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            finished: tokio::sync::Notify::new(),
         })
     }
 
@@ -607,6 +610,7 @@ impl AgentManager {
             tracing::error!("failed to store final status: {e:#}");
         }
         lock(&self.running).remove(&session.id);
+        self.finished.notify_one();
         if let Some(e) = &error {
             self.emit(&session.id, Event::Error { message: e.clone() });
         }
@@ -1002,7 +1006,7 @@ impl AgentManager {
                         }
                     } else if rule_id.is_some() {
                         decision = AuditDecision::Rule;
-                        run_tool(ctx.as_ref(), device.as_ref(), call, cancel, &conf.agent.search_api_key).await
+                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
                     } else if needs_approval(approval_mode, &call.name) {
                         match self.ask_approval(session, project, call, approval, cancel).await {
                             Some((Decision::Deny, note)) => {

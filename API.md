@@ -23,6 +23,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
 - [Always-allow rules and activity](#always-allow-rules-and-activity): `GET/POST /approval-rules`, `DELETE /approval-rules/{id}`, `GET/DELETE /activity`
+- [Background tasks](#background-tasks): `GET/POST /queue`, `DELETE /queue/{id}`, `POST /queue/{id}/first`, `POST /queue/clear`, `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET /notices`
 - [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
 - [Your documents](#your-documents): `GET/POST /knowledge`, `DELETE /knowledge/{id}`, `POST /knowledge/{id}/reindex`, `GET /knowledge/search`, `GET /knowledge/browse`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
@@ -497,6 +498,96 @@ entries are kept.
 ### `DELETE /activity`
 
 Clears the log: `{"removed": 812}`.
+
+## Background tasks
+
+The **queue** runs prompts one after another on the brain, each in its own chat, whether or not a phone is
+connected. A **schedule** adds a prompt to the queue at set times. Times of day are the brain's local time; stored
+times are UTC (RFC 3339). Finished tasks notify the phone like any other chat.
+
+### `GET /queue`
+
+```json
+{ "items": [QueueItem], "queued": 2, "running": 1 }
+```
+
+Running first, then waiting in order, then up to 100 recently finished. `QueueItem`:
+
+```json
+{
+  "id": "…", "project_id": "chats", "project_name": "Chats",
+  "session_id": "…", "session_title": "Morning summary",
+  "schedule_id": null, "follow_up": false,
+  "name": "Morning summary", "prompt": "…",
+  "status": "queued | running | done | error | stopped", "error": null,
+  "created_at": "…", "started_at": null, "finished_at": null,
+  "needs_approval": true
+}
+```
+
+### `POST /queue` → `201`
+
+`{"prompt": "…", "name": "optional", "project_id": "optional, default chats"}` runs in a new chat when the
+background tasks before it are done (one runs at a time).
+
+`{"prompt": "…", "session_id": "…"}` is a **follow-up**: the next message of that chat, sent as soon as its current
+run ends. Follow-ups don't wait for other queued work. Text only. Returns `{"item": QueueItem}`.
+
+### `DELETE /queue/{id}`
+
+Cancels a waiting task, stops a running one (its chat is kept), or hides a finished one.
+
+### `POST /queue/{id}/first`
+
+Moves a waiting task to the front of the line. `409` if it isn't waiting.
+
+### `POST /queue/clear`
+
+Removes finished tasks from the list: `{"removed": 3}`.
+
+### `GET /schedules`, `GET /schedules/{id}`
+
+`{"schedules": [Schedule], "timezone": "+01:00"}`. `Schedule`:
+
+```json
+{
+  "id": "…", "project_id": "chats", "project_name": "Chats",
+  "name": "Morning summary", "prompt": "…",
+  "repeat": { "kind": "daily", "time": "08:00", "days": [1, 2, 3, 4, 5] },
+  "same_chat": false, "enabled": true,
+  "next_run": "2026-11-12T07:00:00.000Z", "last_run": null,
+  "last_session_id": null, "last_status": null, "created_at": "…"
+}
+```
+
+`repeat` is one of:
+
+- `{"kind": "daily", "time": "HH:MM", "days": [1..7]}`: Monday is 1; empty `days` means every day.
+- `{"kind": "every", "minutes": 60}`: 5 minutes to 31 days.
+- `{"kind": "once", "at": "2026-11-12T08:00"}`: turns itself off after running.
+
+`same_chat: true` continues one chat on every run instead of starting a new one. Runs missed while the brain was
+off happen once when it starts again.
+
+### `POST /schedules` → `201`, `PATCH /schedules/{id}`
+
+Body: any of `name`, `prompt`, `project_id`, `repeat`, `same_chat`, `enabled` (`prompt` and `repeat` are required
+to create). Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed.
+
+### `DELETE /schedules/{id}`
+
+Deletes it and its runs still waiting; chats from earlier runs stay.
+
+### `POST /schedules/{id}/run` → `201`
+
+Adds a run to the queue now, without changing `next_run`.
+
+### `GET /notices?after={id}&limit=20`
+
+What finished, failed, was stopped or asked for approval since notice `after` (oldest first), with only names and
+status: `{"notices": [{"id": 12, "at": "…", "status": "done", "project_id": "…", "project_name": "…",
+"session_id": "…", "title": "…"}], "last_id": 12}`. Without `after`, only `last_id`. The Android app without a push
+service checks this every 15 minutes or so, so tasks that ran while it was closed still notify.
 
 ## Linked computers
 

@@ -53,6 +53,23 @@ impl Pusher {
         status: &str,
         tool_call_id: Option<String>,
     ) {
+        // Kept on the PC for phones that check in instead of getting pushes.
+        let (db, pid, pname, sid, title, st) = (
+            self.db.clone(),
+            project.id.clone(),
+            project.name.clone(),
+            session_id.to_string(),
+            session_title.to_string(),
+            status.to_string(),
+        );
+        tokio::spawn(async move {
+            let saved = db
+                .call(move |c| crate::tasks::add_notice(c, &st, &pid, &pname, &sid, &title))
+                .await;
+            if let Err(e) = saved {
+                tracing::warn!("could not save notice: {e:#}");
+            }
+        });
         if !self.enabled() {
             return;
         }

@@ -45,7 +45,6 @@ class WatchService : Service() {
     const val EXTRA_CALL = "call"
     const val EXTRA_DECISION = "decision"
     private const val CHANNEL_WORKING = "relay_working"
-    private const val CHANNEL_EVENTS = "tasks"
     private const val ONGOING_ID = 7301
     private const val POLL_MS = 4000L
     /** Give up after this long without reaching the PC. */
@@ -75,7 +74,6 @@ class WatchService : Service() {
   private val asking = HashMap<String, Int>()
   private var idlePolls = 0
   private var lastReached = System.currentTimeMillis()
-  private var nextNotificationId = 7400
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -256,29 +254,14 @@ class WatchService : Service() {
   }
 
   private fun tell(id: String, c: Chat, status: String, approval: JSONObject? = null) {
-    if (viewing == id) return
-    val label = when (status) {
-      "done" -> "finished"
-      "error" -> "failed"
-      "stopped" -> "was stopped"
-      "approval" -> "needs your approval"
-      else -> status
-    }
-    val open = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://session/${Uri.encode(id)}"))
-      .setPackage(packageName)
-      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    val project = c.project.ifBlank { "Relay" }
-    val summary = "${c.title.ifBlank { "A chat" }} $label"
-    val nid = synchronized(lock) { nextNotificationId++ }
-    val b = NotificationCompat.Builder(this, CHANNEL_EVENTS)
-      .setSmallIcon(icon())
-      .setContentTitle(project)
-      .setContentText(summary)
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
-      .setAutoCancel(true)
-      .setContentIntent(PendingIntent.getActivity(this, id.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
     val call = approval?.optString("tool_call_id").orEmpty()
-    if (status == "approval" && call.isNotEmpty()) {
+    if (status != "approval" || call.isEmpty()) {
+      Notifier.tell(this, scheme, id, c.project, c.title, status)
+      return
+    }
+    val project = c.project.ifBlank { "Relay" }
+    val summary = "${c.title.ifBlank { "A chat" }} needs your approval"
+    Notifier.tell(this, scheme, id, c.project, c.title, status) { b, nid ->
       val (question, gist) = describe(approval!!)
       b.setContentText(question)
         .setStyle(NotificationCompat.BigTextStyle().bigText(if (gist.isEmpty()) question else "$question\n$gist"))
@@ -288,7 +271,7 @@ class WatchService : Service() {
         // once the phone is unlocked.
         .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
         .setPublicVersion(
-          NotificationCompat.Builder(this, CHANNEL_EVENTS)
+          NotificationCompat.Builder(this, Notifier.CHANNEL_EVENTS)
             .setSmallIcon(icon())
             .setContentTitle(project)
             .setContentText(summary)
@@ -297,11 +280,6 @@ class WatchService : Service() {
         .addAction(0, "Deny", decideIntent(id, call, "deny", nid))
         .addAction(0, "Allow", decideIntent(id, call, "approve", nid))
       synchronized(lock) { asking[call] = nid }
-    }
-    try {
-      manager().notify(nid, b.build())
-    } catch (e: SecurityException) {
-      // Notifications are turned off for Relay.
     }
   }
 
@@ -362,7 +340,7 @@ class WatchService : Service() {
       if (baseUrl.isEmpty()) stopSelf()
       return
     }
-    val done = NotificationCompat.Builder(this, CHANNEL_EVENTS)
+    val done = NotificationCompat.Builder(this, Notifier.CHANNEL_EVENTS)
       .setSmallIcon(icon())
       .setContentTitle("Relay")
       .setContentText(result)
@@ -411,10 +389,6 @@ class WatchService : Service() {
         },
       )
     }
-    if (m.getNotificationChannel(CHANNEL_EVENTS) == null) {
-      m.createNotificationChannel(
-        NotificationChannel(CHANNEL_EVENTS, "Task updates", NotificationManager.IMPORTANCE_HIGH),
-      )
-    }
+    Notifier.ensureChannel(this)
   }
 }

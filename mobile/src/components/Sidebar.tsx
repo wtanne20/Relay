@@ -27,6 +27,8 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [adding, setAdding] = useState(false);
+  /** Queued and running background tasks. */
+  const [taskCount, setTaskCount] = useState(0);
   const openRef = useRef(open);
   openRef.current = open;
 
@@ -44,6 +46,10 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       setProjects(ps);
       setModel(m);
       setPlain(pl);
+      client
+        .queue()
+        .then((q) => setTaskCount(q.queued + q.running))
+        .catch(() => setTaskCount(0));
       // Expand the first project by default so a fresh install shows something.
       const expanded = Object.keys(openRef.current).length ? openRef.current : ps[0] ? { [ps[0].id]: true } : {};
       if (expanded !== openRef.current) setOpen(expanded);
@@ -115,6 +121,13 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
 
       <View style={styles.homeRow}>
         <Row icon="home-outline" label="Home" active={pathname === '/'} onPress={() => go('/')} />
+        <Row
+          icon="calendar-clock"
+          label="Tasks"
+          active={pathname === '/tasks'}
+          onPress={() => go('/tasks')}
+          trailing={taskCount ? <Text style={[type.labelMedium, styles.count]}>{taskCount}</Text> : undefined}
+        />
       </View>
 
       <ScrollView style={styles.grow} contentContainerStyle={styles.list}>
@@ -392,4 +405,15 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  count: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    marginRight: space.md,
+    borderRadius: 11,
+    overflow: 'hidden',
+    textAlign: 'center',
+    lineHeight: 22,
+    backgroundColor: m3.primaryContainer,
+    color: m3.onPrimaryContainer,
+  },
 });

@@ -5,7 +5,7 @@ import { Platform } from 'react-native';
 
 import type { RelayClient } from './api';
 import { loadPushPrefs, savePushPrefs } from './storage';
-import { setWatchEnabled, watchAvailable } from './watch';
+import { checkInBackground, setWatchEnabled, watchAvailable } from './watch';
 
 /** Show notifications while the app is open too. */
 export function configureNotificationHandler() {
@@ -95,6 +95,7 @@ export async function enablePush(client: RelayClient): Promise<string> {
     // No push service: the phone watches running chats itself.
     await savePushPrefs({ enabled: true, token: null });
     setWatchEnabled(true);
+    await checkInBackground(client);
     return 'local';
   }
   if (!pid) {
@@ -135,7 +136,11 @@ export async function refreshPushRegistration(client: RelayClient): Promise<void
   if (!prefs.enabled) return;
   const perm = await Notifications.getPermissionsAsync();
   if (!perm.granted && prefs.token === null) return; // never set up; don't prompt on launch
-  if (watchAvailable) return; // nothing to register
+  if (watchAvailable) {
+    // Nothing to register; check in now and then for background tasks.
+    await checkInBackground(client);
+    return;
+  }
   try {
     await enablePush(client);
   } catch {

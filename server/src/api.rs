@@ -36,6 +36,8 @@ pub struct AppInner {
     pub model: ModelManager,
     pub agent: Arc<AgentManager>,
     pub pusher: Pusher,
+    /// The task queue and schedules.
+    pub tasks: Arc<crate::tasks::Tasks>,
     /// Cancelled when Relay is shutting down (closes WebSockets).
     pub shutdown: CancellationToken,
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -263,6 +265,7 @@ pub fn router(state: AppState) -> Router {
         .route("/knowledge/{id}", axum::routing::delete(remove_knowledge))
         .route("/knowledge/{id}/reindex", post(reindex_knowledge))
         .route("/hello", get(hello))
+        .merge(crate::tasks::routes())
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.

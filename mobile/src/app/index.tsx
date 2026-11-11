@@ -71,6 +71,8 @@ export default function Home() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState(false);
   const input = useRef<React.ComponentRef<typeof TextInput>>(null);
+  /** Queued and running background tasks (the badge on Tasks). */
+  const [taskCount, setTaskCount] = useState(0);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -83,6 +85,10 @@ export default function Home() {
       known.current = ps;
       setProjects(ps);
       setChats(cs);
+      client
+        .queue()
+        .then((q) => setTaskCount(q.queued + q.running))
+        .catch(() => setTaskCount(0));
       setLoaded(m?.default_model || m?.model_path || null);
       setTarget((cur) => (cur === CHATS_ID || ps.some((p) => p.id === cur) ? cur : CHATS_ID));
       setError(null);
@@ -170,6 +176,26 @@ export default function Home() {
       setModel(null);
       emit('chats');
       open({ pathname: '/session/[id]', params: { id: s.id, title: s.title, voice: '1' } });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Adds the prompt to the background queue instead of starting it now. */
+  const queue = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const item = await client.enqueue({ prompt: text.trim(), project_id: project?.id ?? CHATS_ID });
+      setText('');
+      setTaskCount((n) => n + 1);
+      alert('Added to the queue', `“${item.name}” runs on your PC when the tasks before it are done. See it under Tasks.`, [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Open Tasks', onPress: () => open('/tasks') },
+      ]);
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -331,7 +357,21 @@ export default function Home() {
             <Logo size={32} />
             <Text style={type.titleLarge}>Relay</Text>
           </View>
-          <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
+          <View style={styles.appBarActions}>
+            <View>
+              <IconButton
+                icon="calendar-clock"
+                label={taskCount ? `Tasks, ${taskCount} running or waiting` : 'Tasks'}
+                onPress={() => router.push('/tasks')}
+              />
+              {taskCount ? (
+                <View style={styles.badge} pointerEvents="none">
+                  <Text style={[type.labelMedium, { color: m3.onPrimary, fontSize: 11 }]}>{taskCount}</Text>
+                </View>
+              ) : null}
+            </View>
+            <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
+          </View>
         </View>
       ) : null}
       <ScrollView
@@ -417,6 +457,12 @@ export default function Home() {
                 <AttachMenu onPick={pics.pick} disabled={busy} />
                 <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
               </View>
+              <IconButton
+                icon="tray-plus"
+                label="Add to queue instead: it runs when earlier tasks are done"
+                onPress={queue}
+                disabled={!text.trim() || pics.items.length > 0 || busy}
+              />
               {canTalk && !canSend ? (
                 <Pressable
                   onPress={talk}
@@ -758,6 +804,19 @@ const styles = StyleSheet.create({
     paddingRight: space.xs,
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  appBarActions: { flexDirection: 'row', alignItems: 'center' },
+  badge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: m3.primary,
+  },
   content: { padding: space.lg },
   contentWide: { paddingHorizontal: space.xl, paddingTop: 72 },
   column: { width: '100%', maxWidth: 720, alignSelf: 'center', gap: space.md },

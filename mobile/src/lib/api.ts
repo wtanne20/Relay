@@ -28,6 +28,10 @@ import type {
   StatsResponse,
   SkillInfo,
   RecentSession,
+  QueueItem,
+  QueueResponse,
+  Repeat,
+  Schedule,
 } from './types';
 
 export const DEFAULT_PORT = 8765;
@@ -380,6 +384,55 @@ export class RelayClient {
       images.length || files.length ? 120000 : undefined,
     );
   }
+  // ----- background tasks -----
+  /** Running, waiting and recently finished queued tasks. */
+  queue() {
+    return this.request<QueueResponse>('GET', '/queue');
+  }
+  /** Adds a task to the queue: a new chat in a project, or the next message of a chat. */
+  async enqueue(task: { prompt: string; name?: string; project_id?: string; session_id?: string }): Promise<QueueItem> {
+    return (await this.request<{ item: QueueItem }>('POST', '/queue', task)).item;
+  }
+  /** Takes a waiting task out of the line, stops a running one, or hides a finished one. */
+  removeQueued(id: string) {
+    return this.request<{ ok: boolean; stopping?: boolean }>('DELETE', `/queue/${encodeURIComponent(id)}`);
+  }
+  runQueuedFirst(id: string) {
+    return this.request<{ ok: boolean }>('POST', `/queue/${encodeURIComponent(id)}/first`, {});
+  }
+  clearFinishedTasks() {
+    return this.request<{ removed: number }>('POST', '/queue/clear', {});
+  }
+  async schedules(): Promise<Schedule[]> {
+    return (await this.request<{ schedules: Schedule[] }>('GET', '/schedules')).schedules;
+  }
+  async schedule(id: string): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('GET', `/schedules/${encodeURIComponent(id)}`)).schedule;
+  }
+  async createSchedule(s: {
+    name?: string;
+    prompt: string;
+    project_id?: string;
+    repeat: Repeat;
+    same_chat?: boolean;
+    enabled?: boolean;
+  }): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('POST', '/schedules', s)).schedule;
+  }
+  async updateSchedule(
+    id: string,
+    s: Partial<{ name: string; prompt: string; project_id: string; repeat: Repeat; same_chat: boolean; enabled: boolean }>,
+  ): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('PATCH', `/schedules/${encodeURIComponent(id)}`, s)).schedule;
+  }
+  deleteSchedule(id: string) {
+    return this.request<{ ok: boolean }>('DELETE', `/schedules/${encodeURIComponent(id)}`);
+  }
+  /** Runs a scheduled task now (it goes to the queue). */
+  async runSchedule(id: string): Promise<QueueItem> {
+    return (await this.request<{ item: QueueItem }>('POST', `/schedules/${encodeURIComponent(id)}/run`, {})).item;
+  }
+
   // ----- updates -----
   updates(refresh = false) {
     return this.request<UpdateInfo>('GET', `/updates${refresh ? '?refresh=true' : ''}`, undefined, 40000);
