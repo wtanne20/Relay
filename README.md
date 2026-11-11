@@ -140,6 +140,9 @@ scheduled tasks. Everything runs on the brain, with or without the app open:
   brain's time zone. A run missed while the PC was off happens once when Relay starts again.
 - **Messages while the agent works.** Type in a chat that's still working and tap the clock button: the message
   waits and is sent as soon as the current run ends.
+- **Allow everything.** A queued or scheduled task follows **Ask before acting** like any chat, so one that needs
+  your OK waits, and the queue waits with it. Turn on **Allow everything** for a task you trust and its commands
+  and file changes run without asking.
 - **Notifications.** You get the usual "finished", "failed" and "needs your approval" notifications. On the
   GitHub-built Android app (no push service) the phone also checks in with the PC every 15 minutes or so while the
   app is closed, so tasks that started while you were away still notify.

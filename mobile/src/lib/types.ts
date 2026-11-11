@@ -567,6 +567,8 @@ export interface Schedule {
   repeat: Repeat;
   /** Every run continues one chat instead of starting a new one. */
   same_chat: boolean;
+  /** Runs don't stop to ask before acting. */
+  allow_all?: boolean;
   enabled: boolean;
   next_run: string | null;
   last_run: string | null;
@@ -586,6 +588,8 @@ export interface QueueItem {
   schedule_id: string | null;
   /** The next message of a busy chat: sent when that chat is free, not in line. */
   follow_up?: boolean;
+  /** Runs without stopping to ask before acting. */
+  allow_all?: boolean;
   name: string;
   prompt: string;
   status: QueueStatus;

@@ -10,6 +10,7 @@ import { useClient } from '../lib/connection';
 import { DAY_NAMES, EVERY_CHOICES, cleanDate, cleanTime, describeRepeat, hhmm, ymd } from '../lib/schedule';
 import { CHATS_ID, type Project, type Repeat, type Schedule } from '../lib/types';
 import { alert } from './Dialogs';
+import { ToggleRow } from './SettingsControls';
 import { Sheet } from './Sheet';
 import { m3, radius, space, type } from './theme';
 import { Banner, Button, Field, Icon, type IconName } from './ui';
@@ -73,6 +74,25 @@ function WherePicker({
   );
 }
 
+/** Lets an unattended task act without stopping to ask, so it can't hold up the queue. */
+function AllowAllToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <View style={styles.block}>
+      <ToggleRow
+        label="Allow everything"
+        icon="shield-check-outline"
+        hint={
+          value
+            ? 'Commands and file changes run without asking, even if “Ask before acting” is on. Only turn this on for prompts you trust.'
+            : 'Follows “Ask before acting”. If the agent needs your OK, the task waits and the queue waits with it.'
+        }
+        value={value}
+        onChange={onChange}
+      />
+    </View>
+  );
+}
+
 function useProjects(visible: boolean): Project[] {
   const client = useClient();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -103,12 +123,14 @@ export function QueueSheet({
   const [where, setWhere] = useState(initialProject ?? CHATS_ID);
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [allowAll, setAllowAll] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
       setWhere(initialProject ?? CHATS_ID);
+      setAllowAll(false);
       setError(null);
     }
   }, [visible, initialProject]);
@@ -118,7 +140,12 @@ export function QueueSheet({
     setSaving(true);
     setError(null);
     try {
-      await client.enqueue({ prompt: prompt.trim(), name: name.trim() || undefined, project_id: where });
+      await client.enqueue({
+        prompt: prompt.trim(),
+        name: name.trim() || undefined,
+        project_id: where,
+        allow_all: allowAll || undefined,
+      });
       setPrompt('');
       setName('');
       onAdded();
@@ -155,6 +182,7 @@ export function QueueSheet({
           autoCapitalize="sentences"
         />
         <WherePicker projects={projects} value={where} onChange={setWhere} />
+        <AllowAllToggle value={allowAll} onChange={setAllowAll} />
         {error ? <Banner message={error} /> : null}
       </ScrollView>
       <View style={styles.actions}>
@@ -199,6 +227,7 @@ export function ScheduleSheet({
   const [days, setDays] = useState<number[]>([]);
   const [minutes, setMinutes] = useState(60);
   const [sameChat, setSameChat] = useState(false);
+  const [allowAll, setAllowAll] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -211,6 +240,7 @@ export function ScheduleSheet({
     setPrompt(editing?.prompt ?? '');
     setWhere(editing?.project_id ?? CHATS_ID);
     setSameChat(editing?.same_chat ?? false);
+    setAllowAll(editing?.allow_all ?? false);
     setKind(r?.kind ?? 'daily');
     setTime(r?.kind === 'daily' ? r.time : r?.kind === 'once' ? (r.at.split('T')[1] ?? d.time).slice(0, 5) : d.time);
     setDate(r?.kind === 'once' ? r.at.split('T')[0] : d.date);
@@ -238,7 +268,7 @@ export function ScheduleSheet({
     setSaving(true);
     setError(null);
     try {
-      const body = { name: name.trim(), prompt: prompt.trim(), project_id: where, repeat: r, same_chat: sameChat };
+      const body = { name: name.trim(), prompt: prompt.trim(), project_id: where, repeat: r, same_chat: sameChat, allow_all: allowAll };
       if (editing) await client.updateSchedule(editing.id, { ...body, enabled: true });
       else await client.createSchedule(body);
       onSaved();
@@ -370,6 +400,8 @@ export function ScheduleSheet({
               : 'Each run starts fresh in a chat of its own.'}
           </Text>
         </View>
+
+        <AllowAllToggle value={allowAll} onChange={setAllowAll} />
 
         {error ? <Banner message={error} /> : null}
       </ScrollView>

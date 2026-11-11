@@ -140,6 +140,9 @@ struct RunningTask {
     cancel: CancellationToken,
     draft: Arc<Mutex<Draft>>,
     approval: Arc<Mutex<Option<ApprovalSlot>>>,
+    /// A background task the user let do anything: tool calls run without
+    /// asking first, whatever "Ask before acting" says.
+    allow_all: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -314,6 +317,31 @@ impl AgentManager {
         files: Vec<crate::files::NewFile>,
         voice: bool,
     ) -> Result<Message, StartError> {
+        self.start_run(session_id, prompt, images, files, false, voice).await
+    }
+
+    /// Starts a queued or scheduled task. With `allow_all`, its tool calls
+    /// run without stopping to ask, so an unattended task can't hold up the
+    /// queue waiting for an answer.
+    pub async fn start_task(
+        self: &Arc<Self>,
+        session_id: &str,
+        prompt: String,
+        allow_all: bool,
+    ) -> Result<Message, StartError> {
+        self.start_run(session_id, prompt, Vec::new(), Vec::new(), allow_all, false)
+            .await
+    }
+
+    async fn start_run(
+        self: &Arc<Self>,
+        session_id: &str,
+        prompt: String,
+        images: Vec<String>,
+        files: Vec<crate::files::NewFile>,
+        allow_all: bool,
+        voice: bool,
+    ) -> Result<Message, StartError> {
         if prompt.trim().is_empty() && images.is_empty() && files.is_empty() {
             return Err(StartError::Invalid("prompt is empty".into()));
         }
@@ -477,6 +505,7 @@ impl AgentManager {
                     cancel: cancel.clone(),
                     draft: draft.clone(),
                     approval: approval.clone(),
+                    allow_all,
                 },
             );
         }
@@ -760,7 +789,14 @@ impl AgentManager {
             system.push_str(BRIEF_THINKING_HINT);
         }
         let url = format!("{}/v1/chat/completions", self.model.base_url());
-        let mut approval_mode = conf.agent.approval;
+        let allow_all = lock(&self.running)
+            .get(&session.id)
+            .is_some_and(|t| t.allow_all);
+        let mut approval_mode = if allow_all {
+            ApprovalMode::Never
+        } else {
+            conf.agent.approval
+        };
         let mut ctx_tokens = u64::from(conf.llama.context_size);
         // Learned from llama-server's own counts as the task goes.
         let mut tokens_per_byte = compact::START_TOKENS_PER_BYTE;

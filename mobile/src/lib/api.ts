@@ -390,7 +390,13 @@ export class RelayClient {
     return this.request<QueueResponse>('GET', '/queue');
   }
   /** Adds a task to the queue: a new chat in a project, or the next message of a chat. */
-  async enqueue(task: { prompt: string; name?: string; project_id?: string; session_id?: string }): Promise<QueueItem> {
+  async enqueue(task: {
+    prompt: string;
+    name?: string;
+    project_id?: string;
+    session_id?: string;
+    allow_all?: boolean;
+  }): Promise<QueueItem> {
     return (await this.request<{ item: QueueItem }>('POST', '/queue', task)).item;
   }
   /** Takes a waiting task out of the line, stops a running one, or hides a finished one. */
@@ -415,13 +421,14 @@ export class RelayClient {
     project_id?: string;
     repeat: Repeat;
     same_chat?: boolean;
+    allow_all?: boolean;
     enabled?: boolean;
   }): Promise<Schedule> {
     return (await this.request<{ schedule: Schedule }>('POST', '/schedules', s)).schedule;
   }
   async updateSchedule(
     id: string,
-    s: Partial<{ name: string; prompt: string; project_id: string; repeat: Repeat; same_chat: boolean; enabled: boolean }>,
+    s: Partial<{ name: string; prompt: string; project_id: string; repeat: Repeat; same_chat: boolean; allow_all: boolean; enabled: boolean }>,
   ): Promise<Schedule> {
     return (await this.request<{ schedule: Schedule }>('PATCH', `/schedules/${encodeURIComponent(id)}`, s)).schedule;
   }

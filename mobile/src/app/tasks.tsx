@@ -154,6 +154,7 @@ export default function TasksScreen() {
                 {item.follow_up && item.session_title ? ` · ${item.session_title}` : ''}
                 {item.project_id === CHATS_ID ? '' : ` · ${item.project_name}`}
                 {item.schedule_id ? ' · scheduled' : ''}
+                {item.allow_all ? ' · allows everything' : ''}
                 {time ? ` · ${time}` : ''}
               </Text>
             </View>
@@ -200,6 +201,7 @@ export default function TasksScreen() {
             <Text style={type.bodySmall} numberOfLines={2}>
               {describeRepeat(s.repeat)}
               {s.project_id === CHATS_ID ? '' : ` · ${s.project_name}`}
+              {s.allow_all ? ' · allows everything' : ''}
             </Text>
             <Text style={type.bodySmall} numberOfLines={1}>
               {s.enabled && s.next_run ? `Next ${whenLabel(s.next_run)}` : s.enabled ? '' : 'Off'}

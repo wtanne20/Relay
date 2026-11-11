@@ -517,7 +517,7 @@ Running first, then waiting in order, then up to 100 recently finished. `QueueIt
 {
   "id": "…", "project_id": "chats", "project_name": "Chats",
   "session_id": "…", "session_title": "Morning summary",
-  "schedule_id": null, "follow_up": false,
+  "schedule_id": null, "follow_up": false, "allow_all": false,
   "name": "Morning summary", "prompt": "…",
   "status": "queued | running | done | error | stopped", "error": null,
   "created_at": "…", "started_at": null, "finished_at": null,
@@ -532,6 +532,9 @@ background tasks before it are done (one runs at a time).
 
 `{"prompt": "…", "session_id": "…"}` is a **follow-up**: the next message of that chat, sent as soon as its current
 run ends. Follow-ups don't wait for other queued work. Text only. Returns `{"item": QueueItem}`.
+
+Add `"allow_all": true` to let the task act without asking: its tool calls skip the "Ask before acting" setting,
+so an unattended task can't hold up the queue waiting for an answer. Off by default.
 
 ### `DELETE /queue/{id}`
 
@@ -554,7 +557,7 @@ Removes finished tasks from the list: `{"removed": 3}`.
   "id": "…", "project_id": "chats", "project_name": "Chats",
   "name": "Morning summary", "prompt": "…",
   "repeat": { "kind": "daily", "time": "08:00", "days": [1, 2, 3, 4, 5] },
-  "same_chat": false, "enabled": true,
+  "same_chat": false, "allow_all": false, "enabled": true,
   "next_run": "2026-11-12T07:00:00.000Z", "last_run": null,
   "last_session_id": null, "last_status": null, "created_at": "…"
 }
@@ -571,8 +574,8 @@ off happen once when it starts again.
 
 ### `POST /schedules` → `201`, `PATCH /schedules/{id}`
 
-Body: any of `name`, `prompt`, `project_id`, `repeat`, `same_chat`, `enabled` (`prompt` and `repeat` are required
-to create). Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed.
+Body: any of `name`, `prompt`, `project_id`, `repeat`, `same_chat`, `allow_all`, `enabled` (`prompt` and `repeat`
+are required to create). `allow_all: true` makes every run act without asking, as for `POST /queue`. Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed.
 
 ### `DELETE /schedules/{id}`
 
