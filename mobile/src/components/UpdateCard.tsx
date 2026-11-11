@@ -1,15 +1,18 @@
 import { ActivityIndicator, Linking, StyleSheet, Text, View } from 'react-native';
 
 import type { RelayClient } from '../lib/api';
+import { desktopOS } from '../lib/desktop';
 import { appVersion, updateKind, useUpdates } from '../lib/updates';
 import { m3, radius, space, type } from './theme';
 import { Button, Icon } from './ui';
 
-function actionLabel(version: string): string {
-  if (updateKind === 'desktop') return `Install ${version} and restart`;
+function actionLabel(version: string, canInstall: boolean): string {
+  if (updateKind === 'desktop' && canInstall) return `Install ${version} and restart`;
   if (updateKind === 'android') return `Download and install ${version}`;
-  return 'Open the release page';
+  return RELEASE_PAGE;
 }
+
+const RELEASE_PAGE = 'Open the release page';
 
 /**
  * Relay's version and updates. With `onlyWhenAvailable` it shows nothing
@@ -27,7 +30,7 @@ export function UpdateCard({ client, onlyWhenAvailable }: { client: RelayClient 
   else if (u.phase.kind === 'installing')
     status =
       updateKind === 'desktop'
-        ? 'Installing. Windows may ask for permission; Relay closes and opens again by itself.'
+        ? `Installing. ${desktopOS} may ask for permission; Relay closes and opens again by itself.`
         : 'Follow Android’s prompt to install the update.';
   else if (u.phase.kind === 'error') status = u.phase.message;
   else if (u.checking && !u.info) status = 'Checking for updates…';
@@ -57,9 +60,9 @@ export function UpdateCard({ client, onlyWhenAvailable }: { client: RelayClient 
       ) : null}
       <View style={styles.actions}>
         {u.available && latest ? (
-          <Button title={actionLabel(latest.version)} icon="download" onPress={u.install} disabled={busy} />
+          <Button title={actionLabel(latest.version, !!u.info?.can_install)} icon="download" onPress={u.install} disabled={busy} />
         ) : null}
-        {latest?.page && u.available ? (
+        {latest?.page && u.available && actionLabel(latest.version, !!u.info?.can_install) !== RELEASE_PAGE ? (
           <Button title="What's new" variant="text" onPress={() => Linking.openURL(latest.page)} />
         ) : null}
         {!onlyWhenAvailable ? (

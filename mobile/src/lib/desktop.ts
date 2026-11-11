@@ -28,6 +28,9 @@ export const desktopPlatform: 'Windows' | 'macOS' | 'Linux' | null = (() => {
   return 'Linux';
 })();
 
+/** The desktop app's operating system, for messages ("Windows may ask for permission"). */
+export const desktopOS: 'Windows' | 'macOS' | 'Linux' = desktopPlatform ?? 'Windows';
+
 export interface LocalConnection extends Credentials {
   data_dir: string;
 }

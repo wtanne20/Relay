@@ -1,5 +1,5 @@
 /** Tiny app-wide signal so views can refresh after another view changes data. */
-type Topic = 'projects' | 'chats';
+type Topic = 'projects' | 'chats' | 'share';
 const listeners = new Map<Topic, Set<() => void>>();
 
 export function emit(topic: Topic) {
