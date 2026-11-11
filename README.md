@@ -106,6 +106,15 @@ shows the exact command (or the file and the change) with **Allow**, **Deny** an
 task**, and you get a push notification ("… needs your approval"). Denied calls are reported to the model, which
 then tries another approach or asks you. Stopping the task while it waits cancels it.
 
+### Share to Relay (Android)
+
+Relay shows up in Android's share sheet. Share a link, some text, screenshots or photos, a voice note or any
+other file from another app and Relay opens **Send to Relay**: add a note or tap a quick ask (**Summarize**,
+**Explain**, **Key points**), pick a new chat (plain or in a project) or one of your recent chats, and send.
+Pictures go to the model's vision and documents as text, as with the composer's **+** button. The model can't
+listen to audio or watch video yet, so for a voice note it gets only the file's name and size. Files over 25 MB
+are left out. iPhone sharing needs a separate share extension and isn't built yet.
+
 ---
 
 ## Downloads

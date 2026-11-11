@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import { DarkTheme, Stack, ThemeProvider, router } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider, router, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -11,7 +11,9 @@ import { accent, m3, onAccentChange, space } from '../components/theme';
 import { IconButton } from '../components/ui';
 import { useWide } from '../lib/layout';
 import { ConnectionProvider, useConnection } from '../lib/connection';
+import { emit } from '../lib/events';
 import { configureNotificationHandler, refreshPushRegistration } from '../lib/push';
+import { onShare, takeShare } from '../lib/share';
 
 configureNotificationHandler();
 
@@ -48,6 +50,36 @@ function PushBridge() {
   useEffect(() => {
     if (client) refreshPushRegistration(client).catch(() => undefined);
   }, [client]);
+
+  return null;
+}
+
+/**
+ * Opens the share screen when another app shares something to Relay: on a
+ * cold start with the share, and when one arrives while Relay is open.
+ */
+function ShareBridge() {
+  const pathname = usePathname();
+  const here = useRef(pathname);
+  here.current = pathname;
+
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      const p = await takeShare();
+      if (!alive || !p) return;
+      if (here.current === '/share') emit('share');
+      else router.push('/share');
+    };
+    // Give the navigator a moment to mount on a cold start.
+    const t = setTimeout(check, 0);
+    const off = onShare(check);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      off();
+    };
+  }, []);
 
   return null;
 }
@@ -125,6 +157,7 @@ export default function RootLayout() {
         <ThemeProvider value={theme}>
           <StatusBar style="light" />
           {Platform.OS !== 'web' ? <PushBridge /> : <WebStyles />}
+          {Platform.OS === 'android' ? <ShareBridge /> : null}
           {Platform.OS === 'web' ? <DialogHost /> : null}
           <Shell key={accentId}>
             <Stack
@@ -153,6 +186,7 @@ export default function RootLayout() {
               <Stack.Screen name="devices" options={{ title: 'Computers' }} />
               <Stack.Screen name="libraries" options={{ title: 'Model libraries' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
+              <Stack.Screen name="share" options={{ title: 'Send to Relay' }} />
             </Stack>
           </Shell>
         </ThemeProvider>
