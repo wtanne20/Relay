@@ -148,6 +148,11 @@ pub struct Index {
     jobs: Mutex<HashMap<String, Job>>,
     /// When each folder was last checked for changes (this run).
     checked: Mutex<HashMap<String, Instant>>,
+    /// Held for every write, so indexing passes and removals never race
+    /// each other for SQLite's write lock.
+    writing: Mutex<()>,
+    /// Folders removed while a pass over them was running; the pass stops.
+    dropped: Mutex<HashSet<String>>,
 }
 
 const SCHEMA: &str = r#"
@@ -210,17 +215,20 @@ impl Index {
             path: path.to_path_buf(),
             jobs: Mutex::default(),
             checked: Mutex::default(),
+            writing: Mutex::default(),
+            dropped: Mutex::default(),
         });
-        index.conn()?;
+        let c = index.conn()?;
+        c.pragma_update(None, "journal_mode", "WAL")?;
+        c.execute_batch(SCHEMA)?;
         Ok(index)
     }
 
     fn conn(&self) -> Result<Connection> {
         let c = Connection::open(&self.path)
             .with_context(|| format!("opening {}", self.path.display()))?;
-        c.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL is set once when the index is created; it sticks to the file.
         c.pragma_update(None, "busy_timeout", 15_000)?;
-        c.execute_batch(SCHEMA)?;
         Ok(c)
     }
 
@@ -303,6 +311,7 @@ impl Index {
                 }
             }
             lock(&me.jobs).remove(&folder);
+            lock(&me.dropped).remove(&folder);
         });
     }
 
@@ -311,6 +320,7 @@ impl Index {
         lock(&self.jobs).insert(folder.to_string(), Job::default());
         let r = self.index_folder(folder);
         lock(&self.jobs).remove(folder);
+        lock(&self.dropped).remove(folder);
         lock(&self.checked).insert(folder.to_string(), Instant::now());
         r
     }
@@ -358,7 +368,8 @@ impl Index {
         self.set_progress(folder, 0, total);
 
         if !gone.is_empty() {
-            let tx = c.transaction()?;
+            let _w = lock(&self.writing);
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             for id in &gone {
                 tx.execute("DELETE FROM kb_chunks WHERE file_id = ?1", [id])?;
                 tx.execute("DELETE FROM kb_files WHERE id = ?1", [id])?;
@@ -370,7 +381,11 @@ impl Index {
             // Reading files is the slow part; do it outside the transaction.
             let parsed: Vec<(&Found, Vec<Chunk>)> =
                 batch.iter().map(|f| (*f, chunks_of(Path::new(&f.path), f.kind))).collect();
-            let tx = c.transaction()?;
+            let _w = lock(&self.writing);
+            if lock(&self.dropped).remove(folder) {
+                return Ok(());
+            }
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             for (f, chunks) in parsed {
                 if let Some(&(id, _, _)) = known.get(&f.path) {
                     tx.execute("DELETE FROM kb_chunks WHERE file_id = ?1", [id])?;
@@ -392,6 +407,10 @@ impl Index {
             tx.commit()?;
             self.set_progress(folder, ((n + 1) * BATCH).min(todo.len()) as u64, total);
         }
+        let _w = lock(&self.writing);
+        if lock(&self.dropped).remove(folder) {
+            return Ok(());
+        }
         c.execute(
             "INSERT INTO kb_folders (path, indexed_at, skipped, error) VALUES (?1, ?2, ?3, NULL)
              ON CONFLICT(path) DO UPDATE SET indexed_at = excluded.indexed_at,
@@ -410,7 +429,12 @@ impl Index {
     /// Drops a folder's index.
     pub fn forget(&self, folder: &str) -> Result<()> {
         let mut c = self.conn()?;
-        let tx = c.transaction()?;
+        let _w = lock(&self.writing);
+        if lock(&self.jobs).contains_key(folder) {
+            // A pass is running: it stops at its next write.
+            lock(&self.dropped).insert(folder.to_string());
+        }
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "DELETE FROM kb_chunks WHERE file_id IN (SELECT id FROM kb_files WHERE folder = ?1)",
             [folder],

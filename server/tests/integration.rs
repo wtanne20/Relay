@@ -1691,8 +1691,8 @@ async fn documents_are_indexed_searched_and_given_to_the_agent() {
 
     let (s, _) = h.req(reqwest::Method::POST, &format!("/knowledge/{id}/reindex"), None).await;
     assert_eq!(s, 200);
-    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{id}"), None).await;
-    assert_eq!(s, 204);
+    let (s, v) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{id}"), None).await;
+    assert_eq!(s, 204, "{v}");
     assert!(h.get("/knowledge/search?q=accountant").await["hits"].as_array().is_some_and(|a| a.is_empty()));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
