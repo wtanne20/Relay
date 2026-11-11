@@ -197,6 +197,14 @@ export default function AgentSettingsScreen() {
             options={APPROVAL_OPTIONS}
             onChange={(v) => set('agent', { approval: v })}
           />
+          {a.approval !== 'never' ? (
+            <NavRow
+              icon="shield-check-outline"
+              label="Always allowed"
+              value="Commands, folders and sites it doesn't ask about"
+              onPress={() => router.push('/approvals')}
+            />
+          ) : null}
           <Segmented
             label="Thinking"
             icon="head-lightbulb-outline"

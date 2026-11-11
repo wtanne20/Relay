@@ -754,6 +754,76 @@ async fn settings_skills_and_approvals() {
         .await;
     assert_eq!(st, 409);
 
+    // Always allow: saves the suggested rule, and the same command isn't
+    // asked about again.
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo always"}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    assert_eq!(req["approval"]["suggested_rule"]["kind"], "command");
+    assert_eq!(req["approval"]["suggested_rule"]["pattern"], "echo always");
+    let call_id = req["approval"]["tool_call_id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "always_allow"}),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["rule"]["pattern"], "echo always");
+    let rule_id = v["rule"]["id"].as_i64().expect("rule id");
+    ws.until_status(&["done", "error", "stopped"]).await;
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo always"}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let ev = ws.until_status(&["done", "error", "stopped"]).await;
+    assert!(
+        !ev.iter().any(|e| e["type"] == "approval_request"),
+        "a rule-covered command was asked about"
+    );
+    let rules = h.get("/approval-rules").await;
+    assert_eq!(rules["rules"][0]["uses"], 1, "{rules}");
+
+    // The activity log has every call and how it was allowed.
+    let log = h.get(&format!("/activity?session_id={sid}")).await;
+    let decisions: Vec<&str> = log["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["decision"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(decisions, ["rule", "allowed", "allowed", "denied"], "{log}");
+    assert_eq!(log["entries"][0]["detail"], "echo always");
+    assert_eq!(log["entries"][0]["rule_id"], rule_id);
+    let denied = h.get("/activity?filter=denied").await;
+    assert_eq!(denied["entries"].as_array().map(Vec::len), Some(1));
+
+    // Rules can be added by hand, checked, and removed.
+    let (st, _) = h
+        .post("/approval-rules", json!({"kind": "command", "pattern": "ls | sh"}))
+        .await;
+    assert_eq!(st, 400);
+    let (st, v) = h
+        .post("/approval-rules", json!({"kind": "web", "pattern": "https://www.Example.com/docs"}))
+        .await;
+    assert_eq!((st, v["pattern"].as_str()), (200, Some("example.com")));
+    let (st, _) = h
+        .req(reqwest::Method::DELETE, &format!("/approval-rules/{rule_id}"), None)
+        .await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("/approval-rules").await["rules"].as_array().map(Vec::len), Some(1));
+
     // Stopping while waiting for approval ends the task.
     let (st, _) = h
         .post(

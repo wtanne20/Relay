@@ -1,6 +1,7 @@
 //! Relay: a personal coding-agent server backed by llama.cpp's llama-server.
 
 pub mod agent;
+pub mod approvals;
 pub mod api;
 pub mod config;
 pub mod db;

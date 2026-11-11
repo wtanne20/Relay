@@ -200,6 +200,7 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     upgrade(&conn)?;
     crate::device::ensure_schema(&conn)?;
+    crate::approvals::ensure_schema(&conn)?;
     Ok(conn)
 }
 

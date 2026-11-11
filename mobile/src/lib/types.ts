@@ -213,9 +213,58 @@ export interface PendingApproval {
   name: string;
   arguments: string;
   requested_at: string;
+  /** What "Always allow" saves for this call, when it can be covered by a rule. */
+  suggested_rule?: RuleDraft | null;
 }
 
-export type ApprovalDecision = 'approve' | 'approve_all' | 'deny';
+export type ApprovalDecision = 'approve' | 'approve_all' | 'always_allow' | 'deny';
+
+// ----- always-allow rules and activity -----
+
+/** command: commands starting with these words; files: changes inside this folder; web: pages on this site. */
+export type RuleKind = 'command' | 'files' | 'web';
+
+export interface RuleDraft {
+  kind: RuleKind;
+  pattern: string;
+  /** null = every project. */
+  project_id?: string | null;
+  /** e.g. "Commands starting with git status". */
+  label?: string;
+}
+
+export interface ApprovalRule {
+  id: number;
+  kind: RuleKind;
+  pattern: string;
+  project_id: string | null;
+  project_name?: string | null;
+  created_at: string;
+  uses: number;
+  last_used_at: string | null;
+}
+
+/** How a tool call got to run, or didn't. */
+export type AuditDecision = 'auto' | 'rule' | 'allowed' | 'allowed_all' | 'denied' | 'stopped' | 'off';
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  project_id: string;
+  project_name: string;
+  session_id: string;
+  session_title: string;
+  tool: string;
+  /** The command, file, address or search. */
+  detail: string;
+  decision: AuditDecision;
+  rule_id: number | null;
+  is_error: boolean;
+  /** False once the chat was deleted (the entry stays). */
+  session_exists: boolean;
+}
+
+export type ActivityFilter = '' | 'commands' | 'files' | 'web' | 'asked' | 'denied';
 
 // ----- agent settings -----
 

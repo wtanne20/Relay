@@ -375,6 +375,18 @@ export default function SettingsScreen() {
           value="Instructions the agent always follows"
           onPress={() => router.push('/system-prompt')}
         />
+        <NavRow
+          icon="shield-check-outline"
+          label="Always allowed"
+          value="Commands, folders and sites the agent doesn't ask about"
+          onPress={() => router.push('/approvals')}
+        />
+        <NavRow
+          icon="history"
+          label="Activity"
+          value="Everything the agent did, and who allowed it"
+          onPress={() => router.push('/activity')}
+        />
       </Group>
 
       <SectionTitle title="Projects" />

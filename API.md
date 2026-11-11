@@ -22,6 +22,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
+- [Always-allow rules and activity](#always-allow-rules-and-activity): `GET/POST /approval-rules`, `DELETE /approval-rules/{id}`, `GET/DELETE /activity`
 - [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
 - [WebSocket](#websocket-get-sessionsidws): `GET /sessions/{id}/ws` and every event type
@@ -403,9 +404,67 @@ Answers the tool call the agent is waiting on (see `approval_request` below).
 { "tool_call_id": "call_3", "decision": "approve", "note": null }
 ```
 
-`decision` is `approve`, `approve_all` (this call and every later one in the current task) or `deny`. With
-`deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if nothing is
-waiting or the id doesn't match.
+`decision` is `approve`, `approve_all` (this call and every later one in the current task), `always_allow` or
+`deny`. With `deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if
+nothing is waiting or the id doesn't match.
+
+`always_allow` approves the call and saves an always-allow rule (see below) so calls like it aren't asked about
+again. The rule is the request's `suggested_rule` unless the body carries its own `rule`. The saved rule comes
+back as `"rule"`.
+
+## Always-allow rules and activity
+
+A rule skips the question for tool calls it covers. Rules never run a tool that is turned off, and only matter
+when `agent.approval` asks about something.
+
+| `kind` | Covers | `pattern` |
+| --- | --- | --- |
+| `command` | `run_command` | Words the command starts with: `git status` covers `git status -s`, not `git statusx` or `git push`. A command with `; & \| $ \` < > ( ) { }` or a line break is never covered. |
+| `files` | `write_file`, `edit_file` | A folder in the project (`src`, or `.` for all of it). Always tied to one project. Paths with `..` are never covered. |
+| `web` | `fetch_url` | A site: `docs.rs` covers `docs.rs` and its subdomains. |
+
+`project_id` is the project the rule applies to, or `null` for every project.
+
+### `GET /approval-rules`
+
+`{"rules": [{"id": 3, "kind": "command", "pattern": "git status", "project_id": "…", "project_name": "app", "created_at": "…", "uses": 12, "last_used_at": "…"}]}`
+
+### `POST /approval-rules`
+
+Body `{"kind": "web", "pattern": "https://www.docs.rs/serde", "project_id": null}`. Returns the saved rule
+(the pattern is tidied, here to `docs.rs`). Saving the same rule twice returns the existing one. `400` for a
+pattern that can't be a rule.
+
+### `DELETE /approval-rules/{id}`
+
+`{"ok": true}`, or `404`.
+
+### `GET /activity`
+
+Every tool call the agent made, newest first, and how it got to run. Entries stay when a chat is deleted.
+Query: `before` (an entry id, for the next page), `limit` (default 50, at most 200), `project_id`, `session_id`,
+and `filter`: `commands`, `files` (writes and edits), `web`, `asked` (you answered) or `denied`.
+
+```json
+{
+  "entries": [
+    {
+      "id": 812, "at": "…", "project_id": "…", "project_name": "app", "session_id": "…", "session_title": "Fix build",
+      "tool": "run_command", "detail": "git status -s", "decision": "rule", "rule_id": 3, "is_error": false,
+      "session_exists": true
+    }
+  ],
+  "has_more": true
+}
+```
+
+`detail` is the command, path, address or search, never file contents. `decision` is `auto` (nothing asked),
+`rule`, `allowed`, `allowed_all`, `denied`, `stopped` or `off` (the tool is turned off). The newest 20,000
+entries are kept.
+
+### `DELETE /activity`
+
+Clears the log: `{"removed": 812}`.
 
 ## Linked computers
 
@@ -630,9 +689,14 @@ The agent is waiting for permission to run a tool call. Answer with `POST /sessi
 ```json
 {
   "type": "approval_request",
-  "approval": { "tool_call_id": "call_3", "name": "run_command", "arguments": "{\"command\":\"npm test\"}", "requested_at": "…" }
+  "approval": {
+    "tool_call_id": "call_3", "name": "run_command", "arguments": "{\"command\":\"npm test\"}", "requested_at": "…",
+    "suggested_rule": { "kind": "command", "pattern": "npm test", "project_id": "…", "label": "Commands starting with npm test" }
+  }
 }
 ```
+
+`suggested_rule` is what `always_allow` saves, or `null` when the call can't be covered by a rule.
 
 #### `approval_resolved`
 

@@ -310,6 +310,14 @@ export default function ChatScreen() {
           ) : null}
         </View>
         {stream.status !== 'idle' ? <StatusBadge status={stream.status} /> : null}
+        {plain ? null : (
+          <IconButton
+            icon="history"
+            label="What the agent did in this chat"
+            color={m3.onSurfaceVariant}
+            onPress={() => router.push({ pathname: '/activity', params: { session: id, title } })}
+          />
+        )}
         <View style={{ width: space.sm }} />
       </View>
 

@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::approvals;
 use crate::agent::{AgentManager, ApprovalError, Decision, StartError};
 use crate::config::{
     CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, UpdateError, constant_time_eq,
@@ -238,6 +239,9 @@ pub fn router(state: AppState) -> Router {
         .route("/updates/install", post(install_update))
         .route("/sessions/{id}/stop", post(stop_task))
         .route("/sessions/{id}/approval", post(answer_approval))
+        .route("/approval-rules", get(list_rules).post(add_rule))
+        .route("/approval-rules/{id}", axum::routing::delete(delete_rule))
+        .route("/activity", get(list_activity).delete(clear_activity))
         .route("/sessions/{id}/ws", get(ws_upgrade))
         .route(
             "/push-tokens",
@@ -2088,6 +2092,9 @@ struct ApprovalAnswer {
     decision: Decision,
     /// Optional reason passed to the model when denying.
     note: Option<String>,
+    /// With "always_allow": the rule to save. Left out, the suggested one.
+    #[serde(default)]
+    rule: Option<approvals::RuleDraft>,
 }
 
 async fn answer_approval(
@@ -2096,9 +2103,68 @@ async fn answer_approval(
     JsonBody(body): JsonBody<ApprovalAnswer>,
 ) -> ApiResult<Json<Value>> {
     let note = body.note.map(|n| n.chars().take(2000).collect::<String>());
+    let mut saved = None;
+    if body.decision == Decision::AlwaysAllow {
+        let pending = s
+            .agent
+            .pending_approval(&id)
+            .ok_or(ApprovalError::NothingPending)?;
+        if pending.tool_call_id != body.tool_call_id {
+            return Err(ApprovalError::WrongCall.into());
+        }
+        // Saved before the answer goes through, so the agent's next calls
+        // in this turn already see it.
+        if let Some(draft) = body.rule.or(pending.suggested_rule) {
+            let draft = approvals::clean(&draft).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            saved = Some(s.db.call(move |c| approvals::add_rule(c, &draft)).await?);
+        }
+    }
     s.agent
         .resolve_approval(&id, &body.tool_call_id, body.decision, note)?;
+    Ok(Json(json!({ "ok": true, "rule": saved })))
+}
+
+// ---------- approval rules and activity ----------
+
+async fn list_rules(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let rules = s.db.call(|c| approvals::list_rules(c)).await?;
+    Ok(Json(json!({ "rules": rules })))
+}
+
+async fn add_rule(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<approvals::RuleDraft>,
+) -> ApiResult<Json<approvals::Rule>> {
+    let draft = approvals::clean(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if let Some(pid) = draft.project_id.clone()
+        && s.db.call(move |c| db::get_project(c, &pid)).await?.is_none()
+    {
+        return Err(ApiError::NotFound("project"));
+    }
+    Ok(Json(s.db.call(move |c| approvals::add_rule(c, &draft)).await?))
+}
+
+async fn delete_rule(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<i64>,
+) -> ApiResult<Json<Value>> {
+    if !s.db.call(move |c| approvals::delete_rule(c, id)).await? {
+        return Err(ApiError::NotFound("rule"));
+    }
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_activity(
+    State(s): State<AppState>,
+    Query(q): Query<approvals::AuditQuery>,
+) -> ApiResult<Json<Value>> {
+    let (entries, has_more) = s.db.call(move |c| approvals::list_audit(c, &q)).await?;
+    Ok(Json(json!({ "entries": entries, "has_more": has_more })))
+}
+
+async fn clear_activity(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let removed = s.db.call(|c| approvals::clear_audit(c)).await?;
+    Ok(Json(json!({ "removed": removed })))
 }
 
 async fn ws_upgrade(

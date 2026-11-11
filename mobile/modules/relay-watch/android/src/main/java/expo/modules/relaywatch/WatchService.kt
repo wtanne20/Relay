@@ -14,8 +14,10 @@ import android.os.HandlerThread
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -28,8 +30,10 @@ import java.util.concurrent.TimeUnit
  * ongoing "working" notification. It asks Relay on the PC (over Tailscale,
  * with the app's token) which chats are running, and shows a notification
  * when one finishes, fails, is stopped or needs approval. Only the project
- * name, chat title and status are shown. It stops itself once nothing is
- * running.
+ * name, chat title and status are shown on the lock screen. An approval
+ * notification also shows what the agent wants to do once the phone is
+ * unlocked, with Allow and Deny buttons that answer it right there. It stops
+ * itself once nothing is running.
  */
 class WatchService : Service() {
   companion object {
@@ -37,6 +41,9 @@ class WatchService : Service() {
     const val EXTRA_TOKEN = "token"
     const val EXTRA_SCHEME = "scheme"
     const val EXTRA_SESSION = "session"
+    const val ACTION_DECIDE = "expo.modules.relaywatch.DECIDE"
+    const val EXTRA_CALL = "call"
+    const val EXTRA_DECISION = "decision"
     private const val CHANNEL_WORKING = "relay_working"
     private const val CHANNEL_EVENTS = "tasks"
     private const val ONGOING_ID = 7301
@@ -64,6 +71,8 @@ class WatchService : Service() {
   private val chats = HashMap<String, Chat>()
   private val sockets = HashMap<String, WebSocket>()
   private val approvals = HashSet<String>()
+  /** Approval notifications still showing: tool call id -> notification id. */
+  private val asking = HashMap<String, Int>()
   private var idlePolls = 0
   private var lastReached = System.currentTimeMillis()
   private var nextNotificationId = 7400
@@ -84,6 +93,13 @@ class WatchService : Service() {
       ServiceCompat.startForeground(this, ONGOING_ID, ongoing("Watching your chats"), type)
     } catch (e: Exception) {
       stopSelf()
+      return START_NOT_STICKY
+    }
+    if (intent?.action == ACTION_DECIDE) {
+      val session = intent.getStringExtra(EXTRA_SESSION) ?: ""
+      val call = intent.getStringExtra(EXTRA_CALL) ?: ""
+      val decision = intent.getStringExtra(EXTRA_DECISION) ?: ""
+      handler?.post { decide(session, call, decision) }
       return START_NOT_STICKY
     }
     val url = intent?.getStringExtra(EXTRA_URL)
@@ -189,9 +205,16 @@ class WatchService : Service() {
     sockets[id] = http.newWebSocket(req, object : WebSocketListener() {
       override fun onMessage(webSocket: WebSocket, text: String) {
         val ev = try { JSONObject(text) } catch (e: Exception) { return }
-        val call = when (ev.optString("type")) {
-          "approval_request" -> ev.optJSONObject("approval")?.optString("tool_call_id")
-          "hello" -> ev.optJSONObject("pending_approval")?.optString("tool_call_id")
+        val approval = when (ev.optString("type")) {
+          "approval_request" -> ev.optJSONObject("approval")
+          "hello" -> ev.optJSONObject("pending_approval")
+          "approval_resolved" -> {
+            // Answered somewhere else (the app, the PC): take the question away.
+            val done = ev.optString("tool_call_id")
+            val nid = synchronized(lock) { asking.remove(done) }
+            if (nid != null) manager().cancel(nid)
+            null
+          }
           "status" -> {
             val st = ev.optString("status")
             if (st != "running" && st.isNotEmpty()) {
@@ -209,12 +232,13 @@ class WatchService : Service() {
           }
           else -> null
         }
+        val call = approval?.optString("tool_call_id")
         if (call.isNullOrEmpty()) return
         var c: Chat? = null
         synchronized(lock) {
           if (approvals.add(call)) c = chats[id]
         }
-        c?.let { tell(id, it, "approval") }
+        c?.let { tell(id, it, "approval", approval) }
       }
 
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -231,7 +255,7 @@ class WatchService : Service() {
     })
   }
 
-  private fun tell(id: String, c: Chat, status: String) {
+  private fun tell(id: String, c: Chat, status: String, approval: JSONObject? = null) {
     if (viewing == id) return
     val label = when (status) {
       "done" -> "finished"
@@ -243,20 +267,115 @@ class WatchService : Service() {
     val open = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://session/${Uri.encode(id)}"))
       .setPackage(packageName)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    val n = NotificationCompat.Builder(this, CHANNEL_EVENTS)
+    val project = c.project.ifBlank { "Relay" }
+    val summary = "${c.title.ifBlank { "A chat" }} $label"
+    val nid = synchronized(lock) { nextNotificationId++ }
+    val b = NotificationCompat.Builder(this, CHANNEL_EVENTS)
       .setSmallIcon(icon())
-      .setContentTitle(c.project.ifBlank { "Relay" })
-      .setContentText("${c.title.ifBlank { "A chat" }} $label")
+      .setContentTitle(project)
+      .setContentText(summary)
       .setPriority(NotificationCompat.PRIORITY_HIGH)
       .setAutoCancel(true)
       .setContentIntent(PendingIntent.getActivity(this, id.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-      .build()
-    val nid = synchronized(lock) { nextNotificationId++ }
+    val call = approval?.optString("tool_call_id").orEmpty()
+    if (status == "approval" && call.isNotEmpty()) {
+      val (question, gist) = describe(approval!!)
+      b.setContentText(question)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(if (gist.isEmpty()) question else "$question\n$gist"))
+        .setSubText(c.title.ifBlank { null })
+        .setCategory(NotificationCompat.CATEGORY_REMINDER)
+        // The lock screen shows only the chat; what it wants to do shows
+        // once the phone is unlocked.
+        .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        .setPublicVersion(
+          NotificationCompat.Builder(this, CHANNEL_EVENTS)
+            .setSmallIcon(icon())
+            .setContentTitle(project)
+            .setContentText(summary)
+            .build(),
+        )
+        .addAction(0, "Deny", decideIntent(id, call, "deny", nid))
+        .addAction(0, "Allow", decideIntent(id, call, "approve", nid))
+      synchronized(lock) { asking[call] = nid }
+    }
     try {
-      manager().notify(nid, n)
+      manager().notify(nid, b.build())
     } catch (e: SecurityException) {
       // Notifications are turned off for Relay.
     }
+  }
+
+  /** The question and its gist (the command, file or address) for a call. */
+  private fun describe(approval: JSONObject): Pair<String, String> {
+    val args = try { JSONObject(approval.optString("arguments")) } catch (e: Exception) { JSONObject() }
+    return when (approval.optString("name")) {
+      "run_command" -> "Run a command?" to args.optString("command")
+      "write_file" -> "Write a file?" to args.optString("path")
+      "edit_file" -> "Edit a file?" to args.optString("path")
+      "fetch_url" -> "Open a web page?" to args.optString("url")
+      else -> "Allow ${approval.optString("name")}?" to ""
+    }.let { (q, g) -> q to g.take(300) }
+  }
+
+  private fun decideIntent(session: String, call: String, decision: String, nid: Int): PendingIntent {
+    val i = Intent(this, WatchService::class.java)
+      .setAction(ACTION_DECIDE)
+      .putExtra(EXTRA_SESSION, session)
+      .putExtra(EXTRA_CALL, call)
+      .putExtra(EXTRA_DECISION, decision)
+    val code = nid * 2 + if (decision == "approve") 1 else 0
+    val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    return if (Build.VERSION.SDK_INT >= 26) {
+      PendingIntent.getForegroundService(this, code, i, flags)
+    } else {
+      PendingIntent.getService(this, code, i, flags)
+    }
+  }
+
+  /** Answers an approval from its notification's buttons. */
+  private fun decide(session: String, call: String, decision: String) {
+    val (url, tok) = synchronized(lock) { baseUrl to token }
+    val nid = synchronized(lock) { asking.remove(call) }
+    val result = if (url.isEmpty() || session.isEmpty() || call.isEmpty()) {
+      "Open Relay to answer"
+    } else {
+      val body = JSONObject().put("tool_call_id", call).put("decision", decision).toString()
+      val req = Request.Builder()
+        .url("$url/sessions/${Uri.encode(session)}/approval")
+        .header("Authorization", "Bearer $tok")
+        .post(body.toRequestBody("application/json".toMediaType()))
+        .build()
+      try {
+        http.newCall(req).execute().use { res ->
+          when {
+            res.isSuccessful -> if (decision == "approve") "Allowed" else "Denied"
+            res.code == 409 -> "Already answered"
+            else -> "Couldn't answer (${res.code}). Open Relay to try again"
+          }
+        }
+      } catch (e: Exception) {
+        "Can't reach your PC. Open Relay to try again"
+      }
+    }
+    if (nid == null) {
+      // The service restarted and lost track of the notification; nothing to update.
+      if (baseUrl.isEmpty()) stopSelf()
+      return
+    }
+    val done = NotificationCompat.Builder(this, CHANNEL_EVENTS)
+      .setSmallIcon(icon())
+      .setContentTitle("Relay")
+      .setContentText(result)
+      .setSilent(true)
+      .setAutoCancel(true)
+      .setTimeoutAfter(4000)
+      .build()
+    try {
+      manager().notify(nid, done)
+    } catch (e: SecurityException) {
+      // Notifications are turned off for Relay.
+    }
+    if (baseUrl.isEmpty()) stopSelf()
   }
 
   private fun ongoing(text: String): Notification {

@@ -17,6 +17,41 @@ export function configureNotificationHandler() {
       shouldSetBadge: false,
     }),
   });
+  if (Platform.OS === 'web') return;
+  // Allow and Deny buttons on "needs your approval" notifications; the
+  // server tags those with this category. Answered without opening the app.
+  Notifications.setNotificationCategoryAsync(APPROVAL_CATEGORY, [
+    { identifier: DENY_ACTION, buttonTitle: 'Deny', options: { opensAppToForeground: false, isDestructive: true } },
+    { identifier: APPROVE_ACTION, buttonTitle: 'Allow', options: { opensAppToForeground: false } },
+  ]).catch(() => undefined);
+}
+
+export const APPROVAL_CATEGORY = 'approval';
+export const APPROVE_ACTION = 'approve';
+export const DENY_ACTION = 'deny';
+
+/**
+ * Answers an approval from a notification's Allow or Deny button. Returns
+ * false when the response isn't one of those buttons.
+ */
+export async function answerFromNotification(
+  client: RelayClient,
+  response: Notifications.NotificationResponse,
+): Promise<boolean> {
+  const action = response.actionIdentifier;
+  if (action !== APPROVE_ACTION && action !== DENY_ACTION) return false;
+  const data = response.notification.request.content.data as
+    | { session_id?: unknown; tool_call_id?: unknown }
+    | undefined;
+  if (typeof data?.session_id !== 'string' || typeof data?.tool_call_id !== 'string') return false;
+  try {
+    await client.answerApproval(data.session_id, data.tool_call_id, action === APPROVE_ACTION ? 'approve' : 'deny');
+  } catch {
+    // Already answered somewhere else, or the PC is out of reach: the chat
+    // still shows the question when opened.
+  }
+  Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+  return true;
 }
 
 /**
