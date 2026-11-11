@@ -26,9 +26,9 @@ import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
 import { enterToSend, useWide } from '../lib/layout';
+import { loadLastTarget, saveLastTarget } from '../lib/storage';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
 
-const LAST_TARGET = 'relay.lastTarget';
 const CHATS_SHOWN = 12;
 
 function greeting(): string {
@@ -37,22 +37,6 @@ function greeting(): string {
   if (h < 12) return 'Good morning';
   if (h < 18) return 'Good afternoon';
   return 'Good evening';
-}
-
-function remembered(): string {
-  try {
-    return globalThis.localStorage?.getItem(LAST_TARGET) ?? CHATS_ID;
-  } catch {
-    return CHATS_ID;
-  }
-}
-
-function remember(id: string) {
-  try {
-    globalThis.localStorage?.setItem(LAST_TARGET, id);
-  } catch {
-    // Not important: plain chat is picked next time.
-  }
 }
 
 /**
@@ -72,7 +56,11 @@ export default function Home() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pics = useAttachments();
-  const [target, setTarget] = useState<string>(remembered());
+  const [target, setTarget] = useState<string>(CHATS_ID);
+  /** Projects as last loaded, so a remembered pick can be checked against them. */
+  const known = useRef<Project[] | null>(null);
+  /** True once the user picks here, so a late restore doesn't override them. */
+  const chosen = useRef(false);
   const [picking, setPicking] = useState(false);
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState('');
@@ -91,6 +79,7 @@ export default function Home() {
         client.sessions(CHATS_ID),
         client.model().catch(() => null),
       ]);
+      known.current = ps;
       setProjects(ps);
       setChats(cs);
       setLoaded(m?.default_model || m?.model_path || null);
@@ -106,6 +95,19 @@ export default function Home() {
       load();
     }, [load]),
   );
+  // Pick the project from last time. Until the projects arrive it's taken on
+  // trust; load() falls back to a plain chat if that project is gone.
+  useEffect(() => {
+    let live = true;
+    loadLastTarget().then((id) => {
+      if (!live || !id || chosen.current) return;
+      const ps = known.current;
+      if (id === CHATS_ID || !ps || ps.some((p) => p.id === id)) setTarget(id);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   useEffect(() => {
     const a = on('projects', load);
     const b = on('chats', load);
@@ -170,8 +172,9 @@ export default function Home() {
   };
 
   const choose = (id: string) => {
+    chosen.current = true;
     setTarget(id);
-    remember(id);
+    saveLastTarget(id);
     setPicking(false);
     input.current?.focus();
   };
@@ -359,7 +362,18 @@ export default function Home() {
               >
                 <Icon
                   name={project ? 'folder-outline' : 'chat-outline'}
-                  size={20}
+                  size={18}
+                  color={picking ? m3.onSecondaryContainer : m3.onSurfaceVariant}
+                />
+                <Text
+                  style={[type.labelLarge, styles.targetLabel, picking && { color: m3.onSecondaryContainer }]}
+                  numberOfLines={1}
+                >
+                  {project ? project.name : 'Chat'}
+                </Text>
+                <Icon
+                  name={picking ? 'chevron-up' : 'chevron-down'}
+                  size={16}
                   color={picking ? m3.onSecondaryContainer : m3.onSurfaceVariant}
                 />
               </Pressable>
@@ -741,14 +755,18 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm, marginTop: space.sm },
   topRow: { flexDirection: 'row', alignItems: 'center' },
   target: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+    height: 36,
+    flexShrink: 1,
+    paddingLeft: space.md,
+    paddingRight: space.sm,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: m3.outlineVariant,
   },
+  targetLabel: { flexShrink: 1, color: m3.onSurfaceVariant },
   targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
   modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 },
   hover: { backgroundColor: m3.hover },
@@ -791,7 +809,7 @@ const styles = StyleSheet.create({
   sendOff: { backgroundColor: m3.surfaceContainerHighest },
   menu: {
     position: 'absolute',
-    top: space.md + 44,
+    top: space.md + 40,
     left: space.md,
     width: 340,
     maxWidth: '92%',
