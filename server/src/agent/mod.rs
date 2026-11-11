@@ -170,6 +170,8 @@ pub struct AgentManager {
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     running: Mutex<HashMap<String, RunningTask>>,
+    /// Signalled whenever a task ends (the task queue starts the next one).
+    pub finished: tokio::sync::Notify,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -206,6 +208,7 @@ impl AgentManager {
             links,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            finished: tokio::sync::Notify::new(),
         })
     }
 
@@ -541,6 +544,7 @@ impl AgentManager {
             tracing::error!("failed to store final status: {e:#}");
         }
         lock(&self.running).remove(&session.id);
+        self.finished.notify_one();
         if let Some(e) = &error {
             self.emit(&session.id, Event::Error { message: e.clone() });
         }

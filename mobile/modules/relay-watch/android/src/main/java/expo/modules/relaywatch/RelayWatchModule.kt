@@ -30,6 +30,28 @@ class RelayWatchModule : Module() {
       }
     }
 
+    // Checks in with the PC now and then, with the app closed, for tasks
+    // that finished or need approval (scheduled and queued work).
+    Function("startChecking") { baseUrl: String, token: String, scheme: String ->
+      val ctx = appContext.reactContext ?: return@Function false
+      try {
+        NoticeWorker.schedule(ctx.applicationContext, baseUrl, token, scheme)
+        true
+      } catch (e: Exception) {
+        false
+      }
+    }
+
+    Function("stopChecking") {
+      val ctx = appContext.reactContext ?: return@Function null
+      try {
+        NoticeWorker.cancel(ctx.applicationContext)
+      } catch (e: Exception) {
+        // Not scheduled.
+      }
+      null
+    }
+
     Function("stop") {
       val ctx = appContext.reactContext ?: return@Function null
       ctx.stopService(Intent(ctx, WatchService::class.java))

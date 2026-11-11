@@ -17,6 +17,9 @@ type RelayWatch = {
   start(url: string, token: string, scheme: string, sessionId: string | null): boolean;
   stop(): void;
   setViewing(sessionId: string | null): void;
+  /** Missing on builds from before background tasks. */
+  startChecking?(url: string, token: string, scheme: string): boolean;
+  stopChecking?(): void;
 };
 
 const native = Platform.OS === 'android' ? requireOptionalNativeModule<RelayWatch>('RelayWatch') : null;
@@ -34,7 +37,33 @@ let enabled: boolean | null = null;
 
 export function setWatchEnabled(on: boolean) {
   enabled = on;
-  if (!on) native?.stop();
+  if (!on) {
+    native?.stop();
+    try {
+      native?.stopChecking?.();
+    } catch {
+      // Not available on this build.
+    }
+  }
+}
+
+/**
+ * Has the phone check in with the PC every 15 minutes or so, even with the
+ * app closed, so scheduled and queued tasks that finish (or need approval)
+ * while nobody watches still notify. Call while the app is open.
+ */
+export async function checkInBackground(client: RelayClient): Promise<void> {
+  if (!native?.startChecking || !watchAvailable) return;
+  try {
+    if (enabled === null) enabled = (await loadPushPrefs()).enabled;
+    if (!enabled) return;
+    const perm = await Notifications.getPermissionsAsync();
+    if (!perm.granted) return;
+    const scheme = typeof Constants.expoConfig?.scheme === 'string' ? Constants.expoConfig.scheme : 'relay';
+    native.startChecking(client.creds.url, client.creds.token, scheme);
+  } catch {
+    // Notifications are a nice-to-have.
+  }
 }
 
 /** Starts watching (no-op if already watching); call while the app is open. */

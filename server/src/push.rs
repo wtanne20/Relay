@@ -36,6 +36,23 @@ impl Pusher {
     /// Fire-and-forget notification for a finished task or a pending
     /// approval.
     pub fn notify(&self, project: &Project, session_id: &str, session_title: &str, status: &str) {
+        // Kept on the PC for phones that check in instead of getting pushes.
+        let (db, pid, pname, sid, title, st) = (
+            self.db.clone(),
+            project.id.clone(),
+            project.name.clone(),
+            session_id.to_string(),
+            session_title.to_string(),
+            status.to_string(),
+        );
+        tokio::spawn(async move {
+            let saved = db
+                .call(move |c| crate::tasks::add_notice(c, &st, &pid, &pname, &sid, &title))
+                .await;
+            if let Err(e) = saved {
+                tracing::warn!("could not save notice: {e:#}");
+            }
+        });
         if !self.enabled() {
             return;
         }

@@ -38,7 +38,6 @@ class WatchService : Service() {
     const val EXTRA_SCHEME = "scheme"
     const val EXTRA_SESSION = "session"
     private const val CHANNEL_WORKING = "relay_working"
-    private const val CHANNEL_EVENTS = "tasks"
     private const val ONGOING_ID = 7301
     private const val POLL_MS = 4000L
     /** Give up after this long without reaching the PC. */
@@ -66,7 +65,6 @@ class WatchService : Service() {
   private val approvals = HashSet<String>()
   private var idlePolls = 0
   private var lastReached = System.currentTimeMillis()
-  private var nextNotificationId = 7400
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -232,31 +230,7 @@ class WatchService : Service() {
   }
 
   private fun tell(id: String, c: Chat, status: String) {
-    if (viewing == id) return
-    val label = when (status) {
-      "done" -> "finished"
-      "error" -> "failed"
-      "stopped" -> "was stopped"
-      "approval" -> "needs your approval"
-      else -> status
-    }
-    val open = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://session/${Uri.encode(id)}"))
-      .setPackage(packageName)
-      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    val n = NotificationCompat.Builder(this, CHANNEL_EVENTS)
-      .setSmallIcon(icon())
-      .setContentTitle(c.project.ifBlank { "Relay" })
-      .setContentText("${c.title.ifBlank { "A chat" }} $label")
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
-      .setAutoCancel(true)
-      .setContentIntent(PendingIntent.getActivity(this, id.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-      .build()
-    val nid = synchronized(lock) { nextNotificationId++ }
-    try {
-      manager().notify(nid, n)
-    } catch (e: SecurityException) {
-      // Notifications are turned off for Relay.
-    }
+    Notifier.tell(this, scheme, id, c.project, c.title, status)
   }
 
   private fun ongoing(text: String): Notification {
@@ -292,10 +266,6 @@ class WatchService : Service() {
         },
       )
     }
-    if (m.getNotificationChannel(CHANNEL_EVENTS) == null) {
-      m.createNotificationChannel(
-        NotificationChannel(CHANNEL_EVENTS, "Task updates", NotificationManager.IMPORTANCE_HIGH),
-      )
-    }
+    Notifier.ensureChannel(this)
   }
 }

@@ -1587,3 +1587,160 @@ async fn linked_device_pairs_with_a_code_and_hosts_a_project() {
     assert!(tokio_tungstenite::connect_async(req).await.is_err());
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+impl Harness {
+    async fn wait_queue_idle(&self) -> Value {
+        for _ in 0..200 {
+            let q = self.get("/queue").await;
+            if q["queued"] == 0 && q["running"] == 0 {
+                return q;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("queue never emptied: {}", self.get("/queue").await);
+    }
+}
+
+#[tokio::test]
+async fn queued_and_scheduled_tasks_run_in_the_background() {
+    let h = Harness::start().await;
+    let notices = h.get("/notices").await;
+    let start = notices["last_id"].as_i64().expect("last_id");
+    assert_eq!(notices["notices"].as_array().map(Vec::len), Some(0));
+
+    // Validation.
+    let (s, v) = h.post("/queue", json!({"prompt": "   "})).await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h.post("/queue", json!({"prompt": "hi", "project_id": "nope"})).await;
+    assert_eq!(s, 404, "{v}");
+
+    // Two tasks in the plain chats space: both run, one after another, each in its own chat.
+    let (s, a) = h.post("/queue", json!({"prompt": "first task", "name": "First"})).await;
+    assert_eq!(s, 201, "{a}");
+    let (s, b) = h.post("/queue", json!({"prompt": "second task\nwith details"})).await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["item"]["name"], "second task");
+    let q = h.get("/queue").await;
+    assert!(q["running"].as_i64().unwrap_or(0) <= 1, "{q}");
+    let q = h.wait_queue_idle().await;
+    let items = q["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "{q}");
+    assert!(items.iter().all(|i| i["status"] == "done"), "{q}");
+    let first_chat = items
+        .iter()
+        .find(|i| i["name"] == "First")
+        .and_then(|i| i["session_id"].as_str())
+        .expect("chat")
+        .to_string();
+    let session = h.get(&format!("/sessions/{first_chat}")).await;
+    assert_eq!(session["session"]["title"], "First");
+    assert_eq!(session["session"]["status"], "done");
+
+    // A follow-up for an existing chat runs in that chat.
+    let (s, v) = h.post("/queue", json!({"prompt": "and another thing", "session_id": first_chat})).await;
+    assert_eq!(s, 201, "{v}");
+    h.wait_queue_idle().await;
+    let msgs = h.get(&format!("/sessions/{first_chat}/messages")).await;
+    let users = msgs["messages"]
+        .as_array()
+        .expect("arr")
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .count();
+    assert_eq!(users, 2);
+
+    // Finished tasks were logged for phones that check in.
+    let n = h.get(&format!("/notices?after={start}")).await;
+    let done: Vec<&Value> = n["notices"].as_array().expect("arr").iter().filter(|x| x["status"] == "done").collect();
+    assert!(done.len() >= 3, "{n}");
+    assert!(done.iter().any(|x| x["title"] == "First"), "{n}");
+
+    // Schedules.
+    let (s, v) = h
+        .post("/schedules", json!({"prompt": "summary", "repeat": {"kind": "daily", "time": "99:00"}}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h
+        .post("/schedules", json!({"prompt": "summary", "repeat": {"kind": "once", "at": "2001-01-01T08:00"}}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h
+        .post(
+            "/schedules",
+            json!({"name": "Morning summary", "prompt": "summarize things", "same_chat": true,
+                   "repeat": {"kind": "daily", "time": "07:30", "days": [1, 2, 3, 4, 5]}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let sched = v["schedule"].clone();
+    let id = sched["id"].as_str().expect("id").to_string();
+    assert!(sched["next_run"].is_string(), "{sched}");
+    assert_eq!(sched["project_name"], "Chats");
+
+    // Run now, twice: with "same chat" both runs land in one chat.
+    for _ in 0..2 {
+        let (s, v) = h.post(&format!("/schedules/{id}/run"), json!({})).await;
+        assert_eq!(s, 201, "{v}");
+        h.wait_queue_idle().await;
+    }
+    let sched = h.get(&format!("/schedules/{id}")).await["schedule"].clone();
+    assert_eq!(sched["last_status"], "done", "{sched}");
+    let chat = sched["last_session_id"].as_str().expect("chat").to_string();
+    let msgs = h.get(&format!("/sessions/{chat}/messages")).await;
+    let users = msgs["messages"].as_array().expect("arr").iter().filter(|m| m["role"] == "user").count();
+    assert_eq!(users, 2);
+
+    // Turning it off clears the next run; deleting removes it.
+    let (s, v) = h
+        .req(reqwest::Method::PATCH, &format!("/schedules/{id}"), Some(json!({"enabled": false})))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["schedule"]["next_run"].is_null(), "{v}");
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/schedules/{id}"), None).await;
+    assert_eq!(s, 200);
+    assert_eq!(h.get("/schedules").await["schedules"].as_array().map(Vec::len), Some(0));
+
+    // A message for a chat that's still working waits for it, without
+    // holding up other queued work.
+    let (_, v) = h.post("/projects/chats/sessions", json!({"title": "Busy"})).await;
+    let busy = v["session"]["id"].as_str().expect("id").to_string();
+    let (s, _) = h.post(&format!("/sessions/{busy}/prompt"), json!({"content": "slow story"})).await;
+    assert_eq!(s, 202);
+    let (s, v) = h.post(&format!("/sessions/{busy}/prompt"), json!({"content": "too soon"})).await;
+    assert_eq!(s, 409, "{v}");
+    let (s, follow) = h.post("/queue", json!({"prompt": "then this", "session_id": busy})).await;
+    assert_eq!(s, 201, "{follow}");
+    assert_eq!(follow["item"]["follow_up"], true);
+    let (s, _) = h.post("/queue", json!({"prompt": "unrelated job"})).await;
+    assert_eq!(s, 201);
+    let mut unrelated_done = false;
+    for _ in 0..100 {
+        let q = h.get("/queue").await;
+        let items = q["items"].as_array().expect("items");
+        let f = items.iter().find(|i| i["id"] == follow["item"]["id"]).expect("follow-up");
+        assert_eq!(f["status"], "queued", "{q}");
+        if items.iter().any(|i| i["name"] == "unrelated job" && i["status"] == "done") {
+            unrelated_done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(unrelated_done, "a follow-up held up other work");
+    let (s, _) = h.post(&format!("/sessions/{busy}/stop"), json!({})).await;
+    assert_eq!(s, 200);
+    h.wait_queue_idle().await;
+    let msgs = h.get(&format!("/sessions/{busy}/messages")).await;
+    let last_user = msgs["messages"]
+        .as_array()
+        .expect("arr")
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .map(|m| m["content"].clone());
+    assert_eq!(last_user, Some(json!("then this")));
+
+    // Clearing finished tasks empties the list.
+    let (s, v) = h.post("/queue/clear", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(h.get("/queue").await["items"].as_array().map(Vec::len), Some(0));
+}

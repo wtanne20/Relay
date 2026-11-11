@@ -17,6 +17,7 @@ pub mod process_guard;
 pub mod push;
 pub mod setup;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
 pub mod ui;
 pub mod updates;
@@ -54,6 +55,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     if stale > 0 {
         tracing::warn!("marked {stale} interrupted session(s) as stopped");
     }
+    db.call(|c| tasks::reset_stale(c)).await?;
 
     let (hardware, tailscale) = tokio::join!(setup::detect_hardware(), setup::detect_tailscale());
     for g in &hardware.gpus {
@@ -74,6 +76,9 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         device::DeviceRegistry::new(db.clone()),
         Arc::clone(&links),
     );
+    let shutdown = CancellationToken::new();
+    let tasks = tasks::Tasks::new(db.clone(), agent.clone(), pusher.clone());
+    tasks.spawn(shutdown.clone());
     let state: AppState = Arc::new(AppInner {
         cfg: shared,
         hardware,
@@ -82,7 +87,8 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         model,
         agent,
         pusher,
-        shutdown: CancellationToken::new(),
+        tasks,
+        shutdown,
         started_at: chrono::Utc::now(),
         phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
         downloads: Default::default(),

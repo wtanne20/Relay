@@ -150,6 +150,7 @@ export default function RootLayout() {
               <Stack.Screen name="hub" options={{ title: 'Download models' }} />
               <Stack.Screen name="system-prompt" options={{ title: 'System prompt' }} />
               <Stack.Screen name="archived" options={{ title: 'Archived' }} />
+              <Stack.Screen name="tasks" options={{ title: 'Tasks' }} />
               <Stack.Screen name="devices" options={{ title: 'Computers' }} />
               <Stack.Screen name="libraries" options={{ title: 'Model libraries' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />

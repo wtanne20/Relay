@@ -37,7 +37,7 @@ import { useClient } from '../../lib/connection';
 import { DownloadProvider } from '../../lib/download';
 import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
 import { emit } from '../../lib/events';
-import { CHATS_ID, type Message, type Project, type Session } from '../../lib/types';
+import { CHATS_ID, type Message, type Project, type QueueItem, type Session } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
 import { setViewing, watchChat } from '../../lib/watch';
 
@@ -61,6 +61,8 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  /** Messages waiting to be sent when the agent is done. */
+  const [pending, setPending] = useState<QueueItem[]>([]);
   const pics = useAttachments();
   const [session, setSession] = useState<Session | null>(null);
   const [project, setProject] = useState<Project | null>(null);
@@ -135,11 +137,57 @@ export default function ChatScreen() {
     return out.reverse();
   }, [stream.messages, running, stream.compacting, stream.loadingModel]);
 
+  // Messages waiting for this chat: shown above the composer until they're sent.
+  const waiting = pending.length > 0;
+  useEffect(() => {
+    if (!client || (!running && !waiting)) return;
+    let live = true;
+    const check = () =>
+      client
+        .queue()
+        .then((q) => {
+          if (live) setPending(q.items.filter((i) => i.session_id === id && i.status === 'queued'));
+        })
+        .catch(() => undefined);
+    check();
+    const t = setInterval(check, 3000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [client, id, running, waiting]);
+
   if (!client) return null;
+
+  /** Keeps the message and sends it as soon as the agent is done. */
+  const queueMessage = async (text: string) => {
+    if (pics.items.length) {
+      setSendError('Pictures and files can’t wait in line. Send them when the agent is done.');
+      return;
+    }
+    try {
+      const item = await client.enqueue({ session_id: id, prompt: text });
+      setPending((cur) => [...cur, item]);
+      setInput('');
+      setSendError(null);
+    } catch (e) {
+      setSendError(
+        e instanceof ApiError && e.status === 404
+          ? 'The agent is still working. Stop it first or wait for it to finish.'
+          : describeError(e),
+      );
+    }
+  };
 
   const send = async () => {
     const text = input.trim();
     if ((!text && !pics.items.length) || sending) return;
+    if (running && text) {
+      setSending(true);
+      await queueMessage(text);
+      setSending(false);
+      return;
+    }
     setSending(true);
     setSendError(null);
     try {
@@ -154,7 +202,8 @@ export default function ChatScreen() {
         setSendError(describeError(e));
       } else if (e instanceof ApiError && e.status === 409) {
         stream.setStatus('running');
-        setSendError('The agent is still working. Stop it first or wait for it to finish.');
+        if (text) await queueMessage(text);
+        else setSendError('The agent is still working. Stop it first or wait for it to finish.');
       } else {
         setSendError(describeError(e));
       }
@@ -176,6 +225,14 @@ export default function ChatScreen() {
   const linkLabel = stream.link === 'live' ? null : stream.link === 'connecting' ? 'Connecting…' : 'Offline · retrying';
 
   const canSend = (!!input.trim() || pics.items.length > 0) && !sending;
+  const cancelPending = async (item: QueueItem) => {
+    setPending((cur) => cur.filter((p) => p.id !== item.id));
+    try {
+      await client.removeQueued(item.id);
+    } catch {
+      // Already sent.
+    }
+  };
 
   // Keep an eye on this chat in the background while it works (Android
   // without a push service), and don't notify about the chat on screen.
@@ -396,6 +453,21 @@ export default function ChatScreen() {
             />
           ) : null}
 
+          {pending.length ? (
+            <View style={[styles.pending, page]}>
+              {pending.map((p) => (
+                <View key={p.id} style={styles.pendingRow}>
+                  <Icon name="clock-outline" size={16} color={m3.onSurfaceVariant} />
+                  <Text style={[type.bodyMedium, styles.pendingText]} numberOfLines={2}>
+                    {p.prompt}
+                  </Text>
+                  <Text style={type.bodySmall}>Sends when the agent is done</Text>
+                  <IconButton icon="close" size={18} label="Don't send this message" onPress={() => cancelPending(p)} />
+                </View>
+              ))}
+            </View>
+          ) : null}
+
           <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, wide ? space.lg : space.sm) }]}>
             <View style={styles.composer}>
               <AttachmentStrip items={pics.items} onRemove={pics.remove} />
@@ -433,6 +505,21 @@ export default function ChatScreen() {
                     disabled={!session}
                   />
                 </View>
+                {running && input.trim() ? (
+                  <Pressable
+                    onPress={send}
+                    disabled={sending}
+                    style={({ pressed }) => [styles.action, styles.queue, pressed && { opacity: 0.85 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send when the agent is done"
+                  >
+                    {sending ? (
+                      <ActivityIndicator color={m3.onSecondaryContainer} />
+                    ) : (
+                      <Icon name="clock-plus-outline" size={22} color={m3.onSecondaryContainer} />
+                    )}
+                  </Pressable>
+                ) : null}
                 {running ? (
                   <Pressable
                     onPress={stop}
@@ -564,4 +651,16 @@ const styles = StyleSheet.create({
   send: { backgroundColor: m3.primary },
   sendOff: { backgroundColor: m3.surfaceContainerHighest },
   stop: { backgroundColor: m3.errorContainer, borderRadius: 14 },
+  queue: { backgroundColor: m3.secondaryContainer },
+  pending: { paddingHorizontal: space.lg, gap: space.xs, marginBottom: space.xs },
+  pendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    flexWrap: 'wrap',
+    paddingLeft: space.md,
+    borderRadius: radius.md,
+    backgroundColor: m3.surfaceContainerHigh,
+  },
+  pendingText: { flex: 1, minWidth: 120, color: m3.onSurface },
 });

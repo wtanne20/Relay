@@ -99,6 +99,23 @@ and Bionic's agent settings. Edits are saved to `config.toml` on the PC when you
 Each project also has **Instructions** (top right of a project's sessions list): notes added to the system prompt
 for that project only, on top of the project's own `AGENTS.md`.
 
+### Background tasks
+
+**Tasks** (the calendar icon on the phone's home screen, or the sidebar on the desktop) lists the brain's queue and
+scheduled tasks. Everything runs on the brain, with or without the app open:
+
+- **Queue.** Add prompts with **Add to queue** (or the tray icon next to Send on the home screen). They run one
+  after another, each in its own chat, so the GPU isn't shared between them. Move one to the front, cancel it, or
+  stop it while it runs.
+- **Scheduled tasks.** "Every weekday at 08:00, summarize what changed in this project." Daily (pick the days),
+  every N minutes or hours, or once. Each run joins the queue, in a new chat or continuing one chat. Times are the
+  brain's time zone. A run missed while the PC was off happens once when Relay starts again.
+- **Messages while the agent works.** Type in a chat that's still working and tap the clock button: the message
+  waits and is sent as soon as the current run ends.
+- **Notifications.** You get the usual "finished", "failed" and "needs your approval" notifications. On the
+  GitHub-built Android app (no push service) the phone also checks in with the PC every 15 minutes or so while the
+  app is closed, so tasks that started while you were away still notify.
+
 ### Approvals
 
 With **Ask before acting** set to *Commands* or *All changes*, the agent pauses before those tool calls. The chat
