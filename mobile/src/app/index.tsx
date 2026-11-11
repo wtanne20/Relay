@@ -26,6 +26,7 @@ import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
 import { enterToSend, useWide } from '../lib/layout';
+import { autoRow, useRouting } from '../lib/routing';
 import { loadLastTarget, saveLastTarget } from '../lib/storage';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
 import { voiceAvailable } from '../lib/voice';
@@ -51,6 +52,7 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [chats, setChats] = useState<Session[] | null>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
+  const routing = useRouting();
   /** Model picked for the next chat; null follows the project or what's loaded. */
   const [model, setModel] = useState<string | null>(null);
   const [pickingModel, setPickingModel] = useState(false);
@@ -123,6 +125,15 @@ export default function Home() {
       b();
     };
   }, [load]);
+  // While a chat is working, check back so its "Working…" line clears.
+  const anyWorking = !!chats?.some((c) => c.status === 'running');
+  useFocusEffect(
+    useCallback(() => {
+      if (!anyWorking) return;
+      const t = setInterval(load, 4000);
+      return () => clearInterval(t);
+    }, [anyWorking, load]),
+  );
 
   if (loading) {
     return (
@@ -455,7 +466,12 @@ export default function Home() {
             <View style={styles.row}>
               <View style={styles.modelSlot}>
                 <AttachMenu onPick={pics.pick} disabled={busy} />
-                <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
+                <ModelChip
+                  model={model}
+                  fallback={project?.model ?? loaded}
+                  auto={!!routing && !project?.model}
+                  onPress={() => setPickingModel(true)}
+                />
               </View>
               <IconButton
                 icon="tray-plus"
@@ -570,11 +586,17 @@ export default function Home() {
                       <Text style={type.bodyLarge} numberOfLines={1}>
                         {s.title}
                       </Text>
-                      <Text style={type.bodySmall} numberOfLines={1}>
-                        {relativeTime(s.updated_at)}
-                      </Text>
+                      {s.status === 'running' ? (
+                        <Text style={[type.bodySmall, styles.working]} numberOfLines={1}>
+                          Working…
+                        </Text>
+                      ) : (
+                        <Text style={type.bodySmall} numberOfLines={1}>
+                          {relativeTime(s.updated_at)}
+                        </Text>
+                      )}
                     </View>
-                    {s.status === 'running' || s.status === 'error' ? <StatusBadge status={s.status} /> : null}
+                    {s.status === 'error' ? <StatusBadge status={s.status} /> : null}
                   </Pressable>
                 </View>
               ))}
@@ -703,13 +725,15 @@ export default function Home() {
         visible={pickingModel}
         onClose={() => setPickingModel(false)}
         value={model}
-        defaultTitle={project?.model ? 'Same as the project' : 'The default model'}
+        defaultTitle={project?.model ? 'Same as the project' : routing ? 'Auto' : 'The default model'}
         defaultBody={
           project?.model
             ? `${project.name}: ${modelLabel(project.model)}`
-            : loaded
-              ? `Now: ${modelLabel(loaded)}`
-              : 'The model chosen in Settings'
+            : routing
+              ? autoRow(routing, loaded).body
+              : loaded
+                ? `Now: ${modelLabel(loaded)}`
+                : 'The model chosen in Settings'
         }
         onPick={async (path) => setModel(path || null)}
       />
@@ -791,6 +815,7 @@ function PairCard() {
 }
 
 const styles = StyleSheet.create({
+  working: { color: m3.primary },
   brainPhone: { marginBottom: space.md },
   flex: { flex: 1, backgroundColor: m3.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: m3.surface },

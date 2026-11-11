@@ -37,6 +37,7 @@ import { ApiError, describeError } from '../../lib/api';
 import { useClient } from '../../lib/connection';
 import { DownloadProvider } from '../../lib/download';
 import { enterToSend, usePageStyle, useWide } from '../../lib/layout';
+import { autoRow, useRouting } from '../../lib/routing';
 import { emit } from '../../lib/events';
 import { type ApprovalDecision, CHATS_ID, type Message, type Project, type QueueItem, type Session } from '../../lib/types';
 import { useSessionStream } from '../../lib/useSessionStream';
@@ -72,6 +73,7 @@ export default function ChatScreen() {
   const [picking, setPicking] = useState(false);
   const canTalk = voiceAvailable();
   const [talking, setTalking] = useState(canTalk && voice === '1');
+  const routing = useRouting();
 
   useEffect(() => {
     if (!client) {
@@ -533,6 +535,7 @@ export default function ChatScreen() {
                   <ModelChip
                     model={session?.model}
                     fallback={project?.model ?? loaded}
+                    auto={!!routing && !project?.model}
                     onPress={() => setPicking(true)}
                     disabled={!session}
                   />
@@ -617,13 +620,17 @@ export default function ChatScreen() {
         visible={picking}
         onClose={() => setPicking(false)}
         value={session?.model}
-        defaultTitle={project?.model && !plain ? 'Same as the project' : 'The default model'}
+        defaultTitle={
+          project?.model && !plain ? 'Same as the project' : routing ? 'Auto' : 'The default model'
+        }
         defaultBody={
           project?.model
             ? `${plain ? 'Your default for chats' : project.name}: ${modelLabel(project.model)}`
-            : loaded
-              ? `Now: ${modelLabel(loaded)}`
-              : 'The model chosen in Settings'
+            : routing
+              ? autoRow(routing, loaded).body
+              : loaded
+                ? `Now: ${modelLabel(loaded)}`
+                : 'The model chosen in Settings'
         }
         onPick={async (path) => setSession(await client.setSessionModel(id, path))}
       />
