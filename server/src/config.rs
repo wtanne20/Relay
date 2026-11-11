@@ -63,6 +63,8 @@ pub struct ToolToggles {
     pub run_command: bool,
     pub web_search: bool,
     pub fetch_url: bool,
+    /// search_documents and read_document (the user's searchable folders).
+    pub search_documents: bool,
 }
 
 impl Default for ToolToggles {
@@ -75,6 +77,7 @@ impl Default for ToolToggles {
             run_command: true,
             web_search: true,
             fetch_url: true,
+            search_documents: true,
         }
     }
 }
@@ -89,6 +92,7 @@ impl ToolToggles {
             "run_command" => self.run_command,
             "web_search" => self.web_search,
             "fetch_url" => self.fetch_url,
+            "search_documents" | "read_document" => self.search_documents,
             _ => false,
         }
     }

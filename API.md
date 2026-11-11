@@ -23,6 +23,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
 - [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
+- [Your documents](#your-documents): `GET/POST /knowledge`, `DELETE /knowledge/{id}`, `POST /knowledge/{id}/reindex`, `GET /knowledge/search`, `GET /knowledge/browse`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
 - [WebSocket](#websocket-get-sessionsidws): `GET /sessions/{id}/ws` and every event type
 - [Objects](#objects): Project, Session, Message, ModelStatus
@@ -455,6 +456,41 @@ Rename (`{"name": "…"}`), or forget the computer and revoke its key (its files
 ### `GET /devices/{id}/browse?path=`
 
 Sub-folders of a folder on the computer, for choosing a project folder: `{"path", "root", "folders": ["code", …]}`.
+
+## Your documents
+
+Folders on the brain or a linked computer that the agent can search with its `search_documents` and
+`read_document` tools (in every chat, when the tool is on in Agent settings). Each computer indexes its own folders in
+`knowledge.db` in its data folder (SQLite full-text search); files never leave it, only the passages a search finds are
+sent to the brain. A folder on a linked computer must be inside the folder that computer shares. Indexing is
+incremental and runs in the background; folders are re-checked for changes when searched a couple of minutes after
+their last check.
+
+### `GET /knowledge`
+
+`{"folders": [{"id", "device_id", "path", "created_at", "computer", "online", "status": {"path", "exists", "files",
+"chunks", "indexed_at", "indexing", "done", "total", "skipped", "error"}}]}`. `device_id` is `""` for the brain.
+
+### `POST /knowledge` → `201`
+
+`{"path": "C:\\Users\\me\\Documents", "device_id": ""}` adds a folder and starts indexing it: `{"folder": …}`.
+`400` if the folder doesn't exist, overlaps one already added on that computer, or (on a linked computer) is outside
+what it shares or the computer is offline.
+
+### `DELETE /knowledge/{id}` → `204`, `POST /knowledge/{id}/reindex`
+
+Stop searching a folder (its index is deleted; the files are not touched), or check it for changes now.
+
+### `GET /knowledge/search?q=&limit=`
+
+The search the agent runs, across every computer: `{"hits": [{"computer", "folder", "path", "rel", "kind": "text" |
+"pdf" | "docx", "start", "end", "text", "score"}], "notes": ["laptop's folders weren't searched: it is offline"],
+"indexing": false}`. `start`/`end` are lines, or pages for PDFs.
+
+### `GET /knowledge/browse?device_id=&path=`
+
+Sub-folders of a folder, for choosing one: on a linked computer (like `/devices/{id}/browse`) or, with no `device_id`,
+on the brain starting at the home folder. `{"path", "root", "folders"}`.
 
 ## Push tokens
 

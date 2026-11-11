@@ -59,7 +59,7 @@ fn extension(name: &str) -> String {
 }
 
 /// Extensions read as plain text even if the app didn't say text/*.
-const TEXT_EXTS: &[&str] = &[
+pub(crate) const TEXT_EXTS: &[&str] = &[
     "txt",
     "md",
     "markdown",
@@ -147,7 +147,7 @@ fn mime_for(ext: &str) -> &'static str {
 }
 
 /// Text from bytes that look like text: valid UTF-8 (or close) with no NULs.
-fn as_text(bytes: &[u8]) -> Option<String> {
+pub(crate) fn as_text(bytes: &[u8]) -> Option<String> {
     let sample = &bytes[..bytes.len().min(8192)];
     if sample.contains(&0) {
         return None;
@@ -165,7 +165,15 @@ fn pdf_text(bytes: &[u8]) -> Option<String> {
         .flatten()
 }
 
-fn docx_text(bytes: &[u8]) -> Option<String> {
+/// A PDF's text, one entry per page (for citing page numbers).
+pub(crate) fn pdf_pages(bytes: &[u8]) -> Option<Vec<String>> {
+    let bytes = bytes.to_vec();
+    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem_by_pages(&bytes).ok())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn docx_text(bytes: &[u8]) -> Option<String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
     let mut xml = String::new();
     zip.by_name("word/document.xml")

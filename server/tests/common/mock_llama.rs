@@ -216,6 +216,12 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "write_file",
                 &json!({"path": "hello.txt", "content": "hi"}),
             ));
+        } else if let Some(q) = content.strip_prefix("docs:") {
+            chunks.extend(tool_call_chunks(
+                &format!("call_{n}"),
+                "search_documents",
+                &json!({"query": q.trim()}),
+            ));
         } else if let Some(cmd) = content.strip_prefix("run:") {
             chunks.extend(tool_call_chunks(
                 &format!("call_{n}"),

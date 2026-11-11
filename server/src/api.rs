@@ -50,6 +50,8 @@ pub struct AppInner {
     pub devices: Arc<crate::device::DeviceRegistry>,
     /// Devices connected to this brain right now (they dial in over Tailscale).
     pub links: Arc<crate::link::LinkHub>,
+    /// Folders the agent can search, on any of the user's computers.
+    pub knowledge: Arc<crate::knowledge::KnowledgeBase>,
     /// The current 6-digit code a new device can pair with.
     pub pair_code: std::sync::Mutex<Option<PairCode>>,
     /// The built web UI bundle to serve at `/` (None if not bundled).
@@ -250,6 +252,11 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}", get(get_device).patch(rename_device).delete(remove_device))
         .route("/devices/{id}/ping", post(ping_device))
         .route("/devices/{id}/browse", get(browse_device))
+        .route("/knowledge", get(list_knowledge).post(add_knowledge))
+        .route("/knowledge/search", get(search_knowledge))
+        .route("/knowledge/browse", get(browse_knowledge))
+        .route("/knowledge/{id}", axum::routing::delete(remove_knowledge))
+        .route("/knowledge/{id}/reindex", post(reindex_knowledge))
         .route("/hello", get(hello))
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
@@ -2524,4 +2531,119 @@ async fn remove_device(
     // Its key no longer works; close the link it may still have open.
     s.links.disconnect(&id);
     Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------- documents
+
+async fn list_knowledge(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let folders = s.knowledge.overview().await?;
+    Ok(Json(json!({ "folders": folders })))
+}
+
+#[derive(Deserialize)]
+struct AddKnowledge {
+    /// Empty (or missing) for a folder on the brain.
+    #[serde(default)]
+    device_id: String,
+    path: String,
+}
+
+async fn add_knowledge(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<AddKnowledge>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let folder = s
+        .knowledge
+        .add(body.device_id.trim(), &body.path)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok((StatusCode::CREATED, Json(json!({ "folder": folder }))))
+}
+
+async fn remove_knowledge(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<StatusCode> {
+    if s.knowledge.remove(&id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound("folder"))
+    }
+}
+
+async fn reindex_knowledge(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let folder = s.knowledge.reindex(&id).await?.ok_or(ApiError::NotFound("folder"))?;
+    Ok(Json(json!({ "folder": folder })))
+}
+
+#[derive(Deserialize)]
+struct KnowledgeSearch {
+    q: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// The same search the agent runs, so the user can try it in the app.
+async fn search_knowledge(
+    State(s): State<AppState>,
+    Query(q): Query<KnowledgeSearch>,
+) -> ApiResult<Json<Value>> {
+    let out = s.knowledge.search(&q.q, q.limit.unwrap_or(8)).await?;
+    Ok(Json(serde_json::to_value(out).map_err(anyhow::Error::from)?))
+}
+
+#[derive(Deserialize)]
+struct KnowledgeBrowse {
+    #[serde(default)]
+    device_id: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// Sub-folders of a folder, for choosing one to make searchable: on a
+/// linked computer (as for projects) or on the brain itself, starting at the
+/// home folder.
+async fn browse_knowledge(
+    State(s): State<AppState>,
+    Query(q): Query<KnowledgeBrowse>,
+) -> ApiResult<Json<Value>> {
+    if !q.device_id.trim().is_empty() {
+        return browse_device(
+            State(s),
+            UrlPath(q.device_id.trim().to_string()),
+            Query(BrowseQuery { path: q.path }),
+        )
+        .await;
+    }
+    let home = crate::config::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let path = if q.path.trim().is_empty() { home.clone() } else { std::path::PathBuf::from(q.path.trim()) };
+    let listed = path.clone();
+    let folders = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<String>> {
+        let mut out: Vec<String> = std::fs::read_dir(&listed)?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.') && !n.starts_with('$'))
+            .collect();
+        out.sort_by_key(|n| n.to_lowercase());
+        Ok(out)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .map_err(|e| ApiError::BadRequest(format!("{}: {e}", path.display())))?;
+    // On Windows the top is the drive; elsewhere, the file system root.
+    let root = path
+        .ancestors()
+        .last()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "path": path.display().to_string(),
+        "root": root,
+        "home": home.display().to_string(),
+        "folders": folders,
+    })))
 }

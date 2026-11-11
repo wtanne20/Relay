@@ -385,6 +385,12 @@ export default function SettingsScreen() {
           value="The brain, and computers linked to it"
           onPress={() => router.push('/devices')}
         />
+        <NavRow
+          icon="file-search-outline"
+          label="Your documents"
+          value="Folders the agent can search and cite, on any computer"
+          onPress={() => router.push('/documents')}
+        />
         <FolderSetting
           setting="projects_folder"
           icon="folder-home-outline"
