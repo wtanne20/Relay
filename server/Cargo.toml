@@ -1,6 +1,6 @@
 [package]
 name = "relay"
-version = "1.0.9"
+version = "1.0.10"
 description = "Relay: personal coding-agent server backed by llama.cpp"
 edition = "2024"
 
