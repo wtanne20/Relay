@@ -143,7 +143,16 @@ struct RunningTask {
     /// A background task the user let do anything: tool calls run without
     /// asking first, whatever "Ask before acting" says.
     allow_all: bool,
+    /// Tells this run apart from a later one in the same chat.
+    run_id: u64,
+    /// Ends the run's future outright when it doesn't stop on its own after
+    /// being cancelled (see [`STOP_GRACE`]).
+    abort: Option<tokio::task::AbortHandle>,
 }
+
+/// How long a stopped task may take to wind down before it is ended
+/// outright, whatever it is waiting on.
+pub const STOP_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
@@ -184,6 +193,7 @@ pub struct AgentManager {
     attachments: PathBuf,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     running: Mutex<HashMap<String, RunningTask>>,
+    next_run_id: std::sync::atomic::AtomicU64,
     /// Signalled whenever a task ends (the task queue starts the next one).
     pub finished: tokio::sync::Notify,
 }
@@ -225,6 +235,7 @@ impl AgentManager {
             knowledge,
             channels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            next_run_id: std::sync::atomic::AtomicU64::new(1),
             finished: tokio::sync::Notify::new(),
         })
     }
@@ -457,6 +468,9 @@ impl AgentManager {
         };
 
         let cancel = CancellationToken::new();
+        let run_id = self
+            .next_run_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let draft = Arc::new(Mutex::new(Draft::default()));
         let approval = Arc::new(Mutex::new(None));
         {
@@ -506,6 +520,8 @@ impl AgentManager {
                     draft: draft.clone(),
                     approval: approval.clone(),
                     allow_all,
+                    run_id,
+                    abort: None,
                 },
             );
         }
@@ -570,26 +586,122 @@ impl AgentManager {
         }
 
         let this = self.clone();
-        tokio::spawn(async move {
-            this.run_task(session, project, route, cancel, draft, approval, voice)
+        let (sess, proj) = (session.clone(), project.clone());
+        let handle = tokio::spawn(async move {
+            this.run_task(sess, proj, route, cancel, draft, approval, voice)
                 .await
+        });
+        if let Some(t) = lock(&self.running)
+            .get_mut(session_id)
+            .filter(|t| t.run_id == run_id)
+        {
+            t.abort = Some(handle.abort_handle());
+        }
+        // If the run dies without finishing (a panic, or it was ended
+        // outright by Stop), the chat would stay "running" forever: nothing
+        // could be sent to it and the task queue would wait on it. Clean up
+        // instead.
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle.await {
+                this.run_died(&session, &project, run_id, e).await;
+            }
         });
         Ok(user_msg)
     }
 
-    /// Requests cancellation. Returns false if nothing was running.
-    pub fn stop(&self, session_id: &str) -> bool {
-        match lock(&self.running).get(session_id) {
+    /// Cleans up after a run whose task ended without finishing normally.
+    async fn run_died(
+        &self,
+        session: &Session,
+        project: &Project,
+        run_id: u64,
+        e: tokio::task::JoinError,
+    ) {
+        let (status, error) = if e.is_panic() {
+            let p = e.into_panic();
+            let why = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown error".into());
+            tracing::error!(session = %session.id, "task crashed: {why}");
+            (
+                "error",
+                Some(format!("Relay hit an internal error while running this task: {why}")),
+            )
+        } else {
+            tracing::warn!(session = %session.id, "task did not stop in time; ended it");
+            ("stopped", None)
+        };
+        // Only this run: it may already have cleaned up after itself.
+        let owned = {
+            let mut running = lock(&self.running);
+            match running.get(&session.id) {
+                Some(t) if t.run_id == run_id => {
+                    running.remove(&session.id);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !owned {
+            return;
+        }
+        let sid = session.id.clone();
+        let err = error.clone();
+        if let Err(e) = self
+            .db
+            .call(move |c| db::set_session_status(c, &sid, status, err.as_deref()))
+            .await
+        {
+            tracing::error!("failed to store final status: {e:#}");
+        }
+        self.finished.notify_one();
+        if let Some(e) = &error {
+            self.emit(&session.id, Event::Error { message: e.clone() });
+        }
+        self.emit(
+            &session.id,
+            Event::Status {
+                status: status.into(),
+                error,
+            },
+        );
+        self.pusher.notify(project, &session.id, &session.title, status);
+    }
+
+    /// Requests cancellation. Returns false if nothing was running. A run
+    /// that is still going [`STOP_GRACE`] later is ended outright.
+    pub fn stop(self: &Arc<Self>, session_id: &str) -> bool {
+        let run_id = match lock(&self.running).get(session_id) {
             Some(t) => {
                 t.cancel.cancel();
-                true
+                t.run_id
             }
-            None => false,
+            None => return false,
+        };
+        let this = self.clone();
+        let sid = session_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(STOP_GRACE).await;
+            this.force_stop(&sid, run_id);
+        });
+        true
+    }
+
+    /// Ends a run that didn't stop when asked; its watcher then cleans up.
+    fn force_stop(&self, session_id: &str, run_id: u64) {
+        let running = lock(&self.running);
+        if let Some(t) = running.get(session_id).filter(|t| t.run_id == run_id)
+            && let Some(a) = &t.abort
+        {
+            a.abort();
         }
     }
 
     /// Cancels every running task and waits (bounded) for them to finish.
-    pub async fn stop_all(&self) {
+    pub async fn stop_all(self: &Arc<Self>) {
         let ids: Vec<String> = lock(&self.running).keys().cloned().collect();
         for id in &ids {
             self.stop(id);
