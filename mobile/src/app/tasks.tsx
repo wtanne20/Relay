@@ -100,6 +100,15 @@ export default function TasksScreen() {
     }
   };
 
+  const stopSchedule = (s: Schedule) => {
+    const sid = s.last_session_id;
+    if (!sid) return;
+    alert(`Stop “${s.name}”?`, 'This run stops where it is. The chat is kept, and the schedule stays on.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Stop', style: 'destructive', onPress: () => run(s.id, () => client.stop(sid)) },
+    ]);
+  };
+
   const active = (items ?? []).filter((i) => i.status === 'running' || i.status === 'queued');
   const finished = (items ?? []).filter((i) => i.status !== 'running' && i.status !== 'queued');
   let place = 0;
@@ -206,7 +215,7 @@ export default function TasksScreen() {
             <Text style={type.bodySmall} numberOfLines={1}>
               {s.enabled && s.next_run ? `Next ${whenLabel(s.next_run)}` : s.enabled ? '' : 'Off'}
               {s.last_run ? ` · last ran ${relativeTime(s.last_run)}` : ''}
-              {s.last_status === 'error' ? ' (failed)' : ''}
+              {s.last_status === 'error' ? ' (failed)' : s.last_status === 'running' ? ' · running now' : ''}
             </Text>
           </View>
         </Pressable>
@@ -218,13 +227,23 @@ export default function TasksScreen() {
             onPress={() => open({ pathname: '/session/[id]', params: { id: s.last_session_id!, title: s.name } })}
           />
         ) : null}
-        <IconButton
-          icon="play-outline"
-          label={`Run ${s.name} now`}
-          size={20}
-          disabled={busy === s.id}
-          onPress={() => run(s.id, () => client.runSchedule(s.id))}
-        />
+        {s.last_status === 'running' && s.last_session_id ? (
+          <IconButton
+            icon="stop"
+            label={`Stop the running ${s.name}`}
+            size={20}
+            disabled={busy === s.id}
+            onPress={() => stopSchedule(s)}
+          />
+        ) : (
+          <IconButton
+            icon="play-outline"
+            label={`Run ${s.name} now`}
+            size={20}
+            disabled={busy === s.id}
+            onPress={() => run(s.id, () => client.runSchedule(s.id))}
+          />
+        )}
         <Switch
           value={s.enabled}
           onValueChange={(on) => run(s.id, () => client.updateSchedule(s.id, { enabled: on }))}

@@ -421,7 +421,8 @@ Its end state is `done`, `error` or `stopped`.
 ### `POST /sessions/{id}/stop`
 
 Cancels the running task, including killing a running command and its child processes.
-`stopping` is `false` if nothing was running.
+`stopping` is `false` if nothing was running. A task that hasn't wound down 10 seconds later is ended outright and
+its chat marked `stopped`. (A task that crashes is marked `error` the same way, so a chat never stays `running`.)
 
 ```json
 { "stopping": true }
@@ -538,7 +539,8 @@ so an unattended task can't hold up the queue waiting for an answer. Off by defa
 
 ### `DELETE /queue/{id}`
 
-Cancels a waiting task, stops a running one (its chat is kept), or hides a finished one.
+Cancels a waiting task, stops a running one (its chat is kept), or hides a finished one. A running item whose chat
+no longer runs anything is marked `stopped` right away.
 
 ### `POST /queue/{id}/first`
 
@@ -575,7 +577,9 @@ off happen once when it starts again.
 ### `POST /schedules` → `201`, `PATCH /schedules/{id}`
 
 Body: any of `name`, `prompt`, `project_id`, `repeat`, `same_chat`, `allow_all`, `enabled` (`prompt` and `repeat`
-are required to create). `allow_all: true` makes every run act without asking, as for `POST /queue`. Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed.
+are required to create). `allow_all: true` makes every run act without asking, as for `POST /queue`. Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed. An edit also
+applies to the schedule's runs still waiting in the queue; a run already going keeps its prompt. A due run isn't
+queued while an earlier run of the same schedule is still waiting or running.
 
 ### `DELETE /schedules/{id}`
 
