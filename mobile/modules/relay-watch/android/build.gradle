@@ -11,6 +11,8 @@ android {
   defaultConfig {
     versionCode 1
     versionName '1.0.0'
+    // Keep rules the app's release build needs for WorkManager (see the file).
+    consumerProguardFiles 'proguard-rules.pro'
   }
 }
 
