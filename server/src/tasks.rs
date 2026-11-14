@@ -433,6 +433,22 @@ fn finish_item(c: &Connection, id: &str, status: &str, error: Option<&str>) -> R
     Ok(())
 }
 
+/// Brings runs of a schedule that are still waiting in line up to date with
+/// the schedule, so an edit applies to them too (not only to later runs).
+/// A run moved to another project starts in a new chat there.
+pub fn update_waiting_runs(c: &Connection, schedule_id: &str) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE queue SET
+            name = (SELECT name FROM schedules WHERE id = ?1),
+            prompt = (SELECT prompt FROM schedules WHERE id = ?1),
+            allow_all = (SELECT allow_all FROM schedules WHERE id = ?1),
+            session_id = CASE WHEN project_id = (SELECT project_id FROM schedules WHERE id = ?1) THEN session_id END,
+            project_id = (SELECT project_id FROM schedules WHERE id = ?1)
+         WHERE schedule_id = ?1 AND status = 'queued'",
+        [schedule_id],
+    )?)
+}
+
 /// Removes finished items from the list.
 pub fn clear_finished(c: &Connection) -> Result<usize> {
     Ok(c.execute(
@@ -561,7 +577,13 @@ impl Tasks {
             self.db
                 .call(move |c| {
                     let (status, error) = match db::get_session(c, &sid)? {
-                        Some(s) if s.status == "running" => return Ok(()),
+                        // The chat says it's running but nothing runs it:
+                        // the run ended without finishing. Don't wait on it
+                        // forever.
+                        Some(s) if s.status == "running" => (
+                            "stopped".into(),
+                            Some("the run ended unexpectedly".into()),
+                        ),
                         Some(s) => (
                             if s.status == "idle" {
                                 "done".into()
@@ -589,10 +611,13 @@ impl Tasks {
                     .collect();
                 for s in due {
                     let next = s.repeat.next_local(now);
-                    // A run still waiting in line isn't added twice (the PC
-                    // was busy, or asleep through several runs).
+                    // A run still waiting in line, or still running, isn't
+                    // added again (the PC was busy or asleep through several
+                    // runs, or one run takes longer than the interval).
+                    // Otherwise a slow task never ends: as soon as one run
+                    // finishes or is stopped, the next one starts.
                     let waiting: bool = c
-                        .prepare("SELECT 1 FROM queue WHERE schedule_id = ?1 AND status = 'queued'")?
+                        .prepare("SELECT 1 FROM queue WHERE schedule_id = ?1 AND status IN ('queued', 'running')")?
                         .exists([&s.id])?;
                     if !waiting {
                         let session_id = if s.same_chat {
@@ -868,6 +893,11 @@ async fn remove_from_queue(
             .session_id
             .as_deref()
             .is_some_and(|sid| s.agent.stop(sid));
+        if !stopping {
+            // Nothing is running it any more: just mark it stopped.
+            s.db.call(move |c| finish_item(c, &id, "stopped", None))
+                .await?;
+        }
         s.tasks.poke();
         return Ok(Json(json!({ "ok": true, "stopping": stopping })));
     }
@@ -1041,6 +1071,7 @@ async fn update_schedule(
                 "UPDATE schedules SET project_id = ?1, name = ?2, prompt = ?3, repeat = ?4, same_chat = ?5, enabled = ?6, next_run = ?7, allow_all = ?8 WHERE id = ?9",
                 params![pid, name, prompt, repeat_json, same_chat as i64, enabled as i64, next, allow_all as i64, id],
             )?;
+            update_waiting_runs(c, &id)?;
             Ok(get_schedule(c, &id)?.ok_or(ApiError::NotFound("schedule")))
         })
         .await??;
@@ -1282,6 +1313,56 @@ mod tests {
         assert_eq!(newer.len(), 1);
         assert_eq!(newer[0].status, "approval");
         assert_eq!(last, all[1].id);
+    }
+
+    #[test]
+    fn schedule_edits_reach_waiting_runs() {
+        let c = Connection::open_in_memory().expect("db");
+        c.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, status TEXT, error TEXT);
+             INSERT INTO projects VALUES ('p', 'Relay', '', ''), ('q', 'Other', '', '');",
+        )
+        .expect("schema");
+        ensure_schema(&c).expect("tasks schema");
+        c.execute(
+            "INSERT INTO schedules (id, project_id, name, prompt, repeat, created_at) VALUES ('s', 'p', 'Old', 'old prompt', '{}', '')",
+            [],
+        )
+        .expect("schedule");
+        let run = |status: &str| {
+            let it = enqueue(
+                &c,
+                &NewItem {
+                    project_id: "p".into(),
+                    session_id: Some("chat".into()),
+                    schedule_id: Some("s".into()),
+                    follow_up: false,
+                    allow_all: false,
+                    name: "Old".into(),
+                    prompt: "old prompt".into(),
+                },
+            )
+            .expect("enqueue");
+            c.execute("UPDATE queue SET status = ?1 WHERE id = ?2", params![status, it.id])
+                .expect("status");
+            it.id
+        };
+        let running = run("running");
+        let waiting = run("queued");
+        c.execute(
+            "UPDATE schedules SET name = 'New', prompt = 'new prompt', allow_all = 1, project_id = 'q' WHERE id = 's'",
+            [],
+        )
+        .expect("edit");
+        assert_eq!(update_waiting_runs(&c, "s").expect("update"), 1);
+        let w = get_queue_item(&c, &waiting).expect("get").expect("item");
+        assert_eq!((w.name.as_str(), w.prompt.as_str(), w.allow_all), ("New", "new prompt", true));
+        assert_eq!(w.project_id, "q");
+        // Moved to another project: it starts in a new chat there.
+        assert_eq!(w.session_id, None);
+        let r = get_queue_item(&c, &running).expect("get").expect("item");
+        assert_eq!(r.prompt, "old prompt");
     }
 
     #[test]

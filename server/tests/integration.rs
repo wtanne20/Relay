@@ -2127,3 +2127,53 @@ async fn allow_everything_tasks_skip_approval() {
     assert_eq!(v["schedule"]["allow_all"], false);
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn scheduled_runs_can_be_stopped_and_edited_while_running() {
+    let h = Harness::start().await;
+    let (s, v) = h
+        .post(
+            "/schedules",
+            json!({"name": "Long job", "prompt": "slow story", "repeat": {"kind": "every", "minutes": 60}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["schedule"]["id"].as_str().expect("id").to_string();
+
+    // One run starts; a second one waits behind it.
+    let (s, first) = h.post(&format!("/schedules/{id}/run"), json!({})).await;
+    assert_eq!(s, 201, "{first}");
+    let first_id = first["item"]["id"].as_str().expect("id").to_string();
+    let mut running = false;
+    for _ in 0..50 {
+        let q = h.get("/queue").await;
+        if q["items"].as_array().expect("items").iter().any(|i| i["id"] == first_id.as_str() && i["status"] == "running") {
+            running = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(running, "the run never started");
+    let (s, second) = h.post(&format!("/schedules/{id}/run"), json!({})).await;
+    assert_eq!(s, 201, "{second}");
+    let second_id = second["item"]["id"].as_str().expect("id").to_string();
+
+    // Editing the schedule while it runs changes the run that's waiting.
+    let (s, v) = h
+        .req(reqwest::Method::PATCH, &format!("/schedules/{id}"), Some(json!({"prompt": "quick hello"})))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let q = h.get("/queue").await;
+    let waiting = q["items"].as_array().expect("items").iter().find(|i| i["id"] == second_id.as_str()).cloned().expect("waiting run");
+    assert_eq!(waiting["prompt"], "quick hello", "{q}");
+
+    // Stop ends the running one; the edited one then runs and finishes.
+    let (s, v) = h.req(reqwest::Method::DELETE, &format!("/queue/{first_id}"), None).await;
+    assert_eq!(s, 200, "{v}");
+    let q = h.wait_queue_idle().await;
+    let items = q["items"].as_array().expect("items");
+    let status = |qid: &str| items.iter().find(|i| i["id"] == qid).map(|i| i["status"].clone());
+    assert_eq!(status(&first_id), Some(json!("stopped")), "{q}");
+    assert_eq!(status(&second_id), Some(json!("done")), "{q}");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

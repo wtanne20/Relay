@@ -230,10 +230,12 @@ export function ScheduleSheet({
   const [allowAll, setAllowAll] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stopped, setStopped] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
     setError(null);
+    setStopped(false);
     const d = defaults();
     const r = editing?.repeat;
     setName(editing?.name ?? '');
@@ -276,6 +278,17 @@ export function ScheduleSheet({
       setError(describeError(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const stopRun = async () => {
+    const sid = editing?.last_session_id;
+    if (!client || !sid) return;
+    try {
+      await client.stop(sid);
+      setStopped(true);
+    } catch (e) {
+      setError(describeError(e));
     }
   };
 
@@ -402,6 +415,21 @@ export function ScheduleSheet({
         </View>
 
         <AllowAllToggle value={allowAll} onChange={setAllowAll} />
+
+        {editing?.last_status === 'running' ? (
+          <View style={styles.block}>
+            <Text style={type.bodySmall}>
+              {stopped
+                ? 'Stopping this run. Saved changes apply to the next one.'
+                : 'This task is running now. Saved changes apply to its next run. Stop it to rerun it with your changes.'}
+            </Text>
+            {stopped ? null : (
+              <View style={styles.chips}>
+                <Button title="Stop this run" variant="tonal" icon="stop" onPress={stopRun} />
+              </View>
+            )}
+          </View>
+        ) : null}
 
         {error ? <Banner message={error} /> : null}
       </ScrollView>
