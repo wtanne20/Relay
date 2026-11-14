@@ -26,6 +26,7 @@ import {
   UserBubble,
 } from '../../components/ChatItems';
 import { ApprovalCard } from '../../components/ApprovalCard';
+import { attachInvertedWheel } from '../../lib/invertedWheel';
 import { VoiceMode } from '../../components/VoiceMode';
 import { LocationChip, locationLabel, useHere } from '../../components/Location';
 import { useAttachments } from '../../components/Attachments';
@@ -300,7 +301,11 @@ export default function ChatScreen() {
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       offset.current = e.nativeEvent.contentOffset.y;
-      setDetachedBoth(offset.current > 48);
+      // A gap between letting go and catching up again, so hovering around
+      // one line doesn't flip the list's "keep my place" mode back and forth
+      // mid-scroll (that flip nudges the view on phones).
+      if (offset.current > 48) setDetachedBoth(true);
+      else if (offset.current < 16) setDetachedBoth(false);
     },
     [setDetachedBoth],
   );
@@ -316,20 +321,35 @@ export default function ChatScreen() {
       // maintainVisibleContentPosition below); moving it by hand there lags a
       // frame behind and makes the text flicker.
       if (Platform.OS !== 'web' || !detachedRef.current || grew === 0 || olderLoaded) return;
+      // Start from where the list really is: scroll events are throttled, so
+      // the last one can be behind a wheel turn, and moving from there would
+      // snap the view back against the way you're scrolling.
+      const node = scrollNode(list.current);
+      const at = node ? node.scrollTop : offset.current;
       const max = Math.max(0, h - viewHeight.current);
-      const next = Math.min(max, Math.max(0, offset.current + grew));
+      const next = Math.min(max, Math.max(0, at + grew));
       offset.current = next;
       list.current?.scrollToOffset({ offset: next, animated: false });
     },
     [oldest],
   );
+  const wheelNode = useRef<HTMLElement | null>(null);
+  const detachWheel = useRef<(() => void) | null>(null);
+  useEffect(() => () => detachWheel.current?.(), []);
   const onListLayout = useCallback((e: LayoutChangeEvent) => {
     viewHeight.current = e.nativeEvent.layout.height;
     // The browser's own scroll anchoring loses its place when streamed
     // text re-renders; the offset is kept by hand instead.
     if (Platform.OS === 'web') {
-      const node = (list.current as unknown as { getScrollableNode?: () => HTMLElement | null })?.getScrollableNode?.();
-      if (node) node.style.overflowAnchor = 'none';
+      const node = scrollNode(list.current);
+      if (node) {
+        node.style.overflowAnchor = 'none';
+        if (wheelNode.current !== node) {
+          detachWheel.current?.();
+          wheelNode.current = node;
+          detachWheel.current = attachInvertedWheel(node);
+        }
+      }
     }
   }, []);
   const jumpToLatest = useCallback(() => {
@@ -580,6 +600,11 @@ const TOOL_ACTIVITY: Record<string, string> = {
 };
 
 /** What the agent is doing now, in a few words (for voice mode). */
+// The DOM element that scrolls a list on the web.
+function scrollNode(list: FlatList<Item> | null): HTMLElement | null {
+  return (list as unknown as { getScrollableNode?: () => HTMLElement | null } | null)?.getScrollableNode?.() ?? null;
+}
+
 function activityLabel(stream: ReturnType<typeof useSessionStream>, running: boolean): string | null {
   if (!running) return null;
   if (stream.loadingModel) return 'Loading the model…';
