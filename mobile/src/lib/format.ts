@@ -68,6 +68,12 @@ export function toolSummary(call: ToolCall, result: Message | undefined, running
       const host = url.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || url;
       return `${pending ? 'Reading' : 'Read'} ${shorten(host)}${result?.is_error ? ' — failed' : ''}`;
     }
+    case 'search_documents': {
+      const q = shorten(typeof a.query === 'string' ? a.query : '');
+      return `${pending ? 'Searching your documents for' : 'Searched your documents for'} “${q}”${result?.is_error ? ' — failed' : ''}`;
+    }
+    case 'read_document':
+      return `${pending ? 'Reading' : 'Read'} ${shorten(basename(path))}${result?.is_error ? ' — failed' : ''}`;
     case 'list_dir':
       return `${pending ? 'Listing' : 'Listed'} ${shorten(path)}${result?.is_error ? ' — failed' : ''}`;
     default:

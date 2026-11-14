@@ -1,6 +1,6 @@
 ; Inno Setup script for the Relay Windows installer.
 ; Built by .github/workflows/windows.yml:
-;   iscc /DAppVersion=1.0.4 installer\relay.iss
+;   iscc /DAppVersion=1.0.10 installer\relay.iss
 ;
 ; What it does:
 ;  - installs the Relay Windows app (relay-desktop.exe, which runs the server
@@ -17,7 +17,7 @@
 ; %LOCALAPPDATA%\Relay and are kept on uninstall unless you choose otherwise.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.4"
+  #define AppVersion "1.0.10"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\server\target\release\relay.exe"
@@ -69,6 +69,9 @@ Source: "{#DesktopExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "relay.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\server\config.example.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
+; The web UI bundle, served by the brain to browsers (the aarch64 PWA and
+; any other machine that opens it in a browser).
+Source: "..\mobile\dist\*"; DestDir: "{app}\web"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{group}\Relay"; Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Comment: "Chat with your coding agents and manage projects"

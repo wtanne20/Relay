@@ -472,6 +472,7 @@ async fn system_prompt_includes_agents_md_and_skills() {
         instructions: "Prefer small commits.".into(),
         model: None,
         archived: false,
+        device_id: None,
         created_at: String::new(),
     };
     let skills = relay::skills::discover(&[dir.join("skills")]);
@@ -490,6 +491,39 @@ async fn system_prompt_includes_agents_md_and_skills() {
 }
 
 #[tokio::test]
+async fn voice_prompts_ask_for_spoken_replies() {
+    let h = Harness::start().await;
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+
+    let mut reply = async |body: Value| {
+        let (st, v) = h.post(&format!("/sessions/{sid}/prompt"), body).await;
+        assert_eq!(st, 202, "{v}");
+        let events = ws.until_status(&["done", "error"]).await;
+        events
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "message" && e["message"]["role"] == "assistant")
+            .map(|e| e["message"]["content"].as_str().unwrap_or("").to_string())
+            .expect("a reply")
+    };
+    assert_eq!(
+        reply(json!({"content": "which reply style?"})).await,
+        "Style: written"
+    );
+    assert_eq!(
+        reply(json!({"content": "which reply style?", "voice": true})).await,
+        "Style: spoken"
+    );
+    // It applies to that prompt only.
+    assert_eq!(
+        reply(json!({"content": "which reply style?"})).await,
+        "Style: written"
+    );
+}
+
+#[tokio::test]
 async fn settings_skills_and_approvals() {
     let h = Harness::start().await;
     let patch = |body: Value| h.req(reqwest::Method::PATCH, "/settings", Some(body));
@@ -498,7 +532,7 @@ async fn settings_skills_and_approvals() {
     let s = h.get("/settings").await;
     assert_eq!(s["settings"]["agent"]["max_steps"], 50);
     assert_eq!(s["settings"]["sampling"]["temperature"], 0.6);
-    assert_eq!(s["tools"].as_array().map(Vec::len), Some(7));
+    assert_eq!(s["tools"].as_array().map(Vec::len), Some(8));
     assert!(
         s["settings"].get("token").is_none(),
         "token must not be exposed"
@@ -719,6 +753,76 @@ async fn settings_skills_and_approvals() {
         )
         .await;
     assert_eq!(st, 409);
+
+    // Always allow: saves the suggested rule, and the same command isn't
+    // asked about again.
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo always"}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    assert_eq!(req["approval"]["suggested_rule"]["kind"], "command");
+    assert_eq!(req["approval"]["suggested_rule"]["pattern"], "echo always");
+    let call_id = req["approval"]["tool_call_id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "always_allow"}),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["rule"]["pattern"], "echo always");
+    let rule_id = v["rule"]["id"].as_i64().expect("rule id");
+    ws.until_status(&["done", "error", "stopped"]).await;
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "run: echo always"}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let ev = ws.until_status(&["done", "error", "stopped"]).await;
+    assert!(
+        !ev.iter().any(|e| e["type"] == "approval_request"),
+        "a rule-covered command was asked about"
+    );
+    let rules = h.get("/approval-rules").await;
+    assert_eq!(rules["rules"][0]["uses"], 1, "{rules}");
+
+    // The activity log has every call and how it was allowed.
+    let log = h.get(&format!("/activity?session_id={sid}")).await;
+    let decisions: Vec<&str> = log["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["decision"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(decisions, ["rule", "allowed", "allowed", "denied"], "{log}");
+    assert_eq!(log["entries"][0]["detail"], "echo always");
+    assert_eq!(log["entries"][0]["rule_id"], rule_id);
+    let denied = h.get("/activity?filter=denied").await;
+    assert_eq!(denied["entries"].as_array().map(Vec::len), Some(1));
+
+    // Rules can be added by hand, checked, and removed.
+    let (st, _) = h
+        .post("/approval-rules", json!({"kind": "command", "pattern": "ls | sh"}))
+        .await;
+    assert_eq!(st, 400);
+    let (st, v) = h
+        .post("/approval-rules", json!({"kind": "web", "pattern": "https://www.Example.com/docs"}))
+        .await;
+    assert_eq!((st, v["pattern"].as_str()), (200, Some("example.com")));
+    let (st, _) = h
+        .req(reqwest::Method::DELETE, &format!("/approval-rules/{rule_id}"), None)
+        .await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("/approval-rules").await["rules"].as_array().map(Vec::len), Some(1));
 
     // Stopping while waiting for approval ends the task.
     let (st, _) = h
@@ -1053,6 +1157,74 @@ async fn plain_chats_titles_and_models() {
         )
         .await;
     assert_eq!(st, 404);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
+async fn routing_settings_and_speed_stats() {
+    let h = Harness::start().await;
+
+    // Routing is off until turned on, and its models must be real files.
+    let v = h.get("/settings").await;
+    assert_eq!(v["settings"]["routing"]["enabled"], false);
+    assert_eq!(v["settings"]["routing"]["quick_max_words"], 60);
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"quick_model": "C:/nope.gguf"}})),
+        )
+        .await;
+    assert_eq!(st, 400);
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"quick_max_words": 0}})),
+        )
+        .await;
+    assert_eq!(st, 400);
+    std::fs::create_dir_all(h.dir.join("data/models")).expect("mkdir");
+    let small = h.dir.join("data/models/Small-Q4.gguf");
+    std::fs::write(&small, b"GGUF").expect("write");
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"routing": {"enabled": true, "quick_model": small.to_string_lossy()}})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["settings"]["routing"]["enabled"], true);
+    assert_eq!(v["model_restarting"], false, "routing doesn't restart the model");
+
+    // Every reply records which model wrote it and how fast.
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    let (st, v) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "hi"}))
+        .await;
+    assert_eq!(st, 202, "{v}");
+    ws.until_status(&["done", "error"]).await;
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    let reply = msgs["messages"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .rfind(|m| m["role"] == "assistant")
+        .expect("a reply")
+        .clone();
+    assert_eq!(reply["stats"]["tokens"], 10, "{reply}");
+    assert_eq!(reply["stats"]["tokens_per_sec"], 40.0);
+    assert!(reply["stats"]["model"].is_string());
+
+    let stats = h.get("/stats").await;
+    let speed = &stats["speeds"][0];
+    assert_eq!(speed["replies"], 1, "{stats}");
+    assert_eq!(speed["avg_tokens_per_sec"], 40.0);
+    assert!(stats["brain"]["memory"]["total_mb"].as_u64().unwrap_or(0) > 0);
+    assert!(stats["devices"].is_array());
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
@@ -1420,4 +1592,538 @@ async fn the_model_loads_only_when_a_chat_needs_it() {
     // With unloading off, the model loads as soon as Relay starts.
     let h2 = Harness::launch(Default::default(), "idle_unload_minutes = 0").await;
     h2.wait_model("ready").await;
+}
+
+/// A computer pairs with a 6-digit code, dials in to the brain, and a
+/// project whose folder is on that computer has its files written there by
+/// the brain's agent, without the brain ever connecting to the computer.
+#[tokio::test]
+async fn linked_device_pairs_with_a_code_and_hosts_a_project() {
+    let h = Harness::start().await;
+
+    // The brain says who it is, without a token (for discovery).
+    let hello: Value = h
+        .http
+        .get(format!("{}/hello", h.base))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("hello")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(hello["relay"], "brain");
+    assert_eq!(h.get("/info").await["role"], "brain");
+
+    // The "laptop": a home folder with a project folder in it.
+    let home = h.dir.join("laptop-home");
+    let app = home.join("code/app");
+    std::fs::create_dir_all(&app).expect("mkdir");
+    std::fs::write(app.join("AGENTS.md"), "Laptop rules.").expect("agents");
+    let dev_cfg = h.dir.join("laptop-data/device.toml");
+
+    // Without an active code, or with a wrong one, pairing is refused.
+    let err = relay::link::pair_and_save(&dev_cfg, &h.base, "123456", Some("laptop"), Some(&home))
+        .await
+        .expect_err("no code yet");
+    assert!(format!("{err:#}").contains("no pairing code"), "{err:#}");
+    let (s, v) = h.post("/devices/pair-code", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let code = v["code"].as_str().expect("code").to_string();
+    assert_eq!(code.len(), 6);
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    assert!(
+        relay::link::pair_and_save(&dev_cfg, &h.base, wrong, Some("laptop"), Some(&home))
+            .await
+            .is_err()
+    );
+    let cfg = relay::link::pair_and_save(&dev_cfg, &h.base, &code, Some("laptop"), Some(&home))
+        .await
+        .expect("pair");
+    assert_eq!(cfg.api_token, h.token, "the window gets the brain's API token");
+    assert_eq!(relay::link::DeviceConfig::load(&dev_cfg).as_ref(), Some(&cfg));
+    // The code is single-use.
+    assert!(
+        relay::link::pair_and_save(&dev_cfg, &h.base, &code, Some("laptop"), Some(&home))
+            .await
+            .is_err()
+    );
+
+    // Paired but not connected yet: listed, offline.
+    let devices = h.get("/devices").await;
+    assert_eq!(devices["devices"][0]["name"], "laptop");
+    assert_eq!(devices["devices"][0]["connection"], "link");
+    assert_eq!(devices["devices"][0]["connected"], false);
+
+    // The laptop dials in.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let states = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = states.clone();
+    tokio::spawn(relay::link::run_device_link(cfg.clone(), shutdown.clone(), move |s| {
+        seen.lock().unwrap().push(s)
+    }));
+    let mut connected = false;
+    for _ in 0..100 {
+        if h.get("/devices").await["devices"][0]["connected"] == true {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(connected, "device never connected");
+    assert!(states.lock().unwrap().contains(&relay::link::LinkState::Connected));
+    let device_id = cfg.device_id.clone();
+
+    // Browse the laptop's folders from the brain.
+    let b = h.get(&format!("/devices/{device_id}/browse")).await;
+    assert_eq!(b["folders"], json!(["code"]), "{b}");
+
+    // A project on the laptop; it says where it lives.
+    let (s, v) = h
+        .post(
+            "/projects",
+            json!({"device_id": device_id, "path": app.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["project"]["name"], "app");
+    assert_eq!(v["project"]["location"]["kind"], "device");
+    assert_eq!(v["project"]["location"]["name"], "laptop");
+    assert_eq!(v["project"]["location"]["online"], true);
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+    // A folder outside what the laptop shares is refused.
+    let (s, _) = h
+        .post(
+            "/projects",
+            json!({"device_id": device_id, "path": h.dir.to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(s, 400);
+
+    // The brain's agent writes a file in the laptop's project folder.
+    let (_, v) = h.post(&format!("/projects/{pid}/sessions"), json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    ws.next().await;
+    let (s, v) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": "create hello.txt containing hi"}),
+        )
+        .await;
+    assert_eq!(s, 202, "{v}");
+    let events = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(
+        events.last().map(|e| e["status"].clone()),
+        Some(json!("done")),
+        "{events:#?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("hello.txt")).expect("written on the laptop"),
+        "hi"
+    );
+    // Files on the laptop download through the brain.
+    let r = h
+        .http
+        .get(format!("{}/projects/{pid}/download?path=hello.txt", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .expect("download");
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.expect("body"), "hi");
+
+    // The laptop's notes become searchable; the files stay on the laptop.
+    let notes = home.join("notes");
+    std::fs::create_dir_all(&notes).expect("mkdir");
+    std::fs::write(notes.join("bike.md"), "# Bike\nThe bike lock code is 4471.\n").expect("note");
+    let (s, v) = h
+        .post("/knowledge", json!({"device_id": device_id, "path": notes.to_string_lossy()}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["folder"]["computer"], "laptop");
+    let kid = v["folder"]["id"].as_str().expect("id").to_string();
+    // Folders outside what the laptop shares are refused.
+    let (s, v) = h
+        .post("/knowledge", json!({"device_id": device_id, "path": h.dir.to_string_lossy()}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let mut found = Value::Null;
+    for _ in 0..100 {
+        let r = h.get("/knowledge/search?q=bike%20lock").await;
+        if r["hits"].as_array().is_some_and(|a| !a.is_empty()) {
+            found = r;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(found["hits"][0]["computer"], "laptop", "{found}");
+    assert_eq!(found["hits"][0]["rel"], "bike.md");
+    assert!(found["hits"][0]["text"].as_str().unwrap_or("").contains("4471"));
+    // The index lives with the laptop's data, not the brain's.
+    assert!(h.dir.join("laptop-data/knowledge.db").exists());
+    let list = h.get("/knowledge").await;
+    assert_eq!(list["folders"][0]["status"]["files"], 1, "{list}");
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{kid}"), None).await;
+    assert_eq!(s, 204);
+    assert_eq!(h.get("/knowledge").await["folders"], json!([]));
+
+    // The laptop goes away: the project shows offline and prompts fail fast.
+    shutdown.cancel();
+    let mut offline = false;
+    for _ in 0..100 {
+        if h.get(&format!("/projects/{pid}")).await["project"]["location"]["online"] == false {
+            offline = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(offline, "device never went offline");
+
+    // Removing the device revokes its key.
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/devices/{device_id}"), None).await;
+    assert_eq!(s, 200);
+    let mut req = format!("{}/devices/link", h.ws_base)
+        .into_client_request()
+        .expect("req");
+    req.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", cfg.device_key).parse().expect("header"),
+    );
+    assert!(tokio_tungstenite::connect_async(req).await.is_err());
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test]
+async fn documents_are_indexed_searched_and_given_to_the_agent() {
+    let h = Harness::start().await;
+    let docs = h.dir.join("docs");
+    std::fs::create_dir_all(docs.join("taxes")).expect("mkdir");
+    std::fs::write(
+        docs.join("taxes/2025.md"),
+        "# Taxes 2025\n\nAccountant: Dana Ruiz.\nFiling deadline is April 15.\n",
+    )
+    .expect("write");
+    std::fs::write(docs.join("recipes.txt"), "Pancakes: flour, milk, eggs.\n").expect("write");
+
+    // Nothing searchable yet: chats don't get the document tools.
+    assert_eq!(h.get("/knowledge").await["folders"], json!([]));
+
+    let (s, v) = h.post("/knowledge", json!({"path": docs.to_string_lossy()})).await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["folder"]["id"].as_str().expect("id").to_string();
+    assert_eq!(v["folder"]["device_id"], "");
+    // The same folder (or one inside it) can't be added twice.
+    let (s, v) = h
+        .post("/knowledge", json!({"path": docs.join("taxes").to_string_lossy()}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, _) = h.post("/knowledge", json!({"path": h.dir.join("missing").to_string_lossy()})).await;
+    assert_eq!(s, 400);
+
+    // Indexing runs in the background.
+    let mut indexed = false;
+    for _ in 0..100 {
+        let l = h.get("/knowledge").await;
+        if l["folders"][0]["status"]["indexed_at"].is_string() && l["folders"][0]["status"]["indexing"] == false {
+            assert_eq!(l["folders"][0]["status"]["files"], 2, "{l}");
+            indexed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(indexed, "never indexed");
+    let r = h.get("/knowledge/search?q=accountant").await;
+    assert_eq!(r["hits"][0]["rel"], "taxes/2025.md", "{r}");
+    assert_eq!(r["hits"][0]["start"], 1);
+
+    // A plain chat can search them: the agent gets the tools and a hint.
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("chat id").to_string();
+    let mut ws = h.ws(&sid).await;
+    ws.next().await;
+    let (s, v) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "docs: who is my accountant"}))
+        .await;
+    assert_eq!(s, 202, "{v}");
+    let events = ws.until_status(&["done", "error", "stopped"]).await;
+    assert_eq!(events.last().map(|e| e["status"].clone()), Some(json!("done")), "{events:#?}");
+    let msgs = h.get(&format!("/sessions/{sid}/messages")).await;
+    let tool = msgs["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .cloned()
+        .expect("a tool result");
+    let out = tool["content"].as_str().expect("content");
+    assert!(out.contains("taxes/2025.md (lines 1-4)"), "{out}");
+    assert!(out.contains("Dana Ruiz"), "{out}");
+
+    let (s, _) = h.req(reqwest::Method::POST, &format!("/knowledge/{id}/reindex"), None).await;
+    assert_eq!(s, 200);
+    let (s, v) = h.req(reqwest::Method::DELETE, &format!("/knowledge/{id}"), None).await;
+    assert_eq!(s, 204, "{v}");
+    assert!(h.get("/knowledge/search?q=accountant").await["hits"].as_array().is_some_and(|a| a.is_empty()));
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+impl Harness {
+    async fn wait_queue_idle(&self) -> Value {
+        for _ in 0..200 {
+            let q = self.get("/queue").await;
+            if q["queued"] == 0 && q["running"] == 0 {
+                return q;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("queue never emptied: {}", self.get("/queue").await);
+    }
+}
+
+#[tokio::test]
+async fn queued_and_scheduled_tasks_run_in_the_background() {
+    let h = Harness::start().await;
+    let notices = h.get("/notices").await;
+    let start = notices["last_id"].as_i64().expect("last_id");
+    assert_eq!(notices["notices"].as_array().map(Vec::len), Some(0));
+
+    // Validation.
+    let (s, v) = h.post("/queue", json!({"prompt": "   "})).await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h.post("/queue", json!({"prompt": "hi", "project_id": "nope"})).await;
+    assert_eq!(s, 404, "{v}");
+
+    // Two tasks in the plain chats space: both run, one after another, each in its own chat.
+    let (s, a) = h.post("/queue", json!({"prompt": "first task", "name": "First"})).await;
+    assert_eq!(s, 201, "{a}");
+    let (s, b) = h.post("/queue", json!({"prompt": "second task\nwith details"})).await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["item"]["name"], "second task");
+    let q = h.get("/queue").await;
+    assert!(q["running"].as_i64().unwrap_or(0) <= 1, "{q}");
+    let q = h.wait_queue_idle().await;
+    let items = q["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "{q}");
+    assert!(items.iter().all(|i| i["status"] == "done"), "{q}");
+    let first_chat = items
+        .iter()
+        .find(|i| i["name"] == "First")
+        .and_then(|i| i["session_id"].as_str())
+        .expect("chat")
+        .to_string();
+    let session = h.get(&format!("/sessions/{first_chat}")).await;
+    assert_eq!(session["session"]["title"], "First");
+    assert_eq!(session["session"]["status"], "done");
+
+    // A follow-up for an existing chat runs in that chat.
+    let (s, v) = h.post("/queue", json!({"prompt": "and another thing", "session_id": first_chat})).await;
+    assert_eq!(s, 201, "{v}");
+    h.wait_queue_idle().await;
+    let msgs = h.get(&format!("/sessions/{first_chat}/messages")).await;
+    let users = msgs["messages"]
+        .as_array()
+        .expect("arr")
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .count();
+    assert_eq!(users, 2);
+
+    // Finished tasks were logged for phones that check in.
+    let n = h.get(&format!("/notices?after={start}")).await;
+    let done: Vec<&Value> = n["notices"].as_array().expect("arr").iter().filter(|x| x["status"] == "done").collect();
+    assert!(done.len() >= 3, "{n}");
+    assert!(done.iter().any(|x| x["title"] == "First"), "{n}");
+
+    // Schedules.
+    let (s, v) = h
+        .post("/schedules", json!({"prompt": "summary", "repeat": {"kind": "daily", "time": "99:00"}}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h
+        .post("/schedules", json!({"prompt": "summary", "repeat": {"kind": "once", "at": "2001-01-01T08:00"}}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h
+        .post(
+            "/schedules",
+            json!({"name": "Morning summary", "prompt": "summarize things", "same_chat": true,
+                   "repeat": {"kind": "daily", "time": "07:30", "days": [1, 2, 3, 4, 5]}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let sched = v["schedule"].clone();
+    let id = sched["id"].as_str().expect("id").to_string();
+    assert!(sched["next_run"].is_string(), "{sched}");
+    assert_eq!(sched["project_name"], "Chats");
+
+    // Run now, twice: with "same chat" both runs land in one chat.
+    for _ in 0..2 {
+        let (s, v) = h.post(&format!("/schedules/{id}/run"), json!({})).await;
+        assert_eq!(s, 201, "{v}");
+        h.wait_queue_idle().await;
+    }
+    let sched = h.get(&format!("/schedules/{id}")).await["schedule"].clone();
+    assert_eq!(sched["last_status"], "done", "{sched}");
+    let chat = sched["last_session_id"].as_str().expect("chat").to_string();
+    let msgs = h.get(&format!("/sessions/{chat}/messages")).await;
+    let users = msgs["messages"].as_array().expect("arr").iter().filter(|m| m["role"] == "user").count();
+    assert_eq!(users, 2);
+
+    // Turning it off clears the next run; deleting removes it.
+    let (s, v) = h
+        .req(reqwest::Method::PATCH, &format!("/schedules/{id}"), Some(json!({"enabled": false})))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["schedule"]["next_run"].is_null(), "{v}");
+    let (s, _) = h.req(reqwest::Method::DELETE, &format!("/schedules/{id}"), None).await;
+    assert_eq!(s, 200);
+    assert_eq!(h.get("/schedules").await["schedules"].as_array().map(Vec::len), Some(0));
+
+    // A message for a chat that's still working waits for it, without
+    // holding up other queued work.
+    let (_, v) = h.post("/projects/chats/sessions", json!({"title": "Busy"})).await;
+    let busy = v["session"]["id"].as_str().expect("id").to_string();
+    let (s, _) = h.post(&format!("/sessions/{busy}/prompt"), json!({"content": "slow story"})).await;
+    assert_eq!(s, 202);
+    let (s, v) = h.post(&format!("/sessions/{busy}/prompt"), json!({"content": "too soon"})).await;
+    assert_eq!(s, 409, "{v}");
+    let (s, follow) = h.post("/queue", json!({"prompt": "then this", "session_id": busy})).await;
+    assert_eq!(s, 201, "{follow}");
+    assert_eq!(follow["item"]["follow_up"], true);
+    let (s, _) = h.post("/queue", json!({"prompt": "unrelated job"})).await;
+    assert_eq!(s, 201);
+    let mut unrelated_done = false;
+    for _ in 0..100 {
+        let q = h.get("/queue").await;
+        let items = q["items"].as_array().expect("items");
+        let f = items.iter().find(|i| i["id"] == follow["item"]["id"]).expect("follow-up");
+        assert_eq!(f["status"], "queued", "{q}");
+        if items.iter().any(|i| i["name"] == "unrelated job" && i["status"] == "done") {
+            unrelated_done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(unrelated_done, "a follow-up held up other work");
+    let (s, _) = h.post(&format!("/sessions/{busy}/stop"), json!({})).await;
+    assert_eq!(s, 200);
+    h.wait_queue_idle().await;
+    let msgs = h.get(&format!("/sessions/{busy}/messages")).await;
+    let last_user = msgs["messages"]
+        .as_array()
+        .expect("arr")
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .map(|m| m["content"].clone());
+    assert_eq!(last_user, Some(json!("then this")));
+
+    // Clearing finished tasks empties the list.
+    let (s, v) = h.post("/queue/clear", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(h.get("/queue").await["items"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn allow_everything_tasks_skip_approval() {
+    let h = Harness::start().await;
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"agent": {"approval": "commands"}})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    let dir = h.dir.join("unattended");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let (_, v) = h
+        .post("/projects", json!({"path": dir.to_string_lossy()}))
+        .await;
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+
+    // With "allow everything" the command runs without asking.
+    let (s, v) = h
+        .post(
+            "/queue",
+            json!({"prompt": "run: echo ok > allowed.txt", "project_id": pid, "allow_all": true}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], true);
+    let q = h.wait_queue_idle().await;
+    assert_eq!(q["items"][0]["status"], "done", "{q}");
+    assert!(dir.join("allowed.txt").exists());
+
+    // Without it, the task waits for approval like any other chat.
+    let (s, v) = h
+        .post(
+            "/queue",
+            json!({"prompt": "run: echo no > asked.txt", "project_id": pid}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], false);
+    let id = v["item"]["id"].clone();
+    let mut asked = false;
+    for _ in 0..100 {
+        let q = h.get("/queue").await;
+        let it = q["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|i| i["id"] == id)
+            .cloned()
+            .expect("item");
+        if it["needs_approval"] == true {
+            asked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(asked, "the task never asked for approval");
+    let (s, _) = h
+        .req(reqwest::Method::DELETE, &format!("/queue/{}", id.as_str().expect("id")), None)
+        .await;
+    assert_eq!(s, 200);
+    h.wait_queue_idle().await;
+    assert!(!dir.join("asked.txt").exists());
+
+    // Schedules keep the switch, and their runs carry it.
+    let (s, v) = h
+        .post(
+            "/schedules",
+            json!({"prompt": "run: echo ok > scheduled.txt", "project_id": pid, "allow_all": true,
+                   "repeat": {"kind": "every", "minutes": 60}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], true);
+    let sid = v["schedule"]["id"].as_str().expect("id").to_string();
+    let (s, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/schedules/{sid}"),
+            Some(json!({"name": "Renamed"})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], true);
+    let (s, v) = h.post(&format!("/schedules/{sid}/run"), json!({})).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["item"]["allow_all"], true);
+    h.wait_queue_idle().await;
+    assert!(dir.join("scheduled.txt").exists());
+
+    let (s, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/schedules/{sid}"),
+            Some(json!({"allow_all": false})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["schedule"]["allow_all"], false);
+    let _ = std::fs::remove_dir_all(&h.dir);
 }

@@ -6,6 +6,7 @@ import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { CHATS_ID, type ModelStatus, type Project, type Session } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
+import { BrainBanner, locationLabel, useHere } from './Location';
 import { m3, radius, space, statusColor, type } from './theme';
 import { Icon, IconButton, Logo } from './ui';
 
@@ -26,6 +27,8 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [adding, setAdding] = useState(false);
+  /** Queued and running background tasks. */
+  const [taskCount, setTaskCount] = useState(0);
   const openRef = useRef(open);
   openRef.current = open;
 
@@ -43,6 +46,10 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       setProjects(ps);
       setModel(m);
       setPlain(pl);
+      client
+        .queue()
+        .then((q) => setTaskCount(q.queued + q.running))
+        .catch(() => setTaskCount(0));
       // Expand the first project by default so a fresh install shows something.
       const expanded = Object.keys(openRef.current).length ? openRef.current : ps[0] ? { [ps[0].id]: true } : {};
       if (expanded !== openRef.current) setOpen(expanded);
@@ -84,6 +91,7 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   }, [activeSession, client]);
 
   const go = (href: Parameters<typeof router.replace>[0]) => router.replace(href);
+  const here = useHere();
 
   return (
     <View style={styles.side}>
@@ -107,8 +115,19 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         <Text style={[type.labelMedium, styles.kbd]}>Ctrl N</Text>
       </Pressable>
 
+      <View style={styles.brainRow}>
+        <BrainBanner onPress={() => go('/devices')} />
+      </View>
+
       <View style={styles.homeRow}>
         <Row icon="home-outline" label="Home" active={pathname === '/'} onPress={() => go('/')} />
+        <Row
+          icon="calendar-clock"
+          label="Tasks"
+          active={pathname === '/tasks'}
+          onPress={() => go('/tasks')}
+          trailing={taskCount ? <Text style={[type.labelMedium, styles.count]}>{taskCount}</Text> : undefined}
+        />
       </View>
 
       <ScrollView style={styles.grow} contentContainerStyle={styles.list}>
@@ -144,11 +163,13 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         {projects?.map((p) => {
           const expanded = !!open[p.id];
           const list = chats[p.id] ?? [];
+          const where = locationLabel(p.location, here);
           return (
             <View key={p.id}>
               <Row
                 icon={expanded ? 'folder-open-outline' : 'folder-outline'}
                 label={p.name}
+                where={where && !where.brain ? where : null}
                 active={activeProject === p.id}
                 onPress={() => setOpen((o) => ({ ...o, [p.id]: !expanded }))}
                 trailing={
@@ -236,9 +257,9 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
-        onCreate={async (name, path) => {
+        onCreate={async (name, path, deviceId) => {
           if (!client) return;
-          const p = await client.createProject(name, path);
+          const p = await client.createProject(name, path, deviceId);
           setAdding(false);
           setOpen((o) => ({ ...o, [p.id]: true }));
           emit('projects');
@@ -257,7 +278,9 @@ function Row({
   muted,
   status,
   trailing,
+  where,
 }: {
+  where?: { text: string; online: boolean } | null;
   label: string;
   icon?: Parameters<typeof Icon>[0]['name'];
   onPress: () => void;
@@ -279,22 +302,37 @@ function Row({
           (hovered || pressed) && !active && styles.hover,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={label}
+        accessibilityLabel={where ? `${label}, files on ${where.text}${where.online ? '' : ' (offline)'}` : label}
         accessibilityState={{ selected: !!active }}
       >
         {icon ? <Icon name={icon} size={20} color={active ? m3.onSecondaryContainer : m3.onSurfaceVariant} /> : null}
-        <Text
-          style={[
-            small ? type.bodyMedium : type.labelLarge,
-            styles.grow,
-            {
-              color: active ? m3.onSecondaryContainer : muted ? m3.outline : small ? m3.onSurfaceVariant : m3.onSurface,
-            },
-          ]}
-          numberOfLines={1}
-        >
-          {label}
-        </Text>
+        <View style={styles.grow}>
+          <Text
+            style={[
+              small ? type.bodyMedium : type.labelLarge,
+              {
+                color: active ? m3.onSecondaryContainer : muted ? m3.outline : small ? m3.onSurfaceVariant : m3.onSurface,
+              },
+            ]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          {busy ? (
+            <Text style={[type.bodySmall, styles.working]} numberOfLines={1}>
+              Working…
+            </Text>
+          ) : null}
+          {where ? (
+            <View style={styles.where}>
+              <Icon name="laptop" size={13} color={m3.onSurfaceVariant} />
+              <Text style={[type.bodySmall, styles.whereText]} numberOfLines={1}>
+                {where.text}
+              </Text>
+              <View style={[styles.dot, { backgroundColor: where.online ? m3.success : m3.outline }]} />
+            </View>
+          ) : null}
+        </View>
         {busy ? <ActivityIndicator size="small" color={statusColor.running} /> : null}
         {flagged ? <View style={[styles.dot, { backgroundColor: m3.error }]} /> : null}
       </Pressable>
@@ -304,6 +342,7 @@ function Row({
 }
 
 const styles = StyleSheet.create({
+  working: { color: m3.primary },
   side: {
     width: 288,
     backgroundColor: m3.surfaceContainerLow,
@@ -335,6 +374,9 @@ const styles = StyleSheet.create({
   section: { color: m3.onSurfaceVariant, letterSpacing: 1 },
   list: { paddingBottom: space.lg },
   homeRow: { marginTop: space.sm },
+  brainRow: { marginTop: space.md },
+  where: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  whereText: { color: m3.onSurfaceVariant, flexShrink: 1 },
   empty: { paddingHorizontal: space.md, paddingVertical: space.sm },
   rowWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: radius.md },
   row: {
@@ -369,4 +411,15 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  count: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    marginRight: space.md,
+    borderRadius: 11,
+    overflow: 'hidden',
+    textAlign: 'center',
+    lineHeight: 22,
+    backgroundColor: m3.primaryContainer,
+    color: m3.onPrimaryContainer,
+  },
 });

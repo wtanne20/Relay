@@ -51,6 +51,7 @@ const TOOL_ICONS: Record<string, IconName> = {
   run_command: 'console',
   web_search: 'magnify',
   fetch_url: 'web',
+  search_documents: 'file-search-outline',
 };
 
 function same(a: unknown, b: unknown) {
@@ -197,6 +198,14 @@ export default function AgentSettingsScreen() {
             options={APPROVAL_OPTIONS}
             onChange={(v) => set('agent', { approval: v })}
           />
+          {a.approval !== 'never' ? (
+            <NavRow
+              icon="shield-check-outline"
+              label="Always allowed"
+              value="Commands, folders and sites it doesn't ask about"
+              onPress={() => router.push('/approvals')}
+            />
+          ) : null}
           <Segmented
             label="Thinking"
             icon="head-lightbulb-outline"

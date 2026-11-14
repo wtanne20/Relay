@@ -4,8 +4,11 @@
 
 use super::sandbox::Sandbox;
 
-/// Returns Some(reason) if the command should be refused.
-pub fn check_command(command: &str, sandbox: &Sandbox) -> Option<String> {
+/// The sandbox-free part of the guard: phrases and programs that are never
+/// allowed, on the PC or on a device. Used for commands that run on a
+/// paired device, where the delete-target check can't apply (the folder is
+/// not on this machine - the device's own sandbox confines it).
+pub fn check_command_remote(command: &str) -> Option<String> {
     let lower = command.to_lowercase();
     let squashed: String = lower.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -66,6 +69,16 @@ pub fn check_command(command: &str, sandbox: &Sandbox) -> Option<String> {
             return Some(format!("blocked: running '{base}' is not allowed"));
         }
     }
+    None
+}
+
+/// Returns Some(reason) if the command should be refused.
+pub fn check_command(command: &str, sandbox: &Sandbox) -> Option<String> {
+    if let Some(r) = check_command_remote(command) {
+        return Some(r);
+    }
+    let lower = command.to_lowercase();
+    let tokens = tokenize(&lower);
 
     // `format c:` / `format d: /q` etc. (cmd's format.com)
     for w in tokens.windows(2) {

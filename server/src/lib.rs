@@ -1,13 +1,17 @@
 //! Relay: a personal coding-agent server backed by llama.cpp's llama-server.
 
 pub mod agent;
+pub mod approvals;
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod device;
 pub mod files;
 pub mod hub;
 pub mod images;
+pub mod knowledge;
 pub mod libraries;
+pub mod link;
 pub mod migrate;
 pub mod mockup;
 pub mod model_manager;
@@ -15,11 +19,15 @@ pub mod process_guard;
 pub mod push;
 pub mod setup;
 pub mod skills;
+pub mod stats;
+pub mod tasks;
 pub mod tools;
+pub mod ui;
 pub mod updates;
 pub mod web;
 pub mod ws;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -50,6 +58,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     if stale > 0 {
         tracing::warn!("marked {stale} interrupted session(s) as stopped");
     }
+    db.call(|c| tasks::reset_stale(c)).await?;
 
     let (hardware, tailscale) = tokio::join!(setup::detect_hardware(), setup::detect_tailscale());
     for g in &hardware.gpus {
@@ -59,13 +68,22 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     let shared = SharedConfig::new(cfg);
     let model = ModelManager::start(shared.clone(), hardware.clone());
     let pusher = Pusher::new(db.clone(), shared.clone());
+    let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
+    let links = Arc::new(link::LinkHub::default());
+    let knowledge = knowledge::KnowledgeBase::new(db.clone(), &data_dir, Arc::clone(&links))?;
     let agent = agent::AgentManager::new(
         db.clone(),
         model.clone(),
         shared.clone(),
         pusher.clone(),
         images::dir(&data_dir),
+        device::DeviceRegistry::new(db.clone()),
+        Arc::clone(&links),
+        Arc::clone(&knowledge),
     );
+    let shutdown = CancellationToken::new();
+    let tasks = tasks::Tasks::new(db.clone(), agent.clone(), pusher.clone());
+    tasks.spawn(shutdown.clone());
     let state: AppState = Arc::new(AppInner {
         cfg: shared,
         hardware,
@@ -74,12 +92,18 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         model,
         agent,
         pusher,
-        shutdown: CancellationToken::new(),
+        tasks,
+        shutdown,
         started_at: chrono::Utc::now(),
         phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
         downloads: Default::default(),
         updates: Default::default(),
+        devices,
+        links,
+        knowledge,
+        pair_code: std::sync::Mutex::new(None),
         data_dir,
+        web_root: ui::web_root(),
     });
     Ok((api::router(state.clone()), state))
 }
@@ -233,6 +257,53 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
     state.model.shutdown().await;
     tracing::info!("bye");
     Ok(ServeOutcome::Stopped)
+}
+
+/// Options for [`run_host`].
+pub struct HostOptions {
+    /// Bind address, e.g. "0.0.0.0:8766".
+    pub bind: String,
+    /// Bearer token the PC must present.
+    pub token: String,
+    /// Friendly name shown in the PC's device list.
+    pub name: String,
+    /// Folder the device's tools are confined to.
+    pub root: PathBuf,
+    /// Shell for run_command ("sh", "bash", ...).
+    pub shell: String,
+    /// Default command timeout in seconds.
+    pub timeout: u64,
+}
+
+/// `relay host`: serve this device's files and shell to a Relay PC.
+/// No model, no database, no agent loop - just the tools, over HTTP.
+pub async fn run_host(opts: HostOptions) -> Result<()> {
+    let app = device::host_app(device::HostConfig {
+        token: opts.token.clone(),
+        name: opts.name.clone(),
+        root: opts.root.clone(),
+        shell: opts.shell.clone(),
+        default_timeout: opts.timeout,
+        data_dir: None,
+    })?;
+    let listener = tokio::net::TcpListener::bind(&opts.bind).await?;
+    println!(
+        "\n  Relay host is serving {} at {bind}\n  (token: {token})\n  Press Ctrl+C to stop.\n",
+        opts.root.display(),
+        bind = opts.bind,
+        token = opts.token,
+    );
+    let graceful = async {
+        wait_for_shutdown_signal().await;
+    };
+    tokio::select! {
+        r = axum::serve(listener, app).into_future() => {
+            r.context("host server error")?;
+        }
+        _ = graceful => {}
+    }
+    tracing::info!("host stopped");
+    Ok(())
 }
 
 /// `relay pair`: shows the QR code (console and browser) without starting

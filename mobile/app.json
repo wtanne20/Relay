@@ -3,7 +3,7 @@
     "name": "Relay",
     "slug": "relay",
     "scheme": "relay",
-    "version": "1.0.4",
+    "version": "1.0.10",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -33,6 +33,10 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        { "action": "SEND", "category": ["DEFAULT"], "data": [{ "mimeType": "*/*" }] },
+        { "action": "SEND_MULTIPLE", "category": ["DEFAULT"], "data": [{ "mimeType": "*/*" }] }
+      ],
       "predictiveBackGestureEnabled": false
     },
     "plugins": [
@@ -43,14 +47,14 @@
         {
           "photosPermission": "Relay lets you attach photos to a chat so the model can look at them.",
           "cameraPermission": "Relay lets you take a photo to attach to a chat.",
-          "microphonePermission": false
+          "microphonePermission": "Relay listens in voice mode, so you can talk to the agent hands-free. Speech is turned into text on this phone."
         }
       ],
       [
         "expo-camera",
         {
           "cameraPermission": "Relay uses the camera to scan the pairing QR code shown on your PC.",
-          "microphonePermission": false,
+          "microphonePermission": "Relay listens in voice mode, so you can talk to the agent hands-free. Speech is turned into text on this phone.",
           "recordAudioAndroid": false
         }
       ],
@@ -67,6 +71,13 @@
           "android": {
             "usesCleartextTraffic": true
           }
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Relay listens in voice mode, so you can talk to the agent hands-free. Speech is turned into text on this phone.",
+          "speechRecognitionPermission": "Relay turns what you say in voice mode into text for the agent."
         }
       ],
       "expo-font"

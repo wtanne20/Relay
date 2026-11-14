@@ -1,13 +1,22 @@
 import type { Credentials } from './storage';
 import type {
+  DocumentFolder,
+  DocumentSearch,
+  FolderListing,
   HubDownload,
   InstallState,
   UpdateInfo,
   ModelLibrary,
   HubFile,
   HubRepo,
+  ActivityFilter,
   ApprovalDecision,
+  ApprovalRule,
+  AuditEntry,
+  RuleDraft,
   DeepPartial,
+  Device,
+  PairCode,
   Message,
   ModelFile,
   ModelStatus,
@@ -16,8 +25,13 @@ import type {
   Session,
   Settings,
   SettingsResponse,
+  StatsResponse,
   SkillInfo,
   RecentSession,
+  QueueItem,
+  QueueResponse,
+  Repeat,
+  Schedule,
 } from './types';
 
 export const DEFAULT_PORT = 8765;
@@ -142,6 +156,11 @@ export class RelayClient {
     return this.request<{ ok: boolean }>('POST', '/model/unload');
   }
 
+  /** Model speeds and memory use on the brain and linked computers. */
+  stats() {
+    return this.request<StatsResponse>('GET', '/stats', undefined, 15000);
+  }
+
   // ----- agent settings -----
   settings() {
     return this.request<SettingsResponse>('GET', '/settings');
@@ -218,18 +237,80 @@ export class RelayClient {
     return (await this.request<{ projects: Project[] }>('GET', '/projects')).projects;
   }
   /** With an empty path, the server creates a folder named after the project in the projects folder. */
-  async createProject(name: string, path: string): Promise<Project> {
-    return (await this.request<{ project: Project }>('POST', '/projects', { name, path })).project;
+  async createProject(name: string, path: string, deviceId?: string): Promise<Project> {
+    const body = deviceId ? { name, path, device_id: deviceId } : { name, path };
+    return (await this.request<{ project: Project }>('POST', '/projects', body, 30000)).project;
   }
   async project(id: string): Promise<Project> {
     return (await this.request<{ project: Project }>('GET', `/projects/${encodeURIComponent(id)}`)).project;
   }
   /** `model: ''` goes back to whatever model is loaded. */
-  async updateProject(id: string, patch: { name?: string; instructions?: string; model?: string }): Promise<Project> {
+  /** `device_id: ''` runs the tools on the PC again. */
+  async updateProject(
+    id: string,
+    patch: { name?: string; instructions?: string; model?: string; device_id?: string },
+  ): Promise<Project> {
     return (await this.request<{ project: Project }>('PATCH', `/projects/${encodeURIComponent(id)}`, patch)).project;
   }
   async deleteProject(id: string): Promise<void> {
     await this.request('DELETE', `/projects/${encodeURIComponent(id)}`);
+  }
+
+  // ----- devices -----
+  /** Paired devices the agent can work in (phone Proot Linux, ...). */
+  async devices(): Promise<Device[]> {
+    return (await this.request<{ devices: Device[] }>('GET', '/devices')).devices;
+  }
+  /** Pairs a device host; the PC checks it answers before saving. */
+  async addDevice(name: string, url: string, token: string): Promise<Device> {
+    return (await this.request<{ device: Device }>('POST', '/devices', { name, url, token })).device;
+  }
+  async removeDevice(id: string): Promise<void> {
+    await this.request('DELETE', `/devices/${encodeURIComponent(id)}`);
+  }
+  /** A fresh 6-digit code a new computer pairs with (valid ten minutes). */
+  pairCode(): Promise<PairCode> {
+    return this.request<PairCode>('POST', '/devices/pair-code', {});
+  }
+  renameDevice(id: string, name: string): Promise<{ device: Device }> {
+    return this.request('PATCH', `/devices/${encodeURIComponent(id)}`, { name });
+  }
+  /** Sub-folders of a folder on a device ('' = the folder it shares). */
+  browseDevice(id: string, path: string): Promise<{ path: string; root: string; folders: string[] }> {
+    return this.request('GET', `/devices/${encodeURIComponent(id)}/browse?path=${encodeURIComponent(path)}`, undefined, 20000);
+  }
+  /** Re-checks the link and refreshes last_seen. */
+  async pingDevice(id: string): Promise<{ connected: boolean; error?: string }> {
+    return this.request('POST', `/devices/${encodeURIComponent(id)}/ping`, {});
+  }
+
+  // ----- documents (folders the agent can search) -----
+  async documentFolders(): Promise<DocumentFolder[]> {
+    return (await this.request<{ folders: DocumentFolder[] }>('GET', '/knowledge', undefined, 30000)).folders;
+  }
+  async addDocumentFolder(path: string, deviceId: string): Promise<DocumentFolder> {
+    return (
+      await this.request<{ folder: DocumentFolder }>('POST', '/knowledge', { path, device_id: deviceId }, 30000)
+    ).folder;
+  }
+  async removeDocumentFolder(id: string): Promise<void> {
+    await this.request('DELETE', `/knowledge/${encodeURIComponent(id)}`);
+  }
+  async reindexDocumentFolder(id: string): Promise<DocumentFolder> {
+    return (await this.request<{ folder: DocumentFolder }>('POST', `/knowledge/${encodeURIComponent(id)}/reindex`, {}, 30000))
+      .folder;
+  }
+  searchDocuments(q: string): Promise<DocumentSearch> {
+    return this.request('GET', `/knowledge/search?q=${encodeURIComponent(q)}&limit=8`, undefined, 30000);
+  }
+  /** Sub-folders of a folder on the brain ('' device) or a linked computer ('' path = home). */
+  browseFolders(deviceId: string, path: string): Promise<FolderListing> {
+    return this.request(
+      'GET',
+      `/knowledge/browse?device_id=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(path)}`,
+      undefined,
+      20000,
+    );
   }
 
   // ----- sessions -----
@@ -288,14 +369,77 @@ export class RelayClient {
       `/sessions/${encodeURIComponent(id)}/messages?${q.toString()}`,
     );
   }
-  sendPrompt(id: string, content: string, images: string[] = [], files: { name: string; data: string }[] = []) {
+  /** `voice`: sent from voice mode, so the reply comes in plain spoken sentences. */
+  sendPrompt(
+    id: string,
+    content: string,
+    images: string[] = [],
+    files: { name: string; data: string }[] = [],
+    voice = false,
+  ) {
     return this.request<{ message: Message; status: string }>(
       'POST',
       `/sessions/${encodeURIComponent(id)}/prompt`,
-      files.length ? { content, images, files } : { content, images },
+      { content, images, ...(files.length ? { files } : {}), ...(voice ? { voice } : {}) },
       images.length || files.length ? 120000 : undefined,
     );
   }
+  // ----- background tasks -----
+  /** Running, waiting and recently finished queued tasks. */
+  queue() {
+    return this.request<QueueResponse>('GET', '/queue');
+  }
+  /** Adds a task to the queue: a new chat in a project, or the next message of a chat. */
+  async enqueue(task: {
+    prompt: string;
+    name?: string;
+    project_id?: string;
+    session_id?: string;
+    allow_all?: boolean;
+  }): Promise<QueueItem> {
+    return (await this.request<{ item: QueueItem }>('POST', '/queue', task)).item;
+  }
+  /** Takes a waiting task out of the line, stops a running one, or hides a finished one. */
+  removeQueued(id: string) {
+    return this.request<{ ok: boolean; stopping?: boolean }>('DELETE', `/queue/${encodeURIComponent(id)}`);
+  }
+  runQueuedFirst(id: string) {
+    return this.request<{ ok: boolean }>('POST', `/queue/${encodeURIComponent(id)}/first`, {});
+  }
+  clearFinishedTasks() {
+    return this.request<{ removed: number }>('POST', '/queue/clear', {});
+  }
+  async schedules(): Promise<Schedule[]> {
+    return (await this.request<{ schedules: Schedule[] }>('GET', '/schedules')).schedules;
+  }
+  async schedule(id: string): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('GET', `/schedules/${encodeURIComponent(id)}`)).schedule;
+  }
+  async createSchedule(s: {
+    name?: string;
+    prompt: string;
+    project_id?: string;
+    repeat: Repeat;
+    same_chat?: boolean;
+    allow_all?: boolean;
+    enabled?: boolean;
+  }): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('POST', '/schedules', s)).schedule;
+  }
+  async updateSchedule(
+    id: string,
+    s: Partial<{ name: string; prompt: string; project_id: string; repeat: Repeat; same_chat: boolean; allow_all: boolean; enabled: boolean }>,
+  ): Promise<Schedule> {
+    return (await this.request<{ schedule: Schedule }>('PATCH', `/schedules/${encodeURIComponent(id)}`, s)).schedule;
+  }
+  deleteSchedule(id: string) {
+    return this.request<{ ok: boolean }>('DELETE', `/schedules/${encodeURIComponent(id)}`);
+  }
+  /** Runs a scheduled task now (it goes to the queue). */
+  async runSchedule(id: string): Promise<QueueItem> {
+    return (await this.request<{ item: QueueItem }>('POST', `/schedules/${encodeURIComponent(id)}/run`, {})).item;
+  }
+
   // ----- updates -----
   updates(refresh = false) {
     return this.request<UpdateInfo>('GET', `/updates${refresh ? '?refresh=true' : ''}`, undefined, 40000);
@@ -311,12 +455,36 @@ export class RelayClient {
     return this.request<{ stopping: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/stop`, {});
   }
 
-  answerApproval(id: string, toolCallId: string, decision: ApprovalDecision, note?: string) {
-    return this.request<{ ok: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/approval`, {
-      tool_call_id: toolCallId,
-      decision,
-      note,
-    });
+  answerApproval(id: string, toolCallId: string, decision: ApprovalDecision, note?: string, rule?: RuleDraft) {
+    return this.request<{ ok: boolean; rule?: ApprovalRule | null }>(
+      'POST',
+      `/sessions/${encodeURIComponent(id)}/approval`,
+      { tool_call_id: toolCallId, decision, note, rule },
+    );
+  }
+
+  // ----- always-allow rules and activity -----
+  approvalRules() {
+    return this.request<{ rules: ApprovalRule[] }>('GET', '/approval-rules');
+  }
+  addApprovalRule(rule: RuleDraft) {
+    return this.request<ApprovalRule>('POST', '/approval-rules', rule);
+  }
+  deleteApprovalRule(id: number) {
+    return this.request<{ ok: boolean }>('DELETE', `/approval-rules/${id}`);
+  }
+  activity(q: { before?: number; filter?: ActivityFilter; projectId?: string; sessionId?: string; limit?: number } = {}) {
+    const p = new URLSearchParams();
+    if (q.before) p.set('before', String(q.before));
+    if (q.filter) p.set('filter', q.filter);
+    if (q.projectId) p.set('project_id', q.projectId);
+    if (q.sessionId) p.set('session_id', q.sessionId);
+    if (q.limit) p.set('limit', String(q.limit));
+    const qs = p.toString();
+    return this.request<{ entries: AuditEntry[]; has_more: boolean }>('GET', `/activity${qs ? `?${qs}` : ''}`);
+  }
+  clearActivity() {
+    return this.request<{ removed: number }>('DELETE', '/activity');
   }
 
   // ----- mockups -----

@@ -216,6 +216,12 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "write_file",
                 &json!({"path": "hello.txt", "content": "hi"}),
             ));
+        } else if let Some(q) = content.strip_prefix("docs:") {
+            chunks.extend(tool_call_chunks(
+                &format!("call_{n}"),
+                "search_documents",
+                &json!({"query": q.trim()}),
+            ));
         } else if let Some(cmd) = content.strip_prefix("run:") {
             chunks.extend(tool_call_chunks(
                 &format!("call_{n}"),
@@ -258,6 +264,16 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 ));
             }
             chunks.push(chunk(json!({}), Some("tool_calls")));
+        } else if lower.contains("which reply style") {
+            // Says which formatting instructions it was given.
+            let style = if system.contains("# Voice conversation")
+                && !system.contains("# How to format answers")
+            {
+                "spoken"
+            } else {
+                "written"
+            };
+            chunks.extend(text_chunks(&format!("Style: {style}")));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));
@@ -268,7 +284,11 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
     }
     chunks.push(format!(
         "data: {}\n\n",
-        json!({"choices": [], "usage": {"prompt_tokens": tokens, "completion_tokens": 10}})
+        json!({
+            "choices": [],
+            "usage": {"prompt_tokens": tokens, "completion_tokens": 10},
+            "timings": {"prompt_n": tokens, "prompt_per_second": 500.0, "predicted_n": 10, "predicted_per_second": 40.0}
+        })
     ));
     chunks.push("data: [DONE]\n\n".to_string());
 

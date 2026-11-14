@@ -38,6 +38,32 @@ pub struct Config {
     pub sampling: SamplingConfig,
     pub llama: LlamaConfig,
     pub push: PushConfig,
+    pub routing: RoutingConfig,
+}
+
+/// Sends quick questions to a small model and everything else to a big one.
+/// Only chats and projects that don't pick their own model are routed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoutingConfig {
+    pub enabled: bool,
+    /// The small, fast model for quick questions.
+    pub quick_model: String,
+    /// The model for heavy work. Empty = the default model.
+    pub heavy_model: String,
+    /// A prompt longer than this many words counts as heavy.
+    pub quick_max_words: u32,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            quick_model: String::new(),
+            heavy_model: String::new(),
+            quick_max_words: 60,
+        }
+    }
 }
 
 /// When the agent must ask before using a tool.
@@ -63,6 +89,8 @@ pub struct ToolToggles {
     pub run_command: bool,
     pub web_search: bool,
     pub fetch_url: bool,
+    /// search_documents and read_document (the user's searchable folders).
+    pub search_documents: bool,
 }
 
 impl Default for ToolToggles {
@@ -75,6 +103,7 @@ impl Default for ToolToggles {
             run_command: true,
             web_search: true,
             fetch_url: true,
+            search_documents: true,
         }
     }
 }
@@ -89,6 +118,7 @@ impl ToolToggles {
             "run_command" => self.run_command,
             "web_search" => self.web_search,
             "fetch_url" => self.fetch_url,
+            "search_documents" | "read_document" => self.search_documents,
             _ => false,
         }
     }
@@ -222,6 +252,7 @@ impl Default for Config {
             sampling: SamplingConfig::default(),
             llama: LlamaConfig::default(),
             push: PushConfig::default(),
+            routing: RoutingConfig::default(),
         }
     }
 }
@@ -320,7 +351,11 @@ impl Config {
         let s = &self.sampling;
         let a = &self.agent;
         let l = &self.llama;
-        let checks: [(bool, &str); 12] = [
+        let checks: [(bool, &str); 13] = [
+            (
+                (1..=2000).contains(&self.routing.quick_max_words),
+                "quick question length must be between 1 and 2000 words",
+            ),
             (
                 (0.0..=2.0).contains(&s.temperature),
                 "temperature must be between 0 and 2",

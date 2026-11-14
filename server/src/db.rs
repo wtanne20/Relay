@@ -30,6 +30,9 @@ pub struct Project {
     /// Model file this project's chats use unless a chat picks its own.
     #[serde(default)]
     pub model: Option<String>,
+    /// A paired device this project's tools run on (its folder + shell).
+    #[serde(default)]
+    pub device_id: Option<String>,
     /// Hidden from the lists until restored.
     #[serde(default)]
     pub archived: bool,
@@ -106,6 +109,28 @@ pub struct Message {
     /// Other files attached to a user message.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub files: Vec<crate::files::FileRef>,
+    /// On an assistant message: which model wrote it, and how fast.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stats: Option<ReplyStats>,
+}
+
+/// Which model wrote a reply, and how fast.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReplyStats {
+    /// The model's file name.
+    pub model: String,
+    /// "quick" or "heavy" when model routing picked the model.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub route: Option<String>,
+    /// Tokens the model wrote.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tokens: Option<u64>,
+    /// Writing speed, tokens per second.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tokens_per_sec: Option<f64>,
+    /// Prompt reading speed, tokens per second.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prompt_per_sec: Option<f64>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -120,6 +145,7 @@ pub struct NewMessage {
     pub covers_upto: Option<i64>,
     pub images: Vec<String>,
     pub files: Vec<crate::files::FileRef>,
+    pub stats: Option<ReplyStats>,
 }
 
 pub fn now() -> String {
@@ -196,6 +222,10 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(SCHEMA)?;
     upgrade(&conn)?;
+    crate::device::ensure_schema(&conn)?;
+    crate::approvals::ensure_schema(&conn)?;
+    crate::knowledge::ensure_schema(&conn)?;
+    crate::tasks::ensure_schema(&conn)?;
     Ok(conn)
 }
 
@@ -219,6 +249,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
     if !has_col("projects", "model")? {
         conn.execute_batch("ALTER TABLE projects ADD COLUMN model TEXT")?;
     }
+    if !has_col("projects", "device_id")? {
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN device_id TEXT")?;
+    }
     if !has_col("sessions", "model")? {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN model TEXT")?;
     }
@@ -236,6 +269,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
     if !has_col("messages", "files")? {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN files TEXT")?;
     }
+    if !has_col("messages", "stats")? {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN stats TEXT")?;
+    }
     for table in ["projects", "sessions"] {
         if !has_col(table, "archived")? {
             conn.execute_batch(&format!(
@@ -252,7 +288,8 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 // ---------- projects ----------
 
-const PROJECT_COLS: &str = "id, name, path, created_at, instructions, model, archived";
+const PROJECT_COLS: &str =
+    "id, name, path, created_at, instructions, model, archived, device_id";
 
 fn project_row(r: &Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -263,6 +300,7 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         instructions: r.get(4)?,
         model: r.get(5)?,
         archived: r.get::<_, i64>(6)? != 0,
+        device_id: r.get(7)?,
     })
 }
 
@@ -314,6 +352,7 @@ pub fn create_project(c: &Connection, name: &str, path: &str) -> Result<Project>
         created_at: now(),
         model: None,
         archived: false,
+        device_id: None,
     };
     c.execute(
         "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -329,6 +368,7 @@ pub fn update_project(
     path: Option<&str>,
     instructions: Option<&str>,
     model: Option<Option<&str>>,
+    device_id: Option<Option<&str>>,
 ) -> Result<Option<Project>> {
     if let Some(m) = model {
         c.execute(
@@ -352,6 +392,12 @@ pub fn update_project(
         c.execute(
             "UPDATE projects SET path = ?1 WHERE id = ?2",
             params![p, id],
+        )?;
+    }
+    if let Some(d) = device_id {
+        c.execute(
+            "UPDATE projects SET device_id = ?1 WHERE id = ?2",
+            params![d, id],
         )?;
     }
     get_project(c, id)
@@ -547,7 +593,7 @@ pub fn reset_stale_running(c: &Connection) -> Result<usize> {
 
 // ---------- messages ----------
 
-const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files";
+const MESSAGE_COLS: &str = "id, session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files, stats";
 
 fn message_row(r: &Row) -> rusqlite::Result<Message> {
     let tool_calls: Option<String> = r.get(5)?;
@@ -573,6 +619,9 @@ fn message_row(r: &Row) -> rusqlite::Result<Message> {
             .get::<_, Option<String>>(12)?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        stats: r
+            .get::<_, Option<String>>(13)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -593,9 +642,13 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
     } else {
         Some(serde_json::to_string(&m.files)?)
     };
+    let stats = match &m.stats {
+        Some(st) => Some(serde_json::to_string(st)?),
+        None => None,
+    };
     c.execute(
-        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO messages (session_id, role, content, reasoning, tool_calls, tool_call_id, tool_name, is_error, created_at, covers_upto, images, files, stats)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             session_id,
             m.role,
@@ -608,7 +661,8 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
             created_at,
             m.covers_upto,
             images,
-            files
+            files,
+            stats
         ],
     )?;
     let id = c.last_insert_rowid();
@@ -630,7 +684,17 @@ pub fn insert_message(c: &Connection, session_id: &str, m: &NewMessage) -> Resul
         covers_upto: m.covers_upto,
         images: m.images.clone(),
         files: m.files.clone(),
+        stats: m.stats.clone(),
     })
+}
+
+/// Whether model routing sent an earlier reply in this chat to the big model.
+pub fn was_routed_heavy(c: &Connection, session_id: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1 AND role = 'assistant' AND stats LIKE '%\"route\":\"heavy\"%')",
+        [session_id],
+        |r| r.get::<_, i64>(0),
+    )? != 0)
 }
 
 /// All messages for a session in order (used to build the model context).

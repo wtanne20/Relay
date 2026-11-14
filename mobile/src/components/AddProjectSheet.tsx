@@ -1,10 +1,12 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { useWide } from '../lib/layout';
+import { ComputerPicker, FolderBrowser, OfflineBanner, useComputers, useFolderBrowser } from './FolderPicker';
+import { useBrainInfo, useHere } from './Location';
 import { Sheet } from './Sheet';
 import { m3, space, type } from './theme';
 import { Banner, Button, Field } from './ui';
@@ -20,8 +22,9 @@ export function projectFolderPreview(root: string, name: string): string {
 }
 
 /**
- * New project: just a name. Relay creates a folder with that name inside the
- * projects folder set in Settings.
+ * New project. On the brain: just a name, and Relay creates a folder with
+ * that name inside the projects folder set in Settings. On a linked
+ * computer: pick one of its folders.
  */
 export function AddProjectSheet({
   visible,
@@ -30,13 +33,22 @@ export function AddProjectSheet({
 }: {
   visible: boolean;
   onClose: () => void;
-  onCreate: (name: string, path: string) => Promise<void>;
+  onCreate: (name: string, path: string, deviceId?: string) => Promise<void>;
 }) {
   const { client } = useConnection();
+  const brain = useBrainInfo();
+  const here = useHere();
   const [root, setRoot] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { devices, where, setWhere, device } = useComputers(visible);
+  // On the brain a new project gets its own folder, so there is nothing to browse.
+  const load = useMemo(
+    () => (client && where ? (path: string) => client.browseDevice(where, path) : null),
+    [client, where],
+  );
+  const { folder, browsing, browse, clear } = useFolderBrowser(load, setError);
 
   useEffect(() => {
     if (!visible || !client) return;
@@ -47,7 +59,26 @@ export function AddProjectSheet({
       .catch((e) => setError(describeError(e)));
   }, [visible, client]);
 
+  useEffect(() => {
+    clear();
+    if (visible && where) browse('');
+  }, [visible, where, browse, clear]);
+
   const submit = async () => {
+    if (where) {
+      if (!folder) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await onCreate(name.trim(), folder.path, where);
+        setName('');
+      } catch (e) {
+        setError(describeError(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!name.trim() || !root) return;
     setBusy(true);
     setError(null);
@@ -69,9 +100,31 @@ export function AddProjectSheet({
     else router.push('/settings');
   };
 
+  const brainName = brain?.hostname || 'the brain';
+
   return (
     <Sheet visible={visible} onClose={onClose} title="New project">
-      {root === null && !error ? (
+      <ComputerPicker label="Where the files are" devices={devices} value={where} onChange={setWhere} />
+      {where ? (
+        <>
+          <OfflineBanner device={device} />
+          <FolderBrowser folder={folder} browsing={browsing} onBrowse={browse} />
+          <Field
+            label="Project name (optional)"
+            icon="tag-outline"
+            placeholder={folder ? folder.path.split(/[\\/]/).filter(Boolean).pop() ?? '' : ''}
+            value={name}
+            onChangeText={setName}
+            autoCapitalize="sentences"
+            onSubmitEditing={submit}
+          />
+          {error ? <Banner message={error} /> : null}
+          <View style={styles.actions}>
+            <Button title="Cancel" variant="text" onPress={onClose} />
+            <Button title="Use this folder" icon="check" onPress={submit} loading={busy} disabled={!folder} />
+          </View>
+        </>
+      ) : root === null && !error ? (
         <ActivityIndicator color={m3.primary} style={styles.loading} />
       ) : root === '' ? (
         <>
@@ -97,7 +150,7 @@ export function AddProjectSheet({
           />
           {root ? (
             <Text style={[type.bodySmall, styles.preview]} numberOfLines={2}>
-              Creates {projectFolderPreview(root, name)}
+              Creates {projectFolderPreview(root, name)} on {here.isBrain ? 'this computer' : brainName}
             </Text>
           ) : null}
           {error ? <Banner message={error} /> : null}
@@ -107,7 +160,7 @@ export function AddProjectSheet({
           </View>
         </>
       )}
-      {root === null && error ? <Banner message={error} /> : null}
+      {!where && root === null && error ? <Banner message={error} /> : null}
     </Sheet>
   );
 }

@@ -17,11 +17,15 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 
 ## Contents
 
-- [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`
+- [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
 - [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
+- [Always-allow rules and activity](#always-allow-rules-and-activity): `GET/POST /approval-rules`, `DELETE /approval-rules/{id}`, `GET/DELETE /activity`
+- [Background tasks](#background-tasks): `GET/POST /queue`, `DELETE /queue/{id}`, `POST /queue/{id}/first`, `POST /queue/clear`, `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET /notices`
+- [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
+- [Your documents](#your-documents): `GET/POST /knowledge`, `DELETE /knowledge/{id}`, `POST /knowledge/{id}/reindex`, `GET /knowledge/search`, `GET /knowledge/browse`
 - [Push tokens](#push-tokens): `POST/DELETE /push-tokens`
 - [WebSocket](#websocket-get-sessionsidws): `GET /sessions/{id}/ws` and every event type
 - [Objects](#objects): Project, Session, Message, ModelStatus
@@ -83,6 +87,30 @@ Stops llama-server (if Relay launched it) and starts it again; also clears the
 
 ---
 
+### `GET /stats`
+
+Speed and memory, for the Speed and memory screen. Speeds count since Relay started; each linked computer that is
+online is asked for its memory (older versions answer `null`).
+
+```json
+{
+  "brain": {
+    "name": "DESKTOP-1", "os": "windows",
+    "model": { "state": "ready", "file": "Qwen3-4B-Q4_K_M.gguf" },
+    "memory": { "total_mb": 65448, "used_mb": 21004, "model_mb": 3120 },
+    "gpus": [ { "name": "NVIDIA GeForce RTX 5090", "total_mb": 32607, "used_mb": 9210 } ]
+  },
+  "speeds": [
+    { "model": "Qwen3-4B-Q4_K_M.gguf", "replies": 12, "tokens": 4810, "avg_tokens_per_sec": 141.2,
+      "last_tokens_per_sec": 138.9, "last_prompt_per_sec": 2210.0, "last_at": "2026-11-11T06:10:00.000Z" }
+  ],
+  "devices": [ { "id": "…", "name": "Laptop", "os": "linux", "connected": true,
+                 "memory": { "total_mb": 15890, "used_mb": 6020 } } ]
+}
+```
+
+`memory.model_mb` is llama-server's memory, when Relay started it. `gpus` is empty without `nvidia-smi`.
+
 ## Agent settings
 
 Everything here is saved to `config.toml` on the PC.
@@ -127,6 +155,13 @@ Everything here is saved to `config.toml` on the PC.
 - `llama.*` become llama-server arguments: `-m <model_path> --port <port> --jinja -ngl <gpu_layers>
   -c <context_size> --flash-attn <flash_attn> --cache-type-k <cache_type_k> --cache-type-v <cache_type_v>
   <extra_args…> --host 127.0.0.1`.
+
+- `routing`: `{enabled, quick_model, heavy_model, quick_max_words}`. With `enabled` and a `quick_model`, a prompt in a
+  chat or project that doesn't pick its own model goes to `quick_model` when it looks like a quick question, and
+  to `heavy_model` (empty = the default model) otherwise. Project work (tools), attachments, code, prompts longer
+  than `quick_max_words` (default 60), requests like "write", "fix" or "summarize", and any chat that already
+  needed the big model count as heavy. A quick question uses the big model when that one is already loaded, and
+  routing uses the loaded model instead of waiting while another chat runs. Changes apply from the next prompt.
 
 The token, bind address, shell and extra skill folders are not exposed and can't be changed through the API.
 
@@ -187,7 +222,18 @@ Turn skills off with `PATCH /settings` `{"disabled_skills": ["pdf"]}`.
 
 ## Projects
 
-A project is a name plus an absolute folder path on the PC. The agent's tools are confined to that folder.
+A project is a name plus an absolute folder path. The folder is on the brain, or on a
+[linked computer](#linked-computers) when `device_id` is set. The agent's tools are confined to that folder.
+
+Every project in a response carries `location`, which computer its folder is on:
+
+```json
+{ "kind": "brain", "name": "DESKTOP-WILL", "online": true }
+{ "kind": "device", "device_id": "c687…", "name": "laptop", "online": false }
+{ "kind": "none" }
+```
+
+(`none` is the built-in plain-chats space, which has no folder.)
 
 ### `GET /projects`
 
@@ -212,6 +258,13 @@ A project is a name plus an absolute folder path on the PC. The agent's tools ar
 ```
 
 `409` if the folder is already a project.
+
+For a folder on a linked computer, add `device_id`; `path` is then an absolute path on that computer, inside the
+folder it shares (empty: the shared folder itself). The computer must be connected; it checks the folder.
+
+```json
+{ "device_id": "c687…", "path": "/home/will/code/website" }
+```
 
 ### `GET /projects/{id}`
 
@@ -352,6 +405,9 @@ Stores the prompt and starts the agent as a background task (it keeps running if
 { "content": "Run the tests and fix any failures" }
 ```
 
+Optional: `"voice": true` marks a prompt spoken in the phone's voice mode. For that prompt only, the model is asked
+to answer in short plain spoken sentences (no Markdown, code or links), because the phone reads the reply aloud.
+
 ```json
 {
   "message": { "id": 45, "session_id": "c2d7…", "role": "user", "content": "Run the tests and fix any failures", "created_at": "…" },
@@ -381,9 +437,247 @@ Answers the tool call the agent is waiting on (see `approval_request` below).
 { "tool_call_id": "call_3", "decision": "approve", "note": null }
 ```
 
-`decision` is `approve`, `approve_all` (this call and every later one in the current task) or `deny`. With
-`deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if nothing is
-waiting or the id doesn't match.
+`decision` is `approve`, `approve_all` (this call and every later one in the current task), `always_allow` or
+`deny`. With `deny`, an optional `note` is passed to the model as the reason. Returns `{"ok": true}`, or `409` if
+nothing is waiting or the id doesn't match.
+
+`always_allow` approves the call and saves an always-allow rule (see below) so calls like it aren't asked about
+again. The rule is the request's `suggested_rule` unless the body carries its own `rule`. The saved rule comes
+back as `"rule"`.
+
+## Always-allow rules and activity
+
+A rule skips the question for tool calls it covers. Rules never run a tool that is turned off, and only matter
+when `agent.approval` asks about something.
+
+| `kind` | Covers | `pattern` |
+| --- | --- | --- |
+| `command` | `run_command` | Words the command starts with: `git status` covers `git status -s`, not `git statusx` or `git push`. A command with `; & \| $ \` < > ( ) { }` or a line break is never covered. |
+| `files` | `write_file`, `edit_file` | A folder in the project (`src`, or `.` for all of it). Always tied to one project. Paths with `..` are never covered. |
+| `web` | `fetch_url` | A site: `docs.rs` covers `docs.rs` and its subdomains. |
+
+`project_id` is the project the rule applies to, or `null` for every project.
+
+### `GET /approval-rules`
+
+`{"rules": [{"id": 3, "kind": "command", "pattern": "git status", "project_id": "…", "project_name": "app", "created_at": "…", "uses": 12, "last_used_at": "…"}]}`
+
+### `POST /approval-rules`
+
+Body `{"kind": "web", "pattern": "https://www.docs.rs/serde", "project_id": null}`. Returns the saved rule
+(the pattern is tidied, here to `docs.rs`). Saving the same rule twice returns the existing one. `400` for a
+pattern that can't be a rule.
+
+### `DELETE /approval-rules/{id}`
+
+`{"ok": true}`, or `404`.
+
+### `GET /activity`
+
+Every tool call the agent made, newest first, and how it got to run. Entries stay when a chat is deleted.
+Query: `before` (an entry id, for the next page), `limit` (default 50, at most 200), `project_id`, `session_id`,
+and `filter`: `commands`, `files` (writes and edits), `web`, `asked` (you answered) or `denied`.
+
+```json
+{
+  "entries": [
+    {
+      "id": 812, "at": "…", "project_id": "…", "project_name": "app", "session_id": "…", "session_title": "Fix build",
+      "tool": "run_command", "detail": "git status -s", "decision": "rule", "rule_id": 3, "is_error": false,
+      "session_exists": true
+    }
+  ],
+  "has_more": true
+}
+```
+
+`detail` is the command, path, address or search, never file contents. `decision` is `auto` (nothing asked),
+`rule`, `allowed`, `allowed_all`, `denied`, `stopped` or `off` (the tool is turned off). The newest 20,000
+entries are kept.
+
+### `DELETE /activity`
+
+Clears the log: `{"removed": 812}`.
+
+## Background tasks
+
+The **queue** runs prompts one after another on the brain, each in its own chat, whether or not a phone is
+connected. A **schedule** adds a prompt to the queue at set times. Times of day are the brain's local time; stored
+times are UTC (RFC 3339). Finished tasks notify the phone like any other chat.
+
+### `GET /queue`
+
+```json
+{ "items": [QueueItem], "queued": 2, "running": 1 }
+```
+
+Running first, then waiting in order, then up to 100 recently finished. `QueueItem`:
+
+```json
+{
+  "id": "…", "project_id": "chats", "project_name": "Chats",
+  "session_id": "…", "session_title": "Morning summary",
+  "schedule_id": null, "follow_up": false, "allow_all": false,
+  "name": "Morning summary", "prompt": "…",
+  "status": "queued | running | done | error | stopped", "error": null,
+  "created_at": "…", "started_at": null, "finished_at": null,
+  "needs_approval": true
+}
+```
+
+### `POST /queue` → `201`
+
+`{"prompt": "…", "name": "optional", "project_id": "optional, default chats"}` runs in a new chat when the
+background tasks before it are done (one runs at a time).
+
+`{"prompt": "…", "session_id": "…"}` is a **follow-up**: the next message of that chat, sent as soon as its current
+run ends. Follow-ups don't wait for other queued work. Text only. Returns `{"item": QueueItem}`.
+
+Add `"allow_all": true` to let the task act without asking: its tool calls skip the "Ask before acting" setting,
+so an unattended task can't hold up the queue waiting for an answer. Off by default.
+
+### `DELETE /queue/{id}`
+
+Cancels a waiting task, stops a running one (its chat is kept), or hides a finished one.
+
+### `POST /queue/{id}/first`
+
+Moves a waiting task to the front of the line. `409` if it isn't waiting.
+
+### `POST /queue/clear`
+
+Removes finished tasks from the list: `{"removed": 3}`.
+
+### `GET /schedules`, `GET /schedules/{id}`
+
+`{"schedules": [Schedule], "timezone": "+01:00"}`. `Schedule`:
+
+```json
+{
+  "id": "…", "project_id": "chats", "project_name": "Chats",
+  "name": "Morning summary", "prompt": "…",
+  "repeat": { "kind": "daily", "time": "08:00", "days": [1, 2, 3, 4, 5] },
+  "same_chat": false, "allow_all": false, "enabled": true,
+  "next_run": "2026-11-12T07:00:00.000Z", "last_run": null,
+  "last_session_id": null, "last_status": null, "created_at": "…"
+}
+```
+
+`repeat` is one of:
+
+- `{"kind": "daily", "time": "HH:MM", "days": [1..7]}`: Monday is 1; empty `days` means every day.
+- `{"kind": "every", "minutes": 60}`: 5 minutes to 31 days.
+- `{"kind": "once", "at": "2026-11-12T08:00"}`: turns itself off after running.
+
+`same_chat: true` continues one chat on every run instead of starting a new one. Runs missed while the brain was
+off happen once when it starts again.
+
+### `POST /schedules` → `201`, `PATCH /schedules/{id}`
+
+Body: any of `name`, `prompt`, `project_id`, `repeat`, `same_chat`, `allow_all`, `enabled` (`prompt` and `repeat`
+are required to create). `allow_all: true` makes every run act without asking, as for `POST /queue`. Changing `repeat` or turning it on recomputes `next_run`. `400` for a time that has passed.
+
+### `DELETE /schedules/{id}`
+
+Deletes it and its runs still waiting; chats from earlier runs stay.
+
+### `POST /schedules/{id}/run` → `201`
+
+Adds a run to the queue now, without changing `next_run`.
+
+### `GET /notices?after={id}&limit=20`
+
+What finished, failed, was stopped or asked for approval since notice `after` (oldest first), with only names and
+status: `{"notices": [{"id": 12, "at": "…", "status": "done", "project_id": "…", "project_name": "…",
+"session_id": "…", "title": "…"}], "last_id": 12}`. Without `after`, only `last_id`. The Android app without a push
+service checks this every 15 minutes or so, so tasks that ran while it was closed still notify.
+
+## Linked computers
+
+The brain runs the model, the agent and the history. A linked computer shares one folder with it, and projects
+can keep their files there. The linked computer dials out to the brain over Tailscale and keeps one WebSocket
+open; the brain sends file and command requests down it. Nothing listens on the linked computer.
+
+### `GET /hello` (no token)
+
+Lets a computer on the tailnet find brains. `{"relay": "brain", "name": "DESKTOP-WILL", "version": "1.0.6", "os": "windows"}`
+
+### `POST /devices/pair-code`
+
+Starts pairing: `{"code": "532397", "expires_at": "…", "brain_url": "http://100.101.102.103:8765", "brain_name": "…", "tailscale": true}`.
+The code works once, for ten minutes, and is dropped after five wrong tries.
+
+### `POST /devices/claim` (no token; the code is the proof)
+
+```json
+{ "code": "532397", "name": "laptop", "hostname": "will-laptop", "os": "linux", "arch": "x86_64",
+  "root": "/home/will", "previous_id": null }
+```
+
+`201` with `{"device_id", "device_key", "api_token", "brain_name"}`. `device_key` is this computer's own key for
+the link; removing the device revokes it. `api_token` lets the computer's Relay window open the brain's chats.
+`previous_id` (the id from an earlier pairing with the same brain) keeps the id, so its projects stay bound.
+
+### `GET /devices/link` (WebSocket, `Authorization: Bearer <device_key>`)
+
+The link. Frames are JSON text: the brain sends `{"t":"req","id":7,"m":"GET","p":"/list?path=.","f":"/home/will/app","b":"<base64>"}`
+(`f` is the project folder, `b` the body) and the computer answers `{"t":"res","id":7,"s":200,"b":"<base64>"}`.
+The paths are the `relay host` endpoints (`/info`, `/list`, `/read`, `/write`, `/edit`, `/run`, `/run/{id}`).
+Both sides ping every 15 s and drop the link after 45 s of silence; the computer reconnects with backoff.
+
+### `GET /devices`
+
+```json
+{ "devices": [ { "id": "c687…", "name": "laptop", "hostname": "will-laptop", "connection": "link",
+  "connected": true, "address": "100.64.0.7", "os": "linux", "arch": "x86_64", "root": "/home/will",
+  "shell": "sh", "last_seen": "…", "url": null } ] }
+```
+
+`connection` is `link` (dials in) or `direct` (an older `relay host` the brain calls at `url`, added with
+`POST /devices` and `{name, url, token}`).
+
+### `PATCH /devices/{id}`, `DELETE /devices/{id}`
+
+Rename (`{"name": "…"}`), or forget the computer and revoke its key (its files are not touched).
+
+### `GET /devices/{id}/browse?path=`
+
+Sub-folders of a folder on the computer, for choosing a project folder: `{"path", "root", "folders": ["code", …]}`.
+
+## Your documents
+
+Folders on the brain or a linked computer that the agent can search with its `search_documents` and
+`read_document` tools (in every chat, when the tool is on in Agent settings). Each computer indexes its own folders in
+`knowledge.db` in its data folder (SQLite full-text search); files never leave it, only the passages a search finds are
+sent to the brain. A folder on a linked computer must be inside the folder that computer shares. Indexing is
+incremental and runs in the background; folders are re-checked for changes when searched a couple of minutes after
+their last check.
+
+### `GET /knowledge`
+
+`{"folders": [{"id", "device_id", "path", "created_at", "computer", "online", "status": {"path", "exists", "files",
+"chunks", "indexed_at", "indexing", "done", "total", "skipped", "error"}}]}`. `device_id` is `""` for the brain.
+
+### `POST /knowledge` → `201`
+
+`{"path": "C:\\Users\\me\\Documents", "device_id": ""}` adds a folder and starts indexing it: `{"folder": …}`.
+`400` if the folder doesn't exist, overlaps one already added on that computer, or (on a linked computer) is outside
+what it shares or the computer is offline.
+
+### `DELETE /knowledge/{id}` → `204`, `POST /knowledge/{id}/reindex`
+
+Stop searching a folder (its index is deleted; the files are not touched), or check it for changes now.
+
+### `GET /knowledge/search?q=&limit=`
+
+The search the agent runs, across every computer: `{"hits": [{"computer", "folder", "path", "rel", "kind": "text" |
+"pdf" | "docx", "start", "end", "text", "score"}], "notes": ["laptop's folders weren't searched: it is offline"],
+"indexing": false}`. `start`/`end` are lines, or pages for PDFs.
+
+### `GET /knowledge/browse?device_id=&path=`
+
+Sub-folders of a folder, for choosing one: on a linked computer (like `/devices/{id}/browse`) or, with no `device_id`,
+on the brain starting at the home folder. `{"path", "root", "folders"}`.
 
 ## Push tokens
 
@@ -556,9 +850,14 @@ The agent is waiting for permission to run a tool call. Answer with `POST /sessi
 ```json
 {
   "type": "approval_request",
-  "approval": { "tool_call_id": "call_3", "name": "run_command", "arguments": "{\"command\":\"npm test\"}", "requested_at": "…" }
+  "approval": {
+    "tool_call_id": "call_3", "name": "run_command", "arguments": "{\"command\":\"npm test\"}", "requested_at": "…",
+    "suggested_rule": { "kind": "command", "pattern": "npm test", "project_id": "…", "label": "Commands starting with npm test" }
+  }
 }
 ```
+
+`suggested_rule` is what `always_allow` saves, or `null` when the call can't be covered by a rule.
 
 #### `approval_resolved`
 
@@ -625,6 +924,7 @@ not a sandbox.
 | `tool_call_id`, `tool_name` | string | tool results |
 | `is_error` | boolean (omitted when false) | tool results |
 | `created_at` | string | always |
+| `stats` | `{model, route?, tokens?, tokens_per_sec?, prompt_per_sec?}` | assistant: the model's file name, `quick`/`heavy` when routing picked it, and llama-server's timings |
 
 ### ModelStatus
 

@@ -3,16 +3,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { LocationChip } from '../../components/Location';
 import { ModelChip, ModelSheet, modelLabel } from '../../components/ModelPicker';
 import { Sheet } from '../../components/Sheet';
 import { m3, radius, space, type } from '../../components/theme';
-import { Banner, Button, EmptyState, Fab, Field, IconButton, StatusBadge } from '../../components/ui';
+import { Banner, Button, EmptyState, Fab, Field, IconButton, Icon, StatusBadge } from '../../components/ui';
 import { emit } from '../../lib/events';
 import { alert } from '../../components/Dialogs';
 import { describeError } from '../../lib/api';
 import { usePageStyle } from '../../lib/layout';
 import { useClient } from '../../lib/connection';
 import { relativeTime } from '../../lib/format';
+import { autoRow, useRouting } from '../../lib/routing';
 import { CHATS_ID, type Project, type Session } from '../../lib/types';
 
 const POLL_MS = 5000;
@@ -29,6 +31,7 @@ export default function SessionsScreen() {
   const [renaming, setRenaming] = useState<Session | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
+  const routing = useRouting();
   const [picking, setPicking] = useState(false);
   const plain = id === CHATS_ID;
 
@@ -42,7 +45,7 @@ export default function SessionsScreen() {
       .model()
       .then((m) => setLoaded(m.default_model || m.model_path || null))
       .catch(() => undefined);
-  }, [client, id]);
+  }, [client, id, plain]);
   const [, setTick] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -156,8 +159,16 @@ export default function SessionsScreen() {
               <Text style={[type.bodyMedium, styles.modelLabel]}>
                 {plain ? 'Model for new chats' : 'Model for this project'}
               </Text>
-              <ModelChip model={project?.model} fallback={loaded} onPress={() => setPicking(true)} />
+              <ModelChip model={project?.model} fallback={loaded} auto={!!routing} onPress={() => setPicking(true)} />
             </View>
+            {!plain && project ? (
+              <View style={styles.whereRow}>
+                <LocationChip location={project.location} onPress={() => router.push('/devices')} />
+                <Text style={[type.bodySmall, styles.wherePath]} numberOfLines={1} ellipsizeMode="middle">
+                  {project.path}
+                </Text>
+              </View>
+            ) : null}
             {sessions && sessions.length > 0 ? (
               <Text style={[type.titleSmall, styles.section]}>Recent chats</Text>
             ) : null}
@@ -183,7 +194,12 @@ export default function SessionsScreen() {
         renderItem={({ item, index }) => {
           const first = index === 0;
           const last = index === (sessions?.length ?? 0) - 1;
-          const sub = item.status === 'error' && item.error ? item.error : relativeTime(item.updated_at);
+          const working = item.status === 'running';
+          const sub = working
+            ? 'Working…'
+            : item.status === 'error' && item.error
+              ? item.error
+              : relativeTime(item.updated_at);
           return (
             <View style={[styles.itemWrap, first && styles.itemFirst, last && styles.itemLast]}>
               <View style={styles.rowOuter}>
@@ -199,11 +215,11 @@ export default function SessionsScreen() {
                     <Text style={type.bodyLarge} numberOfLines={1}>
                       {item.title}
                     </Text>
-                    <Text style={type.bodyMedium} numberOfLines={1}>
+                    <Text style={[type.bodyMedium, working && styles.working]} numberOfLines={1}>
                       {sub}
                     </Text>
                   </View>
-                  {item.status !== 'idle' ? <StatusBadge status={item.status} /> : null}
+                  {item.status !== 'idle' && !working ? <StatusBadge status={item.status} /> : null}
                 </Pressable>
                 <IconButton
                   icon="dots-vertical"
@@ -226,8 +242,14 @@ export default function SessionsScreen() {
         visible={picking}
         onClose={() => setPicking(false)}
         value={project?.model}
-        defaultTitle="The default model"
-        defaultBody={loaded ? `Now: ${modelLabel(loaded)}` : 'The model chosen in Settings'}
+        defaultTitle={routing ? 'Auto' : 'The default model'}
+        defaultBody={
+          routing
+            ? autoRow(routing, loaded).body
+            : loaded
+              ? `Now: ${modelLabel(loaded)}`
+              : 'The model chosen in Settings'
+        }
         onPick={async (path) => setProject(await client.updateProject(id, { model: path }))}
       />
       <RenameSheet
@@ -294,6 +316,7 @@ function RenameSheet({
 }
 
 const styles = StyleSheet.create({
+  working: { color: m3.primary },
   flex: { flex: 1, backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },
   list: { paddingHorizontal: space.lg, paddingTop: space.sm },
@@ -322,5 +345,26 @@ const styles = StyleSheet.create({
     marginLeft: space.xs,
   },
   modelLabel: { color: m3.onSurfaceVariant },
+  whereRow: { gap: 4, marginHorizontal: space.xs, marginBottom: space.md },
+  wherePath: { color: m3.onSurfaceVariant, marginLeft: space.md },
+  deviceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: m3.surfaceContainerHighest,
+    borderRadius: 999,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+  },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  deviceOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    minHeight: 56,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+  },
+  sheetHint: { marginBottom: space.md, lineHeight: 20 },
   sheetActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.sm },
 });

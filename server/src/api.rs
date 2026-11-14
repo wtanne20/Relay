@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{
     DefaultBodyLimit, FromRequest, Path as UrlPath, Query, Request, State, WebSocketUpgrade,
 };
@@ -15,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::approvals;
 use crate::agent::{AgentManager, ApprovalError, Decision, StartError};
 use crate::config::{
     CACHE_TYPES, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig, UpdateError, constant_time_eq,
@@ -34,6 +36,8 @@ pub struct AppInner {
     pub model: ModelManager,
     pub agent: Arc<AgentManager>,
     pub pusher: Pusher,
+    /// The task queue and schedules.
+    pub tasks: Arc<crate::tasks::Tasks>,
     /// Cancelled when Relay is shutting down (closes WebSockets).
     pub shutdown: CancellationToken,
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -45,7 +49,30 @@ pub struct AppInner {
     pub downloads: Arc<crate::hub::Downloads>,
     /// New versions from GitHub releases.
     pub updates: Arc<crate::updates::Updater>,
+    /// Paired device hosts (phone Proot Linux and friends).
+    pub devices: Arc<crate::device::DeviceRegistry>,
+    /// Devices connected to this brain right now (they dial in over Tailscale).
+    pub links: Arc<crate::link::LinkHub>,
+    /// Folders the agent can search, on any of the user's computers.
+    pub knowledge: Arc<crate::knowledge::KnowledgeBase>,
+    /// The current 6-digit code a new device can pair with.
+    pub pair_code: std::sync::Mutex<Option<PairCode>>,
+    /// The built web UI bundle to serve at `/` (None if not bundled).
+    pub web_root: Option<std::path::PathBuf>,
 }
+
+/// A short-lived code that lets one new device pair with this brain.
+#[derive(Debug, Clone)]
+pub struct PairCode {
+    pub code: String,
+    pub expires: chrono::DateTime<chrono::Utc>,
+    /// Wrong guesses so far; the code is dropped after a few.
+    pub misses: u32,
+}
+
+/// How long a pairing code stays valid, and how many wrong tries it allows.
+const PAIR_CODE_MINUTES: i64 = 10;
+const PAIR_CODE_MISSES: u32 = 5;
 
 /// Reads the persisted "phone last seen" time.
 pub fn load_phone_seen(data_dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -166,6 +193,7 @@ pub fn router(state: AppState) -> Router {
         .route("/info", get(info))
         .route("/pairing", get(pairing))
         .route("/model", get(model_status))
+        .route("/stats", get(stats))
         .route("/model/restart", post(model_restart))
         .route("/model/load", post(model_load))
         .route("/model/unload", post(model_unload))
@@ -201,6 +229,7 @@ pub fn router(state: AppState) -> Router {
             "/projects/{id}/sessions",
             get(list_sessions).post(create_session),
         )
+        .route("/projects/{id}/download", get(download_project_file))
         .route(
             "/sessions/{id}",
             get(get_session).patch(patch_session).delete(delete_session),
@@ -215,16 +244,36 @@ pub fn router(state: AppState) -> Router {
         .route("/updates/install", post(install_update))
         .route("/sessions/{id}/stop", post(stop_task))
         .route("/sessions/{id}/approval", post(answer_approval))
+        .route("/approval-rules", get(list_rules).post(add_rule))
+        .route("/approval-rules/{id}", axum::routing::delete(delete_rule))
+        .route("/activity", get(list_activity).delete(clear_activity))
         .route("/sessions/{id}/ws", get(ws_upgrade))
         .route(
             "/push-tokens",
             post(add_push_token).delete(remove_push_token),
         )
+        .route("/devices", get(list_devices).post(add_device))
+        .route("/devices/pair-code", post(new_pair_code))
+        .route("/devices/claim", post(claim_device))
+        .route("/devices/link", get(device_link))
+        .route("/devices/{id}", get(get_device).patch(rename_device).delete(remove_device))
+        .route("/devices/{id}/ping", post(ping_device))
+        .route("/devices/{id}/browse", get(browse_device))
+        .route("/knowledge", get(list_knowledge).post(add_knowledge))
+        .route("/knowledge/search", get(search_knowledge))
+        .route("/knowledge/browse", get(browse_knowledge))
+        .route("/knowledge/{id}", axum::routing::delete(remove_knowledge))
+        .route("/knowledge/{id}/reindex", post(reindex_knowledge))
+        .route("/hello", get(hello))
+        .merge(crate::tasks::routes())
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.
         .layer(cors())
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Outermost: serves the web UI to browser navigations and static
+        // assets (no token, same origin as the API), passing API calls through.
+        .layer(middleware::from_fn_with_state(state.clone(), crate::ui::ui_middleware))
         .with_state(state)
 }
 
@@ -261,6 +310,11 @@ fn cors() -> tower_http::cors::CorsLayer {
 /// Requires `Authorization: Bearer <token>` on every request. WebSocket
 /// upgrades may instead pass `?token=` for clients that cannot set headers.
 async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // Open endpoints: discovery, pairing with a code, and the device link
+    // (which checks the device's own key).
+    if matches!(req.uri().path(), "/hello" | "/devices/claim" | "/devices/link") {
+        return next.run(req).await;
+    }
     let expected_token = state.cfg.read(|l| l.config.token.clone());
     let expected = expected_token.as_bytes();
     let header_token = req
@@ -299,11 +353,11 @@ async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Respon
 
 async fn info(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     let projects = s.db.call(|c| Ok(db::list_projects(c)?.len())).await?;
-    let host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_default();
+    let host = crate::link::hostname();
     Ok(Json(json!({
         "name": "relay",
+        // This computer runs the model, the agent and the history.
+        "role": "brain",
         "version": env!("CARGO_PKG_VERSION"),
         "hostname": host,
         "os": std::env::consts::OS,
@@ -351,6 +405,7 @@ const EDITABLE_SECTIONS: &[&str] = &[
     "disabled_skills",
     "projects_folder",
     "models_folder",
+    "routing",
 ];
 
 fn settings_view(c: &Config) -> Value {
@@ -362,6 +417,7 @@ fn settings_view(c: &Config) -> Value {
         "disabled_skills": c.disabled_skills,
         "projects_folder": c.projects_folder,
         "models_folder": c.models_folder,
+        "routing": c.routing,
     })
 }
 
@@ -437,6 +493,7 @@ async fn patch_settings(
         disabled_skills: Vec<String>,
         projects_folder: String,
         models_folder: String,
+        routing: crate::config::RoutingConfig,
     }
     let mut next: Sections = serde_json::from_value(view)
         .map_err(|e| ApiError::BadRequest(format!("invalid settings: {e}")))?;
@@ -469,6 +526,18 @@ async fn patch_settings(
             )));
         }
     }
+    next.routing.quick_model = next.routing.quick_model.trim().to_string();
+    next.routing.heavy_model = next.routing.heavy_model.trim().to_string();
+    for (label, path, old) in [
+        ("quick model", &next.routing.quick_model, &current.routing.quick_model),
+        ("big model", &next.routing.heavy_model, &current.routing.heavy_model),
+    ] {
+        if !path.is_empty() && path != old && !Path::new(path).is_file() {
+            return Err(ApiError::BadRequest(format!(
+                "the {label} must be an existing .gguf file on the PC: {path}"
+            )));
+        }
+    }
     let projects_folder = if next.projects_folder.trim().is_empty() {
         String::new()
     } else if next.projects_folder == current.projects_folder {
@@ -496,6 +565,7 @@ async fn patch_settings(
         c.disabled_skills = next.disabled_skills;
         c.projects_folder = projects_folder;
         c.models_folder = models_folder;
+        c.routing = next.routing;
     })?;
     if restart {
         s.model.settings_changed().await;
@@ -1330,6 +1400,56 @@ async fn model_status(State(s): State<AppState>) -> Json<Value> {
     Json(v)
 }
 
+/// Performance: how fast each model writes, and memory use on the brain and
+/// on every linked computer that is online.
+async fn stats(State(s): State<AppState>) -> Json<Value> {
+    let status = s.model.status();
+    // Relay only knows the process it launched.
+    let pid = if status.external { None } else { status.pid };
+    let (memory, gpus) = tokio::join!(
+        tokio::task::spawn_blocking(move || crate::stats::memory(pid)),
+        crate::stats::gpu_memory()
+    );
+    let devices = s.devices.list().await.unwrap_or_default();
+    let checks = devices.iter().map(|d| {
+        let online = device_online(&s, d);
+        let client = crate::device::DeviceClient::for_device(d, &s.links);
+        async move {
+            let memory = if online {
+                tokio::time::timeout(std::time::Duration::from_secs(4), client.info())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .and_then(|i| i.get("memory").cloned())
+            } else {
+                None
+            };
+            json!({
+                "id": d.id,
+                "name": d.name,
+                "os": d.os,
+                "connected": online,
+                "memory": memory,
+            })
+        }
+    });
+    let devices = futures_util::future::join_all(checks).await;
+    Json(json!({
+        "brain": {
+            "name": crate::link::hostname(),
+            "os": std::env::consts::OS,
+            "model": {
+                "state": status.state,
+                "file": Path::new(&status.model_path).file_name().map(|n| n.to_string_lossy().into_owned()),
+            },
+            "memory": memory.ok().flatten(),
+            "gpus": gpus,
+        },
+        "speeds": s.model.speeds().list(),
+        "devices": devices,
+    }))
+}
+
 async fn model_restart(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     s.model.restart().await;
     (StatusCode::ACCEPTED, Json(json!({ "ok": true })))
@@ -1359,6 +1479,9 @@ struct CreateProject {
     /// created inside the projects folder from the settings.
     #[serde(default)]
     path: Option<String>,
+    /// The paired device the folder is on. Empty: this computer (the brain).
+    #[serde(default)]
+    device_id: Option<String>,
 }
 
 /// Checks that a folder setting is an absolute path and creates it if it
@@ -1412,6 +1535,8 @@ struct UpdateProject {
     instructions: Option<String>,
     /// A model file for the project's chats; "" goes back to the loaded model.
     model: Option<String>,
+    /// A paired device this project's tools run on; "" runs them locally again.
+    device_id: Option<String>,
     /// Hide the project (and its chats) from the lists, or restore it.
     archived: Option<bool>,
 }
@@ -1433,6 +1558,22 @@ fn validate_model(model: Option<String>) -> ApiResult<Option<Option<String>>> {
         )));
     }
     Ok(Some(Some(m)))
+}
+
+/// `Some("")` clears the binding; otherwise the id must be a paired device.
+async fn validate_device(
+    s: &AppInner,
+    device: Option<String>,
+) -> ApiResult<Option<Option<String>>> {
+    let Some(d) = device else { return Ok(None) };
+    let d = d.trim().to_string();
+    if d.is_empty() {
+        return Ok(Some(None));
+    }
+    if s.devices.get(&d).await?.is_none() {
+        return Err(ApiError::BadRequest(format!("unknown device: {d}")));
+    }
+    Ok(Some(Some(d)))
 }
 
 /// Validates and canonicalizes a project folder path.
@@ -1459,13 +1600,19 @@ fn validate_folder(path: &str) -> ApiResult<String> {
 
 async fn list_projects(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     let projects = s.db.call(|c| db::list_projects(c)).await?;
-    Ok(Json(json!({ "projects": projects })))
+    let devices = s.devices.list().await?;
+    let list: Vec<Value> = projects.iter().map(|p| with_location(&s, p, &devices)).collect();
+    Ok(Json(json!({ "projects": list })))
 }
 
 async fn create_project(
     State(s): State<AppState>,
     JsonBody(body): JsonBody<CreateProject>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
+    if let Some(device_id) = body.device_id.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        return create_device_project(&s, device_id, body.name.as_deref(), body.path.as_deref())
+            .await;
+    }
     let given = body.path.as_deref().map(str::trim).unwrap_or_default();
     let path = if given.is_empty() {
         let name = body.name.as_deref().map(str::trim).unwrap_or_default();
@@ -1507,7 +1654,8 @@ async fn create_project(
     let project =
         s.db.call(move |c| db::create_project(c, &name, &path))
             .await?;
-    Ok((StatusCode::CREATED, Json(json!({ "project": project }))))
+    let devices = s.devices.list().await?;
+    Ok((StatusCode::CREATED, Json(json!({ "project": with_location(&s, &project, &devices) }))))
 }
 
 async fn get_project(
@@ -1518,7 +1666,190 @@ async fn get_project(
         s.db.call(move |c| db::get_project(c, &id))
             .await?
             .ok_or(ApiError::NotFound("project"))?;
-    Ok(Json(json!({ "project": project })))
+    let devices = s.devices.list().await?;
+    Ok(Json(json!({ "project": with_location(&s, &project, &devices) })))
+}
+
+/// A project's JSON plus `location`: which machine its folder is on (this
+/// brain, or a paired device and whether that device is connected).
+fn with_location(s: &AppInner, p: &db::Project, devices: &[crate::device::Device]) -> Value {
+    let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
+    let location = match p.device_id.as_deref().filter(|d| !d.is_empty()) {
+        None if p.is_chats() => json!({ "kind": "none" }),
+        None => json!({
+            "kind": "brain",
+            "name": crate::link::hostname(),
+            "online": true,
+        }),
+        Some(id) => match devices.iter().find(|d| d.id == id) {
+            Some(d) => json!({
+                "kind": "device",
+                "device_id": d.id,
+                "name": d.name,
+                "online": device_online(s, d),
+            }),
+            None => json!({ "kind": "device", "device_id": id, "name": "removed device", "online": false }),
+        },
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("location".into(), location);
+    }
+    v
+}
+
+/// Makes a project whose folder is on a paired device.
+async fn create_device_project(
+    s: &AppInner,
+    device_id: &str,
+    name: Option<&str>,
+    path: Option<&str>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let d = s
+        .devices
+        .get(device_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest(format!("unknown device: {device_id}")))?;
+    let dc = crate::device::DeviceClient::for_device(&d, &s.links);
+    let folder = path.map(str::trim).map(|p| p.trim_matches('"')).unwrap_or_default();
+    let folder = if folder.is_empty() { d.root.clone() } else { folder.to_string() };
+    if folder.is_empty() {
+        return Err(ApiError::BadRequest("choose a folder on the device".into()));
+    }
+    // The device checks the folder exists and sits inside what it shares.
+    let dc = dc.in_folder(Some(&folder));
+    let info = dc.info().await.map_err(|e| {
+        ApiError::BadRequest(format!("{} is not reachable: {e:#}", d.name))
+    })?;
+    dc.list_entries(".").await.map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    let _ = info;
+    let name = match name.map(str::trim) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => folder
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&d.name)
+            .to_string(),
+    };
+    let dev = d.id.clone();
+    let f = folder.clone();
+    let project = s
+        .db
+        .call(move |c| {
+            let p = db::create_project(c, &name, &f)?;
+            db::update_project(c, &p.id, None, None, None, None, Some(Some(dev.as_str())))
+        })
+        .await?
+        .ok_or(ApiError::NotFound("project"))?;
+    let devices = s.devices.list().await?;
+    Ok((StatusCode::CREATED, Json(json!({ "project": with_location(s, &project, &devices) }))))
+}
+
+/// Serves a file from a project's folder so the app can download it (for
+/// example an APK or zip the agent built). The path is confined to the
+/// project folder by the same sandbox the agent's tools use, so it can't
+/// reach anything outside.
+async fn download_project_file(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<DownloadQuery>,
+) -> ApiResult<Response> {
+    let project = s
+        .db
+        .call(move |c| db::get_project(c, &id))
+        .await?
+        .ok_or(ApiError::NotFound("project"))?;
+    let path = q.path.trim().trim_matches('"').to_string();
+    if path.is_empty() || path == "." {
+        return Err(ApiError::BadRequest("a file path is required".into()));
+    }
+    // Device projects: fetch the file from the device (confined there).
+    if let Some(dev) = project.device_id.as_deref().filter(|d| !d.is_empty()) {
+        let d = s.devices.get(dev).await?.ok_or(ApiError::NotFound("device"))?;
+        let folder = Some(project.path.as_str()).filter(|p| !p.trim().is_empty());
+        let dc = crate::device::DeviceClient::for_device(&d, &s.links).in_folder(folder);
+        let bytes = dc
+            .read_bytes(&path)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+        let name = path
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("file")
+            .to_string();
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            file_mime(&name)
+                .parse()
+                .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+        );
+        headers.insert(header::CONTENT_LENGTH, bytes.len().to_string().parse().unwrap());
+        let dispo = format!("attachment; filename=\"{}\"", name.replace('"', ""));
+        headers.insert(header::CONTENT_DISPOSITION, dispo.parse().unwrap());
+        headers.insert(header::CACHE_CONTROL, "private, max-age=0".parse().unwrap());
+        return Ok((StatusCode::OK, headers, Body::from(bytes)).into_response());
+    }
+    let sandbox = crate::tools::Sandbox::new(Path::new(&project.path), &[])
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let file = sandbox
+        .resolve_existing(&path, crate::tools::Access::Read)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !file.is_file() {
+        return Err(ApiError::NotFound("file"));
+    }
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let mime = file_mime(&name);
+    let len = tokio::fs::metadata(&file).await.map(|m| m.len()).unwrap_or(0);
+    let bytes = tokio::fs::read(&file).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let body = Body::from(bytes);
+    let mut headers = header::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        mime.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+    );
+    if len > 0 {
+        headers.insert(header::CONTENT_LENGTH, len.to_string().parse().unwrap());
+    }
+    // Tell the phone/browser to save it rather than try to display it.
+    let dispo = format!("attachment; filename=\"{}\"", name.replace('"', ""));
+    headers.insert(header::CONTENT_DISPOSITION, dispo.parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "private, max-age=0".parse().unwrap());
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    path: String,
+}
+
+/// A content type for the common build-artifact extensions we serve.
+fn file_mime(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "apk" => "application/vnd.android.package-archive",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "exe" => "application/vnd.microsoft.portable-executable",
+        "msi" => "application/x-msi",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "txt" | "md" => "text/plain",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn update_project(
@@ -1538,8 +1869,28 @@ async fn update_project(
         ));
     }
     let archived = body.archived;
-    let path = body.path.as_deref().map(validate_folder).transpose()?;
+    // A project bound to a device keeps its folder on that device, so the
+    // PC can only check that it looks like an absolute path.
+    let path = match body.path.as_deref() {
+        Some(p) => {
+            let trimmed = p.trim().trim_matches('"').to_string();
+            if trimmed.is_empty() {
+                return Err(ApiError::BadRequest("path is required".into()));
+            }
+            if !Path::new(&trimmed).is_absolute() {
+                return Err(ApiError::BadRequest(format!(
+                    "path must be absolute: {trimmed}"
+                )));
+            }
+            if Path::new(&trimmed).is_dir() {
+                validate_folder(p)?;
+            }
+            Some(trimmed)
+        }
+        None => None,
+    };
     let model = validate_model(body.model)?;
+    let device_id = validate_device(&s, body.device_id).await?;
     let instructions = body.instructions;
     if instructions.as_ref().is_some_and(|i| i.len() > 50_000) {
         return Err(ApiError::BadRequest(
@@ -1558,11 +1909,13 @@ async fn update_project(
                 path.as_deref(),
                 instructions.as_deref(),
                 model.as_ref().map(|m| m.as_deref()),
+                device_id.as_ref().map(|d| d.as_deref()),
             )
         })
         .await?
         .ok_or(ApiError::NotFound("project"))?;
-    Ok(Json(json!({ "project": project })))
+    let devices = s.devices.list().await?;
+    Ok(Json(json!({ "project": with_location(&s, &project, &devices) })))
 }
 
 /// Removes the project from Relay only. The folder on disk is never touched.
@@ -1769,6 +2122,10 @@ struct Prompt {
     images: Vec<String>,
     #[serde(default)]
     files: Vec<crate::files::NewFile>,
+    /// Sent from voice mode: the reply is read aloud, so it's asked for in
+    /// plain spoken sentences.
+    #[serde(default)]
+    voice: bool,
 }
 
 async fn send_prompt(
@@ -1778,7 +2135,7 @@ async fn send_prompt(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let message = s
         .agent
-        .start(&id, body.content, body.images, body.files)
+        .start(&id, body.content, body.images, body.files, body.voice)
         .await?;
     // Carrying on with an archived chat brings it back to the lists.
     let sid = id.clone();
@@ -1812,6 +2169,9 @@ struct ApprovalAnswer {
     decision: Decision,
     /// Optional reason passed to the model when denying.
     note: Option<String>,
+    /// With "always_allow": the rule to save. Left out, the suggested one.
+    #[serde(default)]
+    rule: Option<approvals::RuleDraft>,
 }
 
 async fn answer_approval(
@@ -1820,9 +2180,68 @@ async fn answer_approval(
     JsonBody(body): JsonBody<ApprovalAnswer>,
 ) -> ApiResult<Json<Value>> {
     let note = body.note.map(|n| n.chars().take(2000).collect::<String>());
+    let mut saved = None;
+    if body.decision == Decision::AlwaysAllow {
+        let pending = s
+            .agent
+            .pending_approval(&id)
+            .ok_or(ApprovalError::NothingPending)?;
+        if pending.tool_call_id != body.tool_call_id {
+            return Err(ApprovalError::WrongCall.into());
+        }
+        // Saved before the answer goes through, so the agent's next calls
+        // in this turn already see it.
+        if let Some(draft) = body.rule.or(pending.suggested_rule) {
+            let draft = approvals::clean(&draft).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            saved = Some(s.db.call(move |c| approvals::add_rule(c, &draft)).await?);
+        }
+    }
     s.agent
         .resolve_approval(&id, &body.tool_call_id, body.decision, note)?;
+    Ok(Json(json!({ "ok": true, "rule": saved })))
+}
+
+// ---------- approval rules and activity ----------
+
+async fn list_rules(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let rules = s.db.call(|c| approvals::list_rules(c)).await?;
+    Ok(Json(json!({ "rules": rules })))
+}
+
+async fn add_rule(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<approvals::RuleDraft>,
+) -> ApiResult<Json<approvals::Rule>> {
+    let draft = approvals::clean(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if let Some(pid) = draft.project_id.clone()
+        && s.db.call(move |c| db::get_project(c, &pid)).await?.is_none()
+    {
+        return Err(ApiError::NotFound("project"));
+    }
+    Ok(Json(s.db.call(move |c| approvals::add_rule(c, &draft)).await?))
+}
+
+async fn delete_rule(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<i64>,
+) -> ApiResult<Json<Value>> {
+    if !s.db.call(move |c| approvals::delete_rule(c, id)).await? {
+        return Err(ApiError::NotFound("rule"));
+    }
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_activity(
+    State(s): State<AppState>,
+    Query(q): Query<approvals::AuditQuery>,
+) -> ApiResult<Json<Value>> {
+    let (entries, has_more) = s.db.call(move |c| approvals::list_audit(c, &q)).await?;
+    Ok(Json(json!({ "entries": entries, "has_more": has_more })))
+}
+
+async fn clear_activity(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let removed = s.db.call(|c| approvals::clear_audit(c)).await?;
+    Ok(Json(json!({ "removed": removed })))
 }
 
 async fn ws_upgrade(
@@ -1874,4 +2293,497 @@ async fn remove_push_token(
     let token = body.token.trim().to_string();
     let removed = s.db.call(move |c| db::remove_push_token(c, &token)).await?;
     Ok(Json(json!({ "ok": true, "removed": removed })))
+}
+
+// ---------- devices ----------
+//
+// A device host (`relay host` on a phone or other machine) is paired into
+// the PC's device list. The PC stores its URL and token; the agent can then
+// work in the device's folder through the same tool interface it uses
+// locally.
+
+#[derive(Deserialize)]
+struct AddDevice {
+    id: Option<String>,
+    name: String,
+    url: String,
+    token: String,
+    os: Option<String>,
+    root: Option<String>,
+    shell: Option<String>,
+}
+
+/// Whether the brain can reach a device right now: a linked device while its
+/// link is up, a direct one if it answered within the last two minutes.
+fn device_online(s: &AppInner, d: &crate::device::Device) -> bool {
+    if d.is_link() {
+        s.links.is_connected(&d.id)
+    } else {
+        s.devices.is_online(d, 120)
+    }
+}
+
+fn device_json(s: &AppInner, d: &crate::device::Device) -> Value {
+    let link = s.links.get(&d.id);
+    json!({
+        "id": d.id,
+        "name": d.name,
+        "hostname": d.hostname,
+        "url": if d.is_link() { Value::Null } else { Value::String(d.url.clone()) },
+        // "link": the device connects to the brain; "direct": the brain calls it.
+        "connection": if d.is_link() { "link" } else { "direct" },
+        "address": link.as_ref().map(|l| l.remote.clone()),
+        "os": d.os,
+        "arch": d.arch,
+        "root": d.root,
+        "shell": d.shell,
+        "last_seen": d.last_seen,
+        "connected": device_online(s, d),
+    })
+}
+
+async fn list_devices(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let devices = s.devices.list().await?;
+    let list = devices.iter().map(|d| device_json(&s, d)).collect::<Vec<_>>();
+    Ok(Json(json!({ "devices": list })))
+}
+
+/// Starts (or restarts) pairing: a 6-digit code, good for ten minutes.
+async fn new_pair_code(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let n: u32 = rand::random_range(0..1_000_000);
+    let code = format!("{n:06}");
+    let expires = chrono::Utc::now() + chrono::Duration::minutes(PAIR_CODE_MINUTES);
+    *s.pair_code.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(PairCode { code: code.clone(), expires, misses: 0 });
+    let (bind,) = s.cfg.read(|l| (l.config.bind.clone(),));
+    let url = setup::pairing_url(s.tailscale.as_ref(), crate::port_of(&bind));
+    Ok(Json(json!({
+        "code": code,
+        "expires_at": expires.to_rfc3339(),
+        "brain_url": url,
+        "brain_name": crate::link::hostname(),
+        "tailscale": s.tailscale.is_some(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct ClaimBody {
+    code: String,
+    name: Option<String>,
+    #[serde(default)]
+    hostname: String,
+    #[serde(default)]
+    os: String,
+    #[serde(default)]
+    arch: String,
+    #[serde(default)]
+    root: String,
+    /// Re-pairing the same machine keeps its id, so its projects stay bound.
+    previous_id: Option<String>,
+}
+
+/// A device trades the code for its own key (and the brain's API token, so
+/// its window can open the chats). No other auth: the code is the proof.
+async fn claim_device(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ClaimBody>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    {
+        let mut slot = s.pair_code.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(pc) = slot.as_mut() else {
+            return Err(ApiError::BadRequest(
+                "no pairing code is active. On the brain, open Devices and choose Add a computer to get one."
+                    .into(),
+            ));
+        };
+        if chrono::Utc::now() > pc.expires {
+            *slot = None;
+            return Err(ApiError::BadRequest("that code expired; get a new one on the brain".into()));
+        }
+        if !constant_time_eq(body.code.trim().as_bytes(), pc.code.as_bytes()) {
+            pc.misses += 1;
+            if pc.misses >= PAIR_CODE_MISSES {
+                *slot = None;
+                return Err(ApiError::BadRequest(
+                    "too many wrong codes; get a new one on the brain".into(),
+                ));
+            }
+            return Err(ApiError::BadRequest("that code is not right; check it and try again".into()));
+        }
+        // One code pairs one device.
+        *slot = None;
+    }
+    let existing = match body.previous_id.as_deref().filter(|i| !i.trim().is_empty()) {
+        Some(id) => s.devices.get(id).await?.filter(|d| d.is_link()),
+        None => None,
+    };
+    let hostname = body.hostname.trim().to_string();
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .or_else(|| existing.as_ref().map(|d| d.name.clone()))
+        .unwrap_or_else(|| if hostname.is_empty() { "computer".into() } else { hostname.clone() });
+    let id = existing
+        .as_ref()
+        .map(|d| d.id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let key = crate::config::generate_token();
+    let d = crate::device::Device {
+        id: id.clone(),
+        name,
+        url: crate::device::LINK_URL.into(),
+        token: key.clone(),
+        os: body.os.trim().to_string(),
+        root: body.root.trim().to_string(),
+        shell: String::new(),
+        last_seen: crate::db::now(),
+        arch: body.arch.trim().to_string(),
+        hostname,
+    };
+    // A new key replaces the old one; drop any link still using it.
+    s.links.disconnect(&id);
+    s.devices.upsert(&d).await?;
+    tracing::info!("paired device {} ({})", d.name, d.id);
+    let token = s.cfg.read(|l| l.config.token.clone());
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "device_id": id,
+            "device_key": key,
+            "api_token": token,
+            "brain_name": crate::link::hostname(),
+        })),
+    ))
+}
+
+/// A paired device opens its link here (WebSocket, with its own key).
+async fn device_link(
+    State(s): State<AppState>,
+    extensions: axum::http::Extensions,
+    headers: header::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> ApiResult<Response> {
+    let remote = extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_default();
+    let key = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if key.is_empty() {
+        return Err(ApiError::Unauthorized);
+    }
+    let Some(d) = s.devices.by_key(&key).await? else {
+        return Err(ApiError::Unauthorized);
+    };
+    let links = Arc::clone(&s.links);
+    let registry = Arc::clone(&s.devices);
+    let shutdown = s.shutdown.clone();
+    let id = d.id.clone();
+    let st = s.clone();
+    Ok(ws.on_upgrade(move |socket| async move {
+        let touch_id = id.clone();
+        let touch = move || registry.touch(&touch_id);
+        // Learn the device's shell and folder once it is up.
+        let refresh_id = id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            refresh_device_info(&st, &refresh_id).await;
+        });
+        links.serve(socket, id, remote, shutdown, touch).await;
+    }))
+}
+
+/// Asks a connected device for its details and saves them.
+async fn refresh_device_info(s: &AppInner, id: &str) {
+    let Ok(Some(mut d)) = s.devices.get(id).await else { return };
+    let dc = crate::device::DeviceClient::for_device(&d, &s.links);
+    let Ok(info) = dc.info().await else { return };
+    let get = |k: &str| info.get(k).and_then(Value::as_str).map(str::to_string);
+    if let Some(v) = get("os") { d.os = v; }
+    if let Some(v) = get("arch") { d.arch = v; }
+    if let Some(v) = get("root") { d.root = v; }
+    if let Some(v) = get("shell") { d.shell = v; }
+    if let Some(v) = get("hostname") { d.hostname = v; }
+    d.last_seen = crate::db::now();
+    let _ = s.devices.upsert(&d).await;
+}
+
+/// Unauthenticated: lets a device on the tailnet find this brain.
+async fn hello() -> Json<Value> {
+    Json(json!({
+        "relay": "brain",
+        "name": crate::link::hostname(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+    }))
+}
+
+#[derive(Deserialize)]
+struct RenameDevice {
+    name: String,
+}
+
+async fn rename_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    JsonBody(body): JsonBody<RenameDevice>,
+) -> ApiResult<Json<Value>> {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("name must not be empty".into()));
+    }
+    let mut d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    d.name = name.to_string();
+    s.devices.upsert(&d).await?;
+    Ok(Json(json!({ "device": device_json(&s, &d) })))
+}
+
+#[derive(Deserialize)]
+struct BrowseQuery {
+    #[serde(default)]
+    path: String,
+}
+
+/// Lists the sub-folders of a folder on a device (for choosing a project
+/// folder). An empty path lists what the device shares.
+async fn browse_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<BrowseQuery>,
+) -> ApiResult<Json<Value>> {
+    let d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    let dc = crate::device::DeviceClient::for_device(&d, &s.links);
+    let path = if q.path.trim().is_empty() { d.root.clone() } else { q.path.trim().to_string() };
+    let entries = dc
+        .list_entries(if path.is_empty() { "." } else { &path })
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    let folders: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.get("dir").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|e| e.get("name").and_then(Value::as_str))
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    Ok(Json(json!({ "path": path, "root": d.root, "folders": folders })))
+}
+
+async fn add_device(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<AddDevice>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let url = body.url.trim().trim_end_matches('/');
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(ApiError::BadRequest(
+            "url must start with http:// or https://".into(),
+        ));
+    }
+    if body.token.trim().is_empty() {
+        return Err(ApiError::BadRequest("token is required".into()));
+    }
+    let id = body
+        .id
+        .as_deref()
+        .filter(|i| !i.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut d = crate::device::Device {
+        id: id.clone(),
+        name: body.name.trim().to_string(),
+        url: url.to_string(),
+        token: body.token.trim().to_string(),
+        os: body.os.unwrap_or_default(),
+        root: body.root.unwrap_or_default(),
+        shell: body.shell.unwrap_or_default(),
+        last_seen: crate::db::now(),
+        arch: String::new(),
+        hostname: String::new(),
+    };
+    // Prove the pairing works before saving it.
+    let client = crate::device::DeviceClient::new(&d.url, &d.token);
+    let info = client
+        .info()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("could not reach {url}: {e}")))?;
+    d.os = info
+        .get("os")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.os)
+        .to_string();
+    d.root = info
+        .get("root")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.root)
+        .to_string();
+    d.shell = info
+        .get("shell")
+        .and_then(Value::as_str)
+        .unwrap_or(&d.shell)
+        .to_string();
+    d.hostname = info.get("hostname").and_then(Value::as_str).unwrap_or("").to_string();
+    d.arch = info.get("arch").and_then(Value::as_str).unwrap_or("").to_string();
+    s.devices.upsert(&d).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "device": device_json(&s, &d) })),
+    ))
+}
+
+async fn get_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    Ok(Json(json!({ "device": device_json(&s, &d) })))
+}
+
+/// Re-checks the link and refreshes `last_seen`.
+async fn ping_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let d = s.devices.get(&id).await?.ok_or(ApiError::NotFound("device"))?;
+    let client = crate::device::DeviceClient::for_device(&d, &s.links);
+    match client.info().await {
+        Ok(info) => {
+            s.devices.touch(&id);
+            Ok(Json(json!({ "connected": true, "info": info })))
+        }
+        Err(e) => Ok(Json(json!({ "connected": false, "error": e.to_string() }))),
+    }
+}
+
+async fn remove_device(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let removed = s.devices.remove(&id).await?;
+    if !removed {
+        return Err(ApiError::NotFound("device"));
+    }
+    // Its key no longer works; close the link it may still have open.
+    s.links.disconnect(&id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------- documents
+
+async fn list_knowledge(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let folders = s.knowledge.overview().await?;
+    Ok(Json(json!({ "folders": folders })))
+}
+
+#[derive(Deserialize)]
+struct AddKnowledge {
+    /// Empty (or missing) for a folder on the brain.
+    #[serde(default)]
+    device_id: String,
+    path: String,
+}
+
+async fn add_knowledge(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<AddKnowledge>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let folder = s
+        .knowledge
+        .add(body.device_id.trim(), &body.path)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    Ok((StatusCode::CREATED, Json(json!({ "folder": folder }))))
+}
+
+async fn remove_knowledge(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<StatusCode> {
+    if s.knowledge.remove(&id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound("folder"))
+    }
+}
+
+async fn reindex_knowledge(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    let folder = s.knowledge.reindex(&id).await?.ok_or(ApiError::NotFound("folder"))?;
+    Ok(Json(json!({ "folder": folder })))
+}
+
+#[derive(Deserialize)]
+struct KnowledgeSearch {
+    q: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// The same search the agent runs, so the user can try it in the app.
+async fn search_knowledge(
+    State(s): State<AppState>,
+    Query(q): Query<KnowledgeSearch>,
+) -> ApiResult<Json<Value>> {
+    let out = s.knowledge.search(&q.q, q.limit.unwrap_or(8)).await?;
+    Ok(Json(serde_json::to_value(out).map_err(anyhow::Error::from)?))
+}
+
+#[derive(Deserialize)]
+struct KnowledgeBrowse {
+    #[serde(default)]
+    device_id: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// Sub-folders of a folder, for choosing one to make searchable: on a
+/// linked computer (as for projects) or on the brain itself, starting at the
+/// home folder.
+async fn browse_knowledge(
+    State(s): State<AppState>,
+    Query(q): Query<KnowledgeBrowse>,
+) -> ApiResult<Json<Value>> {
+    if !q.device_id.trim().is_empty() {
+        return browse_device(
+            State(s),
+            UrlPath(q.device_id.trim().to_string()),
+            Query(BrowseQuery { path: q.path }),
+        )
+        .await;
+    }
+    let home = crate::config::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let path = if q.path.trim().is_empty() { home.clone() } else { std::path::PathBuf::from(q.path.trim()) };
+    let listed = path.clone();
+    let folders = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<String>> {
+        let mut out: Vec<String> = std::fs::read_dir(&listed)?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.') && !n.starts_with('$'))
+            .collect();
+        out.sort_by_key(|n| n.to_lowercase());
+        Ok(out)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .map_err(|e| ApiError::BadRequest(format!("{}: {e}", path.display())))?;
+    // On Windows the top is the drive; elsewhere, the file system root.
+    let root = path
+        .ancestors()
+        .last()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "path": path.display().to_string(),
+        "root": root,
+        "home": home.display().to_string(),
+        "folders": folders,
+    })))
 }
