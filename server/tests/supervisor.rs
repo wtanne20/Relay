@@ -32,9 +32,20 @@ fn start(
 
 /// Path to the mock_llama example binary, building it if needed.
 fn mock_exe() -> Option<PathBuf> {
+    let name = format!("mock_llama{}", std::env::consts::EXE_SUFFIX);
+    // Test binaries used to sit in target/<profile>/deps, next to
+    // target/<profile>/examples. Newer Cargo puts them deeper (under
+    // target/<profile>/build/<package>/<hash>/), so look in every folder
+    // above the test for examples/, and default to the old spot.
     let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.parent()?.join("examples");
-    let p = dir.join(format!("mock_llama{}", std::env::consts::EXE_SUFFIX));
+    let find = || {
+        exe.ancestors()
+            .skip(1)
+            .map(|a| a.join("examples").join(&name))
+            .find(|p| p.is_file())
+    };
+    let default = exe.parent()?.parent()?.join("examples").join(&name);
+    let mut p = find().unwrap_or_else(|| default.clone());
     if !p.is_file() {
         let status = std::process::Command::new(env!("CARGO"))
             .args(["build", "--example", "mock_llama"])
@@ -42,6 +53,7 @@ fn mock_exe() -> Option<PathBuf> {
             .status()
             .ok()?;
         assert!(status.success(), "building the mock_llama example failed");
+        p = find().unwrap_or(default);
     }
     assert!(
         p.is_file(),
