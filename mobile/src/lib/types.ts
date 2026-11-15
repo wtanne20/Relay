@@ -30,6 +30,8 @@ export interface TailscaleInfo {
 
 export interface ServerInfo {
   name: string;
+  /** Always "brain": the computer that runs the model, agent and history. */
+  role?: 'brain';
   version: string;
   hostname: string;
   os: string;
@@ -54,8 +56,49 @@ export interface Project {
   created_at: string;
   /** Model file this project's chats use; null follows whatever is loaded. */
   model?: string | null;
+  /** A paired device this project's folder is on; null = the brain. */
+  device_id?: string | null;
   /** Hidden from the lists until restored. */
   archived?: boolean;
+  /** Which computer the folder is on (filled in by the brain). */
+  location?: ProjectLocation;
+}
+
+/** Where a project's files live: the brain itself, or a paired computer. */
+export type ProjectLocation =
+  | { kind: 'none' }
+  | { kind: 'brain'; name: string; online: boolean }
+  | { kind: 'device'; device_id: string; name: string; online: boolean };
+
+/** A paired device (e.g. a phone with Proot Linux) the agent can work in. */
+export interface Device {
+  id: string;
+  name: string;
+  /** Its own computer name. */
+  hostname?: string;
+  /** Only for "direct" devices (the brain calls them). */
+  url?: string | null;
+  /** "link": it connects to the brain (Relay app / `relay link`); "direct": `relay host`. */
+  connection?: 'link' | 'direct';
+  /** The address it is connected from (its Tailscale IP), while connected. */
+  address?: string | null;
+  os?: string;
+  arch?: string;
+  /** The folder it shares with the agent. */
+  root?: string;
+  shell?: string;
+  last_seen?: string;
+  /** The brain can reach it right now. */
+  connected?: boolean;
+}
+
+/** A pairing code shown on the brain, typed on the new computer. */
+export interface PairCode {
+  code: string;
+  expires_at: string;
+  brain_url: string;
+  brain_name: string;
+  tailscale: boolean;
 }
 
 /** The built-in space for plain chats (no folder, no tools). */
@@ -93,7 +136,7 @@ export interface ToolCall {
 export interface Message {
   id: number;
   session_id: string;
-  role: 'user' | 'assistant' | 'tool' | 'summary';
+  role: 'user' | 'assistant' | 'tool' | 'summary' | 'continue';
   content: string;
   reasoning?: string;
   tool_calls?: ToolCall[];
@@ -107,6 +150,56 @@ export interface Message {
   images?: string[];
   /** Other files attached to a user message. */
   files?: FileRef[];
+  /** On an assistant message: which model wrote it, and how fast. */
+  stats?: ReplyStats;
+}
+
+export interface ReplyStats {
+  /** The model's file name. */
+  model: string;
+  /** Set when model routing picked the model. */
+  route?: 'quick' | 'heavy';
+  tokens?: number;
+  tokens_per_sec?: number;
+  prompt_per_sec?: number;
+}
+
+/** Sends quick questions to a small model and everything else to a big one. */
+export interface RoutingSettings {
+  enabled: boolean;
+  quick_model: string;
+  /** "" = the default model. */
+  heavy_model: string;
+  quick_max_words: number;
+}
+
+export interface MemoryUse {
+  total_mb: number;
+  used_mb: number;
+  /** Used by llama-server, when it runs on that computer. */
+  model_mb?: number;
+}
+
+export interface ModelSpeed {
+  model: string;
+  replies: number;
+  tokens: number;
+  avg_tokens_per_sec: number;
+  last_tokens_per_sec: number;
+  last_prompt_per_sec?: number | null;
+  last_at: string;
+}
+
+export interface StatsResponse {
+  brain: {
+    name: string;
+    os: string;
+    model: { state: ModelStatus['state']; file: string | null };
+    memory: MemoryUse | null;
+    gpus: { name: string; total_mb: number; used_mb: number }[];
+  };
+  speeds: ModelSpeed[];
+  devices: { id: string; name: string; os: string; connected: boolean; memory: MemoryUse | null }[];
 }
 
 export interface FileRef {
@@ -170,9 +263,58 @@ export interface PendingApproval {
   name: string;
   arguments: string;
   requested_at: string;
+  /** What "Always allow" saves for this call, when it can be covered by a rule. */
+  suggested_rule?: RuleDraft | null;
 }
 
-export type ApprovalDecision = 'approve' | 'approve_all' | 'deny';
+export type ApprovalDecision = 'approve' | 'approve_all' | 'always_allow' | 'deny';
+
+// ----- always-allow rules and activity -----
+
+/** command: commands starting with these words; files: changes inside this folder; web: pages on this site. */
+export type RuleKind = 'command' | 'files' | 'web';
+
+export interface RuleDraft {
+  kind: RuleKind;
+  pattern: string;
+  /** null = every project. */
+  project_id?: string | null;
+  /** e.g. "Commands starting with git status". */
+  label?: string;
+}
+
+export interface ApprovalRule {
+  id: number;
+  kind: RuleKind;
+  pattern: string;
+  project_id: string | null;
+  project_name?: string | null;
+  created_at: string;
+  uses: number;
+  last_used_at: string | null;
+}
+
+/** How a tool call got to run, or didn't. */
+export type AuditDecision = 'auto' | 'rule' | 'allowed' | 'allowed_all' | 'denied' | 'stopped' | 'off';
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  project_id: string;
+  project_name: string;
+  session_id: string;
+  session_title: string;
+  tool: string;
+  /** The command, file, address or search. */
+  detail: string;
+  decision: AuditDecision;
+  rule_id: number | null;
+  is_error: boolean;
+  /** False once the chat was deleted (the entry stays). */
+  session_exists: boolean;
+}
+
+export type ActivityFilter = '' | 'commands' | 'files' | 'web' | 'asked' | 'denied';
 
 // ----- agent settings -----
 
@@ -186,6 +328,8 @@ export interface ToolToggles {
   run_command: boolean;
   web_search: boolean;
   fetch_url: boolean;
+  /** search_documents and read_document: the folders made searchable. */
+  search_documents: boolean;
 }
 
 export interface AgentSettings {
@@ -238,6 +382,7 @@ export interface Settings {
   projects_folder: string;
   /** Where Relay saves models; empty = its data folder. */
   models_folder?: string;
+  routing: RoutingSettings;
 }
 
 export interface SettingsResponse {
@@ -351,4 +496,113 @@ export interface UpdateInfo {
   /** The PC can install updates itself (Windows). */
   can_install: boolean;
   install: InstallState;
+}
+
+/** How a searchable folder's index stands (kept on the computer it's on). */
+export interface FolderIndexStatus {
+  path: string;
+  exists: boolean;
+  files: number;
+  chunks: number;
+  indexed_at: string | null;
+  indexing: boolean;
+  done: number;
+  total: number;
+  skipped: number;
+  error: string | null;
+}
+
+/** A folder the agent can search, on the brain or a linked computer. */
+export interface DocumentFolder {
+  id: string;
+  /** Empty for the brain. */
+  device_id: string;
+  path: string;
+  created_at: string;
+  computer: string;
+  online: boolean;
+  status: FolderIndexStatus;
+}
+
+/** One passage a document search found. */
+export interface DocumentHit {
+  computer: string;
+  folder: string;
+  path: string;
+  rel: string;
+  kind: 'text' | 'pdf' | 'docx';
+  start: number;
+  end: number;
+  text: string;
+  score: number;
+}
+
+export interface DocumentSearch {
+  hits: DocumentHit[];
+  notes: string[];
+  indexing: boolean;
+}
+
+export interface FolderListing {
+  path: string;
+  root: string;
+  home?: string;
+  folders: string[];
+}
+
+/** When a scheduled task runs. Times are the brain's local time. */
+export type Repeat =
+  /** One time, at a local date and time ("2026-11-12T08:00"). */
+  | { kind: 'once'; at: string }
+  /** At a time of day ("08:00") on weekdays 1 (Monday) to 7 (Sunday); empty = every day. */
+  | { kind: 'daily'; time: string; days: number[] }
+  | { kind: 'every'; minutes: number };
+
+export interface Schedule {
+  id: string;
+  project_id: string;
+  project_name: string;
+  name: string;
+  prompt: string;
+  repeat: Repeat;
+  /** Every run continues one chat instead of starting a new one. */
+  same_chat: boolean;
+  /** Runs don't stop to ask before acting. */
+  allow_all?: boolean;
+  enabled: boolean;
+  next_run: string | null;
+  last_run: string | null;
+  last_session_id: string | null;
+  last_status: string | null;
+  created_at: string;
+}
+
+export type QueueStatus = 'queued' | 'running' | 'done' | 'error' | 'stopped';
+
+export interface QueueItem {
+  id: string;
+  project_id: string;
+  project_name: string;
+  session_id: string | null;
+  session_title: string | null;
+  schedule_id: string | null;
+  /** The next message of a busy chat: sent when that chat is free, not in line. */
+  follow_up?: boolean;
+  /** Runs without stopping to ask before acting. */
+  allow_all?: boolean;
+  name: string;
+  prompt: string;
+  status: QueueStatus;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Running, and waiting for you to allow a tool call. */
+  needs_approval?: boolean;
+}
+
+export interface QueueResponse {
+  items: QueueItem[];
+  queued: number;
+  running: number;
 }

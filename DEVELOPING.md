@@ -23,9 +23,10 @@ Any change under `mobile/src` shows up on both the phone and the desktop app.
    It checks the tools, installs the npm packages, builds the mock model server and adds two firewall rules.
    The rules let the phone reach the dev servers over **Tailscale only** (`100.64.0.0/10`), on ports 8081 (Metro) and 8765/8766 (the dev server).
    It asks for administrator rights once, for the firewall.
-3. On the phone, install **Relay Dev** from the `Relay-Dev-android` artifact of the
-   [Android app workflow](../../actions/workflows/android.yml). It installs next to the normal Relay app.
-   You only need a new copy when native modules change, which is rare.
+3. On the phone, install **Relay Dev**. CI no longer builds it, so build it once yourself (needs the Android SDK
+   and JDK 17): in `mobile`, set `APP_VARIANT=dev`, run `npx expo prebuild --platform android`, then
+   `android/gradlew assembleDebug` in `mobile/android`, and install `app/build/outputs/apk/debug/app-debug.apk`.
+   It installs next to the normal Relay app. You only need a new copy when native modules change, which is rare.
 
 ## Everyday loop
 
@@ -69,7 +70,7 @@ GitHub Actions builds everything on every push:
 
 - **Windows installer** (`windows.yml`): server tests, `relay.exe`, `relay-desktop.exe`, the Inno Setup installer, and a
   silent install/uninstall smoke test.
-- **Android** (`android.yml`): `Relay.apk` (normal app) and `Relay-Dev.apk` (dev build).
+- **Android** (`android.yml`): `Relay.apk`.
 
 Tags named `v*` publish a GitHub release with the installer and APK.
 

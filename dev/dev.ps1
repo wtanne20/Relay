@@ -56,7 +56,7 @@ if ($Follow) {
 
 if (-not $NoPhone) {
   Write-Host ''
-  Write-Host 'Phone: open the "Relay Dev" app (Relay-Dev.apk from the Android build) and' -ForegroundColor Green
+  Write-Host 'Phone: open the "Relay Dev" app (see DEVELOPING.md to build it) and' -ForegroundColor Green
   if ($ts) { Write-Host "  enter http://${ts}:8081 or scan the QR code in the Metro window." -ForegroundColor Green }
   else { Write-Host '  scan the QR code in the Metro window (Tailscale was not found, so it uses your LAN address).' -ForegroundColor Yellow }
   if ($Mock -and $ts) { Write-Host "  Inside the app, connect to http://${ts}:8766 with the token in dev\data\config.toml." -ForegroundColor Green }

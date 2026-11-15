@@ -72,6 +72,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path desktop\src-tauri\target\release\relay-desktop.exe)) { throw "relay-desktop.exe was not built" }
 
+      - name: Build the web UI (served by the brain for the aarch64 PWA)
+        run: |
+          Push-Location mobile; npm run export:web; Pop-Location
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path mobile\dist\index.html)) { throw "the web UI bundle was not built" }
+
       - name: Read version
         id: version
         run: |

@@ -1,9 +1,8 @@
 name: Android app
 
-# Builds installable APKs for Android phones (no Expo account needed):
-#  - Relay.apk      the normal app
-#  - Relay-Dev.apk  a development build ("Relay Dev") that loads the app's code
-#                   live from Metro on your PC; see DEVELOPING.md
+# Builds an installable APK for Android phones (no Expo account needed):
+# Relay.apk, the normal app. (The "Relay Dev" build for live reloading is no
+# longer built here; DEVELOPING.md says how to build it locally.)
 # It is signed with the Android debug key, which is fine for installing on
 # your own phone: download the artifact, open it on the phone and allow
 # "install unknown apps" when asked.
@@ -18,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Replace the APKs on this existing release (e.g. v1.0.3); leave empty to only build"
+        description: "Replace the APK on this existing release (e.g. v1.0.3); leave empty to only build"
         required: false
         default: ""
 
@@ -37,11 +36,6 @@ jobs:
             apk: Relay.apk
             gradle_task: assembleRelease
             output: release/app-release.apk
-          - variant: dev
-            artifact: Relay-Dev-android
-            apk: Relay-Dev.apk
-            gradle_task: assembleDebug
-            output: debug/app-debug.apk
     env:
       APP_VARIANT: ${{ matrix.variant }}
     defaults:

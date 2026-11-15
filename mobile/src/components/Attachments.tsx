@@ -43,6 +43,18 @@ async function fromWebFile(f: File): Promise<Incoming> {
   return isPicture(f.type) ? { kind: 'image', dataUrl } : { kind: 'file', dataUrl, name: f.name || 'file', size: f.size };
 }
 
+/** A file on the phone, by its file:// or content:// path. */
+export type LocalFile = { uri: string; name?: string | null; mime?: string | null; size?: number | null };
+
+async function fromLocalFile(f: LocalFile & { name: string }): Promise<Incoming> {
+  const b64 = await FileSystem.readAsStringAsync(f.uri, { encoding: FileSystem.EncodingType.Base64 });
+  const mime = f.mime || 'application/octet-stream';
+  const dataUrl = `data:${mime};base64,${b64}`;
+  return isPicture(mime)
+    ? { kind: 'image', dataUrl }
+    : { kind: 'file', dataUrl, name: f.name, size: f.size ?? Math.floor((b64.length * 3) / 4) };
+}
+
 export function fileIcon(name: string): IconName {
   const ext = name.toLowerCase().split('.').pop() ?? '';
   if (ext === 'pdf') return 'file-pdf-box';
@@ -92,6 +104,27 @@ export function useAttachments() {
     [add],
   );
 
+  /** Files already on the phone (picked, or shared from another app). */
+  const addLocal = useCallback(
+    async (local: LocalFile[]) => {
+      const out: Incoming[] = [];
+      for (const f of local) {
+        const name = f.name || 'file';
+        if (f.size && f.size > MAX_FILE_BYTES) {
+          setError(`${name} is larger than 25 MB.`);
+          continue;
+        }
+        try {
+          out.push(await fromLocalFile({ ...f, name }));
+        } catch {
+          setError(`Couldn't read ${name}.`);
+        }
+      }
+      add(out);
+    },
+    [add],
+  );
+
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
     const onPaste = (e: ClipboardEvent) => {
@@ -135,22 +168,7 @@ export function useAttachments() {
         if (source === 'file') {
           const res = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true, type: '*/*' });
           if (res.canceled) return;
-          const out: Incoming[] = [];
-          for (const a of res.assets) {
-            if (a.size && a.size > MAX_FILE_BYTES) {
-              setError(`${a.name} is larger than 25 MB.`);
-              continue;
-            }
-            const b64 = await FileSystem.readAsStringAsync(a.uri, { encoding: FileSystem.EncodingType.Base64 });
-            const mime = a.mimeType ?? 'application/octet-stream';
-            const dataUrl = `data:${mime};base64,${b64}`;
-            out.push(
-              isPicture(mime)
-                ? { kind: 'image', dataUrl }
-                : { kind: 'file', dataUrl, name: a.name || 'file', size: a.size ?? Math.floor((b64.length * 3) / 4) },
-            );
-          }
-          add(out);
+          await addLocal(res.assets.map((a) => ({ uri: a.uri, name: a.name, mime: a.mimeType, size: a.size })));
           return;
         }
         const options: ImagePicker.ImagePickerOptions = {
@@ -181,7 +199,7 @@ export function useAttachments() {
         setError(source === 'file' ? "Couldn't open that file." : "Couldn't open your pictures.");
       }
     },
-    [add, addWebFiles],
+    [add, addWebFiles, addLocal],
   );
 
   const remove = useCallback((id: string) => setItems((cur) => cur.filter((a) => a.id !== id)), []);
@@ -192,7 +210,7 @@ export function useAttachments() {
 
   const images = items.filter((a) => a.kind === 'image').map((a) => a.dataUrl);
   const files = items.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, data: a.dataUrl }] : []));
-  return { items, images, files, error, setError, pick, remove, clear };
+  return { items, images, files, error, setError, pick, addLocal, remove, clear };
 }
 
 export type AttachSource = 'library' | 'camera' | 'file';

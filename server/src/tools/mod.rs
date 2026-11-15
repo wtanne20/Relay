@@ -79,6 +79,7 @@ pub fn catalog() -> Vec<(&'static str, &'static str)> {
         ("run_command", "Run PowerShell commands"),
         ("web_search", "Search the web"),
         ("fetch_url", "Read web pages"),
+        ("search_documents", "Search your documents (folders you made searchable)"),
     ]
 }
 
@@ -558,7 +559,7 @@ pub async fn run_shell(
 }
 
 /// Reads to EOF but keeps at most ~4 MB in memory.
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+pub(crate) async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<()> {
@@ -575,7 +576,7 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
     if let Some(pid) = pid {
         #[cfg(windows)]
         {

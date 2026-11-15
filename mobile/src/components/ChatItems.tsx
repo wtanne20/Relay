@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { toolDetails, toolSummary } from '../lib/format';
 import { fileChange, partialArgs, readArgs, type FileChange } from '../lib/liveCode';
-import type { Draft, Message, ToolCall } from '../lib/types';
+import type { Draft, Message, ReplyStats, ToolCall } from '../lib/types';
 import { MessageFiles, MessagePicture } from './Attachments';
 import { ChangesLine, CodeChange } from './CodeChange';
 import { Markdown } from './Markdown';
@@ -20,6 +20,8 @@ const TOOL_ICON: Record<string, IconName> = {
   list_dir: 'folder-outline',
   web_search: 'magnify',
   fetch_url: 'web',
+  search_documents: 'file-search-outline',
+  read_document: 'file-document-outline',
 };
 
 export function UserBubble({ message }: { message: Message }) {
@@ -72,6 +74,42 @@ export function SummaryDivider({ message }: { message: Message }) {
             Everything is still saved here.
           </Text>
           <Markdown text={message.content} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Relay carried on a reply that was cut off when the model's context filled
+ * up. Tap to see what it told the model.
+ */
+export function ContinueDivider({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const looped = /loop/i.test(message.content.split('\n')[0] ?? '');
+  return (
+    <View style={styles.summary}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        style={styles.summaryRow}
+      >
+        <View style={styles.summaryLine} />
+        <Icon name={looped ? 'sync-alert' : 'play-circle-outline'} size={16} color={m3.onSurfaceVariant} />
+        <Text style={styles.summaryLabel}>
+          {looped ? 'Reply was going in circles, restarted it' : 'Reply was cut off, continued it'}
+        </Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color={m3.onSurfaceVariant} />
+        <View style={styles.summaryLine} />
+      </Pressable>
+      {open ? (
+        <View style={styles.summaryBody}>
+          <Text style={styles.summaryNote}>
+            The model ran out of context in the middle of its reply, so Relay told it to carry on. This is what it
+            was sent.
+          </Text>
+          <Markdown text={message.content.replace(/^\(Relay\) /, '')} />
         </View>
       ) : null}
     </View>
@@ -272,9 +310,22 @@ function stepsSummary(calls: ToolCall[]): string {
   const n = (...names: string[]) => calls.filter((c) => names.includes(c.name)).length;
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
   const parts: string[] = [];
-  const known = n('run_command', 'read_file', 'edit_file', 'write_file', 'list_dir', 'web_search', 'fetch_url');
+  const known = n(
+    'run_command',
+    'read_file',
+    'edit_file',
+    'write_file',
+    'list_dir',
+    'web_search',
+    'fetch_url',
+    'search_documents',
+    'read_document',
+  );
   if (n('web_search')) parts.push(`searched the web ${n('web_search') === 1 ? 'once' : `${n('web_search')} times`}`);
   if (n('fetch_url')) parts.push(`read ${plural(n('fetch_url'), 'page')}`);
+  if (n('search_documents'))
+    parts.push(`searched your documents ${n('search_documents') === 1 ? 'once' : `${n('search_documents')} times`}`);
+  if (n('read_document')) parts.push(`read ${plural(n('read_document'), 'document')}`);
   if (n('run_command')) parts.push(`ran ${plural(n('run_command'), 'command')}`);
   if (n('read_file')) parts.push(`read ${plural(n('read_file'), 'file')}`);
   // Files, not attempts: several edits to one file count once.
@@ -401,6 +452,7 @@ export const AssistantTurn = memo(function AssistantTurn({
       {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} seconds={answerSeconds} /> : null}
       {answer ? <Markdown text={answer} /> : null}
       {changes.length ? <ChangesLine changes={changes} /> : null}
+      {lastIsAnswer && last.stats ? <ReplyMeta stats={last.stats} /> : null}
       {!showSteps && !answer && running ? (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />
@@ -412,6 +464,21 @@ export const AssistantTurn = memo(function AssistantTurn({
     </View>
   );
 });
+
+/** "Qwen3-4B · 52 tok/s · quick": which model answered, and how fast. */
+function ReplyMeta({ stats }: { stats: ReplyStats }) {
+  const parts = [stats.model.replace(/\.gguf$/i, '')];
+  if (stats.tokens_per_sec) parts.push(`${Math.round(stats.tokens_per_sec)} tok/s`);
+  if (stats.route) parts.push(stats.route === 'quick' ? 'quick question' : 'big model');
+  return (
+    <View style={styles.replyMeta} accessibilityLabel={`Answered by ${parts.join(', ')}`}>
+      <Icon name={stats.route === 'quick' ? 'lightning-bolt-outline' : 'chip'} size={13} color={m3.outline} />
+      <Text style={[type.bodySmall, styles.replyMetaText]} numberOfLines={1}>
+        {parts.join(' · ')}
+      </Text>
+    </View>
+  );
+}
 
 export function DraftBlock({ content, reasoning }: { content: string; reasoning: string }) {
   return (
@@ -432,6 +499,8 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
 }
 
 const styles = StyleSheet.create({
+  replyMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.xs },
+  replyMetaText: { color: m3.outline, flexShrink: 1 },
   summary: { marginVertical: space.lg },
   summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, minHeight: 36 },
   summaryLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant },

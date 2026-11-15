@@ -22,6 +22,7 @@ export function ModelChip({
   fallback,
   onPress,
   disabled,
+  auto,
 }: {
   /** The chosen model file, or null when following the default. */
   model: string | null | undefined;
@@ -29,8 +30,11 @@ export function ModelChip({
   fallback?: string | null;
   onPress: () => void;
   disabled?: boolean;
+  /** Model routing picks the model for each message, so show "Auto". */
+  auto?: boolean;
 }) {
-  const label = modelLabel(model) || modelLabel(fallback) || 'Model';
+  const routed = !!auto && !model;
+  const label = routed ? 'Auto' : modelLabel(model) || modelLabel(fallback) || 'Model';
   return (
     <Pressable
       onPress={onPress}
@@ -41,9 +45,9 @@ export function ModelChip({
         disabled && { opacity: 0.6 },
       ]}
       accessibilityRole="button"
-      accessibilityLabel={`Model: ${label}. Change model`}
+      accessibilityLabel={routed ? 'Model: Auto, picked for each message. Change model' : `Model: ${label}. Change model`}
     >
-      <Icon name="chip" size={16} color={model ? m3.primary : m3.onSurfaceVariant} />
+      <Icon name={routed ? 'call-split' : 'chip'} size={16} color={model ? m3.primary : m3.onSurfaceVariant} />
       <Text style={[type.labelLarge, styles.chipText]} numberOfLines={1}>
         {label}
       </Text>
