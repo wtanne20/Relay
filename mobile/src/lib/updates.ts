@@ -1,9 +1,14 @@
 /**
- * Self-updates. The PC asks GitHub for Relay's latest release. On Windows the
- * PC downloads the installer, checks it and runs it (Relay closes and opens
- * again). Where the PC can't install by itself (Linux), the app opens the
- * release page instead. On Android the phone downloads the new APK and hands it to the
- * system installer, which asks the person to confirm.
+ * Self-updates, checked against Relay's latest GitHub release.
+ *
+ * - Windows app: the PC downloads the installer, checks it and runs it (Relay
+ *   closes and opens again).
+ * - Linux app: the app itself downloads the new AppImage (or, in Proot, the
+ *   new binary), checks it, puts it over the old one and restarts into it.
+ *   This updates this computer's own app, also on a linked computer.
+ * - Android: the phone downloads the new APK and hands it to the system
+ *   installer, which asks the person to confirm.
+ * - Browsers open the release page.
  */
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
@@ -13,15 +18,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Platform } from 'react-native';
 
 import { describeError, type RelayClient } from './api';
-import { desktopPlatform } from './desktop';
+import { desktop, desktopPlatform } from './desktop';
 import type { ReleaseAsset, UpdateInfo } from './types';
 
-export type UpdateKind = 'desktop' | 'android' | 'other';
+export type UpdateKind = 'desktop' | 'linux' | 'android' | 'other';
 
-// Only the Windows app installs updates itself; the Linux app (AppImage or
-// Proot tarball) and browsers open the release page instead.
 export const updateKind: UpdateKind =
-  desktopPlatform === 'Windows' ? 'desktop' : Platform.OS === 'android' ? 'android' : 'other';
+  desktopPlatform === 'Windows'
+    ? 'desktop'
+    : desktopPlatform === 'Linux'
+      ? 'linux'
+      : Platform.OS === 'android'
+        ? 'android'
+        : 'other';
 
 /** This app's own version. */
 export function appVersion(): string {
@@ -54,6 +63,7 @@ export function assetFor(info: UpdateInfo | null): ReleaseAsset | null {
   const r = info?.latest;
   if (!r) return null;
   if (updateKind === 'desktop') return info.can_install ? r.windows : null;
+  if (updateKind === 'linux') return info.can_install ? (r.appimage ?? r.proot ?? null) : null;
   if (updateKind === 'android') return isDevApp ? r.android_dev : r.android;
   return null;
 }
@@ -62,7 +72,8 @@ export function assetFor(info: UpdateInfo | null): ReleaseAsset | null {
 export function updateAvailable(info: UpdateInfo | null): boolean {
   if (!info?.latest) return false;
   if (updateKind === 'android') return newer(info.latest.version, appVersion()) && !!assetFor(info);
-  if (updateKind === 'desktop') return info.available && (!info.can_install || !!assetFor(info));
+  if (updateKind === 'desktop' || updateKind === 'linux')
+    return info.available && (!info.can_install || !!assetFor(info));
   return newer(info.latest.version, appVersion());
 }
 
@@ -86,10 +97,10 @@ export function useUpdates(client: RelayClient | null) {
 
   const check = useCallback(
     async (refresh = false) => {
-      if (!client) return;
+      if (updateKind !== 'linux' && !client) return;
       setChecking(true);
       try {
-        const i = await client.updates(refresh);
+        const i = updateKind === 'linux' ? await desktop.updates(refresh) : await client!.updates(refresh);
         if (alive.current) setInfo(i);
       } catch {
         // An older Relay on the PC has no updates endpoint; say nothing.
@@ -105,15 +116,17 @@ export function useUpdates(client: RelayClient | null) {
   }, [check]);
 
   const installDesktop = async () => {
-    if (!client) return;
-    await client.installUpdate();
-    // Follow the PC's progress until the installer takes over.
+    const linux = updateKind === 'linux';
+    if (!linux && !client) return;
+    if (linux) await desktop.installUpdate();
+    else await client!.installUpdate();
+    // Follow the progress until the new version takes over.
     for (;;) {
       await new Promise((r) => setTimeout(r, 1000));
       if (!alive.current) return;
       let i: UpdateInfo;
       try {
-        i = await client.updates();
+        i = linux ? await desktop.updates() : await client!.updates();
       } catch {
         // Relay closed for the installer.
         setPhase({ kind: 'installing' });
@@ -160,7 +173,7 @@ export function useUpdates(client: RelayClient | null) {
     const asset = assetFor(info);
     setPhase({ kind: 'downloading', progress: 0 });
     try {
-      if (updateKind === 'desktop' && info?.can_install) await installDesktop();
+      if ((updateKind === 'desktop' || updateKind === 'linux') && info?.can_install) await installDesktop();
       else if (updateKind === 'android' && asset) await installAndroid(asset);
       else {
         if (info?.latest?.page) await Linking.openURL(info.latest.page);

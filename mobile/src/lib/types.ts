@@ -477,6 +477,10 @@ export interface Release {
   windows: ReleaseAsset | null;
   android: ReleaseAsset | null;
   android_dev: ReleaseAsset | null;
+  /** Relay-<version>-x86_64.AppImage */
+  appimage?: ReleaseAsset | null;
+  /** Relay-<version>-arm64-proot.tar.gz */
+  proot?: ReleaseAsset | null;
 }
 
 export type InstallState =
@@ -493,7 +497,7 @@ export interface UpdateInfo {
   available: boolean;
   latest: Release | null;
   error: string | null;
-  /** The PC can install updates itself (Windows). */
+  /** Relay can install this update itself (Windows installer, or the Linux app's own AppImage). */
   can_install: boolean;
   install: InstallState;
 }
