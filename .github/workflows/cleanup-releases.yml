@@ -1,0 +1,30 @@
+name: One-off release cleanup
+
+# Temporary: deletes the old .deb, relay-host zip and RelayClient assets from
+# every published release. Removed again in the next commit.
+
+on:
+  push:
+    branches: [claude/project-thread-lps28q]
+    paths: [".github/workflows/cleanup-releases.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Delete old assets
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | .tag_name as $t | .assets[] | select(.name | test("\\.deb$|^relay-host-.*\\.zip$|^RelayClient-")) | "\(.id) \($t) \(.name)"' \
+            > to-delete.txt
+          cat to-delete.txt
+          echo "$(wc -l < to-delete.txt) assets"
+          while read -r id tag name; do
+            gh api -X DELETE "repos/$GH_REPO/releases/assets/$id" && echo "deleted $tag $name"
+          done < to-delete.txt
