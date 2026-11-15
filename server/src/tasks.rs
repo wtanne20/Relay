@@ -5,8 +5,8 @@
 //!   queued task runs at a time so the GPU isn't shared between them.
 //! - **Schedules**: a prompt that is added to the queue at set times (once,
 //!   on chosen days at a time of day, or every N minutes).
-//! - **Notices**: a short log of finished tasks and approval requests (names
-//!   and status only), which a phone without a push service checks now and
+//! - **Notices**: a short log of finished tasks and approval requests (names,
+//!   status and a one-line summary of what happened), which a phone without a push service checks now and
 //!   then to notify about work that started while the app was closed.
 //!
 //! Times of day are the brain's local time; stored times are UTC.
@@ -86,7 +86,8 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
             project_id TEXT NOT NULL,
             project_name TEXT NOT NULL,
             session_id TEXT NOT NULL,
-            title TEXT NOT NULL
+            title TEXT NOT NULL,
+            summary TEXT
         );",
     )?;
     // Added after the first version of these tables.
@@ -101,6 +102,12 @@ pub fn ensure_schema(c: &Connection) -> Result<()> {
                 "ALTER TABLE {table} ADD COLUMN allow_all INTEGER NOT NULL DEFAULT 0"
             ))?;
         }
+    }
+    let has_summary = c
+        .prepare("SELECT 1 FROM pragma_table_info('notices') WHERE name = 'summary'")?
+        .exists([])?;
+    if !has_summary {
+        c.execute_batch("ALTER TABLE notices ADD COLUMN summary TEXT")?;
     }
     Ok(())
 }
@@ -468,7 +475,10 @@ pub struct Notice {
     pub project_id: String,
     pub project_name: String,
     pub session_id: String,
+    /// The task's name (or the chat's title).
     pub title: String,
+    /// One or two lines on what happened, for the notification's body.
+    pub summary: Option<String>,
 }
 
 pub fn add_notice(
@@ -478,10 +488,11 @@ pub fn add_notice(
     project_name: &str,
     session_id: &str,
     title: &str,
+    summary: Option<&str>,
 ) -> Result<()> {
     c.execute(
-        "INSERT INTO notices (at, status, project_id, project_name, session_id, title) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![db::now(), status, project_id, project_name, session_id, title],
+        "INSERT INTO notices (at, status, project_id, project_name, session_id, title, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![db::now(), status, project_id, project_name, session_id, title, summary],
     )?;
     c.execute(
         "DELETE FROM notices WHERE id <= (SELECT MAX(id) FROM notices) - ?1",
@@ -490,26 +501,53 @@ pub fn add_notice(
     Ok(())
 }
 
+const NOTICE_SELECT: &str =
+    "SELECT id, at, status, project_id, project_name, session_id, title, summary FROM notices";
+
+fn notice_row(r: &Row) -> rusqlite::Result<Notice> {
+    Ok(Notice {
+        id: r.get(0)?,
+        at: r.get(1)?,
+        status: r.get(2)?,
+        project_id: r.get(3)?,
+        project_name: r.get(4)?,
+        session_id: r.get(5)?,
+        title: r.get(6)?,
+        summary: r.get(7)?,
+    })
+}
+
 /// Notices newer than `after`, oldest first, and the newest id.
 pub fn notices_after(c: &Connection, after: i64, limit: usize) -> Result<(Vec<Notice>, i64)> {
     let last: i64 = c.query_row("SELECT COALESCE(MAX(id), 0) FROM notices", [], |r| r.get(0))?;
-    let mut st = c.prepare(
-        "SELECT id, at, status, project_id, project_name, session_id, title FROM notices WHERE id > ?1 ORDER BY id LIMIT ?2",
-    )?;
+    let mut st = c.prepare(&format!("{NOTICE_SELECT} WHERE id > ?1 ORDER BY id LIMIT ?2"))?;
     let rows = st
-        .query_map(params![after, limit as i64], |r| {
-            Ok(Notice {
-                id: r.get(0)?,
-                at: r.get(1)?,
-                status: r.get(2)?,
-                project_id: r.get(3)?,
-                project_name: r.get(4)?,
-                session_id: r.get(5)?,
-                title: r.get(6)?,
-            })
-        })?
+        .query_map(params![after, limit as i64], notice_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((rows, last))
+}
+
+/// The newest notice about one chat.
+pub fn latest_notice(c: &Connection, session_id: &str) -> Result<Option<Notice>> {
+    Ok(c
+        .query_row(
+            &format!("{NOTICE_SELECT} WHERE session_id = ?1 ORDER BY id DESC LIMIT 1"),
+            [session_id],
+            notice_row,
+        )
+        .optional()?)
+}
+
+/// The name of the queued or scheduled task running in this chat, if any
+/// ("" when it was queued without one).
+pub fn running_task_name(c: &Connection, session_id: &str) -> Result<Option<String>> {
+    Ok(c
+        .query_row(
+            "SELECT name FROM queue WHERE session_id = ?1 AND status = 'running' LIMIT 1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 // ---------- the runner ----------
@@ -730,7 +768,8 @@ impl Tasks {
                         } else {
                             item.name.clone()
                         };
-                        self.pusher.notify(&p, &sid, &title, "error");
+                        let why = crate::push::short_summary(&msg);
+                        self.pusher.notify_finished(&p, &sid, &title, "error", why);
                     }
                 }
             }
@@ -1137,6 +1176,8 @@ async fn run_schedule(
 struct NoticeQuery {
     after: Option<i64>,
     limit: Option<usize>,
+    /// Only the newest notice about this chat.
+    session: Option<String>,
 }
 
 /// What finished or asked for approval since `after` (an id from an
@@ -1146,6 +1187,11 @@ async fn get_notices(
     State(s): State<AppState>,
     Query(q): Query<NoticeQuery>,
 ) -> ApiResult<Json<Value>> {
+    if let Some(sid) = q.session {
+        let id = sid.clone();
+        let n = s.db.call(move |c| latest_notice(c, &id)).await?;
+        return Ok(Json(json!({ "session_id": sid, "notices": n.into_iter().collect::<Vec<_>>() })));
+    }
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let (notices, last) = match q.after {
         Some(after) => s.db.call(move |c| notices_after(c, after, limit)).await?,
@@ -1305,14 +1351,17 @@ mod tests {
         );
         assert_eq!(clear_finished(&c).expect("clear"), 1);
 
-        add_notice(&c, "done", "p", "Relay", "s1", "Morning summary").expect("notice");
-        add_notice(&c, "approval", "p", "Relay", "s2", "Fix build").expect("notice");
+        add_notice(&c, "done", "p", "Relay", "s1", "Morning summary", Some("3 new emails, none urgent")).expect("notice");
+        add_notice(&c, "approval", "p", "Relay", "s2", "Fix build", None).expect("notice");
         let (all, last) = notices_after(&c, 0, 10).expect("notices");
         assert_eq!(all.len(), 2);
         let (newer, _) = notices_after(&c, all[0].id, 10).expect("notices");
         assert_eq!(newer.len(), 1);
         assert_eq!(newer[0].status, "approval");
         assert_eq!(last, all[1].id);
+        let latest = latest_notice(&c, "s1").expect("latest").expect("one");
+        assert_eq!(latest.summary.as_deref(), Some("3 new emails, none urgent"));
+        assert!(latest_notice(&c, "nope").expect("latest").is_none());
     }
 
     #[test]

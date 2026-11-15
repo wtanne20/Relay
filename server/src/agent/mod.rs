@@ -20,7 +20,7 @@ use crate::approvals::{self, AuditDecision};
 use crate::config::{ApprovalMode, Config, DEFAULT_SYSTEM_PROMPT, SharedConfig};
 use crate::db::{self, Db, Message, NewMessage, Project, Session};
 use crate::model_manager::{ModelManager, ModelState};
-use crate::push::Pusher;
+use crate::push::{self, Pusher};
 use crate::skills;
 use crate::tools::{self, Sandbox, ToolContext};
 
@@ -658,6 +658,7 @@ impl AgentManager {
             tracing::error!("failed to store final status: {e:#}");
         }
         self.finished.notify_one();
+        let summary = error.as_deref().and_then(push::short_summary);
         if let Some(e) = &error {
             self.emit(&session.id, Event::Error { message: e.clone() });
         }
@@ -668,7 +669,17 @@ impl AgentManager {
                 error,
             },
         );
-        self.pusher.notify(project, &session.id, &session.title, status);
+        let sid = session.id.clone();
+        let task = self
+            .db
+            .call(move |c| crate::tasks::running_task_name(c, &sid))
+            .await
+            .ok()
+            .flatten();
+        let name = task
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| session.title.clone());
+        self.pusher.notify_finished(project, &session.id, &name, status, summary);
     }
 
     /// Requests cancellation. Returns false if nothing was running. A run
@@ -752,6 +763,7 @@ impl AgentManager {
         }
         lock(&self.running).remove(&session.id);
         self.finished.notify_one();
+        let error_text = error.clone();
         if let Some(e) = &error {
             self.emit(&session.id, Event::Error { message: e.clone() });
         }
@@ -770,8 +782,72 @@ impl AgentManager {
         {
             title = t;
         }
-        // Only names and status leave the machine.
-        self.pusher.notify(&project, &session.id, &title, status);
+        // A queued or scheduled task is named after the task.
+        let sid = session.id.clone();
+        let task = self
+            .db
+            .call(move |c| crate::tasks::running_task_name(c, &sid))
+            .await
+            .ok()
+            .flatten();
+        let summary = self
+            .notice_summary(&session.id, status, error_text.as_deref(), task.is_some())
+            .await;
+        let name = task.filter(|n| !n.trim().is_empty()).unwrap_or(title);
+        self.pusher.notify_finished(&project, &session.id, &name, status, summary);
+    }
+
+    /// One or two lines on what a finished run did, for its notification.
+    /// A task's is written by the model from its last reply (falling back
+    /// to the reply's first lines); a chat's is the reply's first lines.
+    async fn notice_summary(
+        &self,
+        session_id: &str,
+        status: &str,
+        error: Option<&str>,
+        is_task: bool,
+    ) -> Option<String> {
+        match status {
+            "error" => return error.and_then(push::short_summary),
+            "stopped" => return Some("Stopped before it finished.".into()),
+            _ => {}
+        }
+        let sid = session_id.to_string();
+        let history = self.db.call(move |c| db::all_messages(c, &sid)).await.ok()?;
+        let answer = history
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant" && !m.content.trim().is_empty())?
+            .content
+            .clone();
+        let fallback = push::short_summary(&answer);
+        if !is_task {
+            return fallback;
+        }
+        let question = history
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let conf = self.cfg.get();
+        let body = summary_request(&conf, &question, &answer);
+        let url = format!("{}/v1/chat/completions", self.model.base_url());
+        let written = async {
+            let res = self
+                .http
+                .post(&url)
+                .json(&body)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .ok()?;
+            let v: Value = res.error_for_status().ok()?.json().await.ok()?;
+            let raw = v["choices"][0]["message"]["content"].as_str()?;
+            push::short_summary(raw)
+        }
+        .await;
+        written.or(fallback)
     }
 
     async fn agent_loop(
@@ -1737,6 +1813,22 @@ pub fn title_request(conf: &Config, question: &str, answer: &str) -> Value {
         "stream": false,
         "temperature": 0.2,
         "max_tokens": 24,
+        "chat_template_kwargs": { "enable_thinking": false },
+    })
+}
+
+/// Asks for the line a finished task's notification shows.
+pub fn summary_request(conf: &Config, question: &str, answer: &str) -> Value {
+    let cut = |t: &str, n: usize| t.chars().take(n).collect::<String>();
+    json!({
+        "model": conf.llama.model_name,
+        "messages": [
+            {"role": "system", "content": "You write the text of a phone notification about a task that just finished. In one short sentence of at most 16 words, say what the task found or did, leading with the most useful result (numbers, names, yes or no). Plain text only: no markdown, no emoji, no quotes, no preamble like 'The task'. Reply with the sentence only."},
+            {"role": "user", "content": format!("Task:\n{}\n\nResult:\n{}\n\nNotification text:", cut(question, 1000), cut(answer, 3000))},
+        ],
+        "stream": false,
+        "temperature": 0.2,
+        "max_tokens": 60,
         "chat_template_kwargs": { "enable_thinking": false },
     })
 }

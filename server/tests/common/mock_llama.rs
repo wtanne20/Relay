@@ -13,7 +13,7 @@
 //! - user text containing "edit code"  -> slowly edits app.py
 //! - anything else                    -> echoes the prompt
 //! - a non-streaming request          -> a chat title, or a summary when
-//!   Relay asks for one
+//!   Relay asks for one, or a task's notification line
 //!
 //! Streams end with a usage chunk counting a token per 3 bytes of messages,
 //! and with `ctx_tokens` set, longer requests are refused the way
@@ -141,8 +141,14 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
         }))
         .into_response();
     }
+    if system.starts_with("You write the text of a phone notification") {
+        return axum::Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "\"Mock task summary: all done.\""}}]
+        }))
+        .into_response();
+    }
     if body.get("stream").and_then(Value::as_bool) != Some(true) {
-        // Relay's only non-streaming request is the chat title.
+        // Otherwise Relay's only non-streaming request is the chat title.
         return axum::Json(json!({
             "choices": [{"message": {"role": "assistant", "content": "\"Mock chat title.\""}}]
         }))
