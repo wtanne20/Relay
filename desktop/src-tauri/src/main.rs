@@ -382,6 +382,12 @@ fn integrate_appimage(data_dir: &Path) {
     write_menu_entry(&installed);
 }
 
+#[cfg(not(unix))]
+fn copy_appimage(_from: &Path, _to: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("AppImages are Linux only"))
+}
+
+#[cfg(unix)]
 fn copy_appimage(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let dir = to.parent().unwrap_or(Path::new("."));
