@@ -19,7 +19,7 @@ import type { ReleaseAsset, UpdateInfo } from './types';
 export type UpdateKind = 'desktop' | 'android' | 'other';
 
 // Only the Windows app installs updates itself; the Linux app (AppImage or
-// .deb) and browsers open the release page instead.
+// Proot tarball) and browsers open the release page instead.
 export const updateKind: UpdateKind =
   desktopPlatform === 'Windows' ? 'desktop' : Platform.OS === 'android' ? 'android' : 'other';
 

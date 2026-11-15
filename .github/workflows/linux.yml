@@ -3,11 +3,11 @@ name: Linux desktop
 # Builds the full Relay desktop app (brain + native window) for Linux, on
 # native runners for each architecture (Tauri can't cross-compile):
 #
-# - x64: a .deb and an .AppImage, plus the x86_64 host zip.
-# - arm64: a .deb, for Proot on an Android phone (Debian or Ubuntu shown
-#   through Termux:X11 or VNC). Built on Ubuntu 22.04 so its glibc (2.35)
-#   is old enough for Debian 12 and Ubuntu 22.04+ Proot images. No AppImage:
-#   Proot has no FUSE to mount one.
+# - x64: an .AppImage, for Arch Linux (and other x64 desktops).
+# - arm64: a .tar.gz with the app and an install script, for Proot on an
+#   Android phone (shown through Termux:X11 or VNC). Built on Ubuntu 22.04 so
+#   its glibc (2.35) is old enough for Debian 12 and Ubuntu 22.04+ Proot
+#   images. No AppImage: Proot has no FUSE to mount one.
 #
 # One app for every Linux desktop: on first launch it asks whether this
 # computer is the brain (model, agent, history run here, like on Windows) or
@@ -22,6 +22,7 @@ on:
       - "server/**"
       - "desktop/**"
       - "mobile/**"
+      - "dev/proot-install.sh"
       - ".github/workflows/linux.yml"
   pull_request:
     paths:
@@ -41,10 +42,10 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
-            bundles: deb,appimage
+            tauri_args: --bundles appimage
           - arch: arm64
             runner: ubuntu-22.04-arm
-            bundles: deb
+            tauri_args: --no-bundle
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -107,17 +108,8 @@ jobs:
           # The target cache keeps old versions' bundles; start clean so the
           # copy below finds exactly this version's files.
           rm -rf src-tauri/target/release/bundle
-          npx tauri build --bundles ${{ matrix.bundles }}
-          ls -la src-tauri/target/release/bundle/*/
-
-      - name: Build relay host (x86_64 Linux "hands")
-        if: matrix.arch == 'amd64'
-        # The runner is x86_64, so this is a native build. The same binary
-        # that runs the brain also has the `host` subcommand — on a linked
-        # Linux PC it's started as `relay host` to expose its files + shell
-        # to the Windows brain (the AI reads/edits this PC's files).
-        working-directory: server
-        run: cargo build --release --locked
+          npx tauri build ${{ matrix.tauri_args }}
+          ls -la src-tauri/target/release/
 
       - name: Read version
         id: version
@@ -125,23 +117,22 @@ jobs:
           v=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' server/Cargo.toml | head -n1)
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Rename artifacts
+      - name: Package
         run: |
           mkdir -p dist
           v=${{ steps.version.outputs.version }}
-          cp desktop/src-tauri/target/release/bundle/deb/*.deb dist/Relay-$v-${{ matrix.arch }}.deb
           if [ "${{ matrix.arch }}" = amd64 ]; then
             cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-$v-x86_64.AppImage
-            # The x86_64 host (like the aarch64 one): relay binary + install.sh + start + pwa.
-            HOST=dist/relay-host-x86_64-linux
-            mkdir -p "$HOST"
-            cp server/target/release/relay "$HOST/relay"
-            cp dev/proot-install.sh "$HOST/install.sh"
-            cp dev/pwa.sh "$HOST/pwa"
-            printf '#!/bin/sh\nexec "$(dirname "$0")/relay" link "$@"\n' > "$HOST/start"
-            chmod +x "$HOST/relay" "$HOST/install.sh" "$HOST/pwa" "$HOST/start"
-            (cd "$HOST" && zip -q ../relay-host-x86_64-linux.zip relay install.sh start pwa)
-            rm -rf "$HOST"
+          else
+            # Proot: the app binary (web UI and brain built in) + icon + installer.
+            PKG=Relay-$v-arm64-proot
+            mkdir -p "dist/$PKG"
+            cp desktop/src-tauri/target/release/relay-desktop "dist/$PKG/relay-desktop"
+            cp desktop/src-tauri/icons/128x128.png "dist/$PKG/relay.png"
+            cp dev/proot-install.sh "dist/$PKG/install.sh"
+            chmod +x "dist/$PKG/relay-desktop" "dist/$PKG/install.sh"
+            tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+            rm -rf "dist/$PKG"
           fi
           ls -la dist/
 
