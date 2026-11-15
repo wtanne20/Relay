@@ -20,6 +20,11 @@
 //!
 //! If another Relay is already serving on the configured port (for example
 //! `relay serve` in a console), a brain window simply connects to it.
+//!
+//! On Linux the app installs and updates itself: an AppImage copies itself
+//! to ~/Applications/Relay.AppImage and adds Relay (with its icon) to the app
+//! menu, and an update replaces that file and restarts into it. The Proot
+//! build updates its `relay-desktop` binary the same way.
 
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -31,6 +36,7 @@ use std::time::Duration;
 
 use relay::config::LoadedConfig;
 use relay::link::{DeviceConfig, FoundBrain, LinkState};
+use relay::updates::{Package, Updater};
 use relay::{ServeOptions, ServeOutcome};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -97,6 +103,9 @@ struct Desktop {
     shutdown: Mutex<CancellationToken>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     quitting: AtomicBool,
+    /// Updates this computer's own copy of the app (Linux). Separate from
+    /// the brain's, so a linked computer updates itself, not the brain.
+    updates: Arc<Updater>,
 }
 
 impl Desktop {
@@ -205,6 +214,240 @@ fn quit(app: AppHandle) {
     begin_quit(&app);
 }
 
+/// What this app can update itself from, on Linux.
+fn linux_package() -> Option<Package> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    if std::env::var_os("APPIMAGE").is_some() {
+        return launch_path().map(Package::AppImage);
+    }
+    // The Proot tarball is the only arm64 build; an x86-64 binary outside an
+    // AppImage is a developer build, which doesn't update itself.
+    if cfg!(target_arch = "aarch64") {
+        return std::env::current_exe().ok().map(Package::ProotBinary);
+    }
+    None
+}
+
+/// Like GET /updates, but for this computer's own app (Linux).
+#[tauri::command]
+async fn desktop_updates(
+    state: tauri::State<'_, Desktop>,
+    refresh: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let updates = Arc::clone(&state.updates);
+    let current = relay::updates::CURRENT;
+    let (latest, error) = match updates.latest(refresh.unwrap_or(false)).await {
+        Ok(r) => (Some(r), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    let package = linux_package();
+    let can_install = match (&package, &latest) {
+        (Some(p), Some(r)) => p.asset(r).is_some(),
+        (Some(_), None) => true,
+        _ => false,
+    };
+    Ok(serde_json::json!({
+        "current": current,
+        "available": latest.as_ref().is_some_and(|r| relay::updates::newer(&r.version, current)),
+        "latest": latest,
+        "error": error,
+        "can_install": can_install,
+        "install": updates.install_state(),
+    }))
+}
+
+/// Downloads the new version over this one, then restarts into it.
+#[tauri::command]
+async fn install_desktop_update(app: AppHandle) -> Result<(), String> {
+    let package = linux_package()
+        .ok_or_else(|| "This copy of Relay can't update itself; download the new version from the release page".to_string())?;
+    let state = app.state::<Desktop>();
+    let updates = Arc::clone(&state.updates);
+    let dir = state.data_dir.join("updates");
+    let handle = app.clone();
+    updates
+        .install_package(package, dir, move |path| restart_into(&handle, &path))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Starts `exe` once this process has exited (the single-instance lock and
+/// the server's port are free by then), then quits.
+fn restart_into(app: &AppHandle, exe: &Path) {
+    tracing::info!("restarting into {}", exe.display());
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.3; done; exec "$2""#)
+        .arg("relay-restart")
+        .arg(std::process::id().to_string())
+        .arg(exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    clean_appimage_env(&mut cmd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    if let Err(e) = cmd.spawn() {
+        tracing::error!("could not restart Relay: {e}");
+    }
+    begin_quit(app);
+}
+
+/// The old AppImage's mount goes away when it exits; keep the new one from
+/// inheriting paths into it.
+fn clean_appimage_env(cmd: &mut std::process::Command) {
+    for key in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
+        cmd.env_remove(key);
+    }
+    let Some(appdir) = std::env::var("APPDIR").ok().filter(|d| !d.is_empty()) else {
+        return;
+    };
+    for (key, value) in std::env::vars() {
+        if !value.contains(&appdir) {
+            continue;
+        }
+        let kept: Vec<&str> = value.split(':').filter(|p| !p.contains(&appdir)).collect();
+        if kept.is_empty() || kept.iter().all(|p| p.is_empty()) {
+            cmd.env_remove(&key);
+        } else {
+            cmd.env(&key, kept.join(":"));
+        }
+    }
+}
+
+/// Where Relay's AppImage lives once it has installed itself.
+fn installed_appimage() -> PathBuf {
+    relay::link::home_dir().join("Applications").join("Relay.AppImage")
+}
+
+fn xdg_data_home() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| relay::link::home_dir().join(".local/share"))
+}
+
+/// The file the app menu and autostart should run: the installed AppImage
+/// when there is one, else the AppImage that is running, else this binary.
+fn launch_path() -> Option<PathBuf> {
+    if let Some(running) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        let installed = installed_appimage();
+        return Some(if installed.is_file() { installed } else { running });
+    }
+    std::env::current_exe().ok()
+}
+
+/// Linux AppImage: copies the AppImage to ~/Applications/Relay.AppImage
+/// (unless a newer one is already there) and adds Relay to the app menu
+/// with its icon, pointing at that copy. Runs on every launch, so the menu
+/// entry heals itself. RELAY_NO_INSTALL=1 turns it off.
+fn integrate_appimage(data_dir: &Path) {
+    if !cfg!(target_os = "linux") || in_proot() {
+        return;
+    }
+    let Some(running) = std::env::var_os("APPIMAGE").map(PathBuf::from) else {
+        return;
+    };
+    if std::env::var_os("RELAY_NO_INSTALL").is_some_and(|v| v != "0" && !v.is_empty()) {
+        return;
+    }
+    let installed = installed_appimage();
+    let stamp = data_dir.join("appimage-version");
+    let current = relay::updates::CURRENT;
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if same(&running, &installed) {
+        let _ = std::fs::write(&stamp, current);
+    } else {
+        let there = std::fs::read_to_string(&stamp).unwrap_or_default();
+        let there = there.trim();
+        // Don't replace a newer copy with an older download.
+        if !installed.is_file() || there.is_empty() || relay::updates::newer(current, there) {
+            if let Err(e) = copy_appimage(&running, &installed) {
+                tracing::warn!("could not copy Relay to {}: {e}", installed.display());
+                return write_menu_entry(&running);
+            }
+            tracing::info!("installed Relay at {}", installed.display());
+            let _ = std::fs::write(&stamp, current);
+        }
+    }
+    write_menu_entry(&installed);
+}
+
+fn copy_appimage(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = to.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(".Relay.AppImage.part");
+    std::fs::copy(from, &part)?;
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&part, to)
+}
+
+/// Writes ~/.local/share/applications/relay-desktop.desktop and Relay's icons, and
+/// points an existing autostart entry at `exe` too.
+fn write_menu_entry(exe: &Path) {
+    let data = xdg_data_home();
+    for (size, png) in [
+        ("128x128", &include_bytes!("../icons/128x128.png")[..]),
+        ("256x256", &include_bytes!("../icons/128x128@2x.png")[..]),
+        ("512x512", &include_bytes!("../icons/icon.png")[..]),
+    ] {
+        let dir = data.join("icons/hicolor").join(size).join("apps");
+        let file = dir.join("relay-desktop.png");
+        if std::fs::read(&file).ok().as_deref() == Some(png) {
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, png)) {
+            tracing::warn!("could not save Relay's icon: {e}");
+        }
+    }
+    let apps = data.join("applications");
+    let entry = desktop_entry(exe, "Your local AI agent", "");
+    // Named after the window's app id (the binary's name), which is how
+    // Wayland desktops tie the window to this entry and its icon.
+    let file = apps.join("relay-desktop.desktop");
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(entry.as_str()) {
+        match std::fs::create_dir_all(&apps).and_then(|_| std::fs::write(&file, &entry)) {
+            Ok(()) => {
+                // Most desktops notice on their own; this nudges the rest.
+                let _ = std::process::Command::new("update-desktop-database")
+                    .arg(&apps)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            Err(e) => tracing::warn!("could not add Relay to the app menu: {e}"),
+        }
+    }
+    if autostart_file().is_file() {
+        set_autostart(true);
+    }
+}
+
+/// A .desktop entry that runs `exe`.
+fn desktop_entry(exe: &Path, comment: &str, extra: &str) -> String {
+    // Quoted for the Exec key: backslash, quote, backtick and $ are escaped.
+    let mut quoted = String::new();
+    for c in exe.display().to_string().chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Relay\nComment={comment}\nExec=\"{quoted}\"{extra}\nIcon=relay-desktop\nTerminal=false\nCategories=Development;Utility;\nStartupWMClass=relay-desktop\n"
+    )
+}
+
 /// True inside Proot on Android: Relay is a Linux program there, but the
 /// "computer" is a phone with no tray, no D-Bus session and no GPU access.
 /// Detected by the Android kernel (its version string says so) or by
@@ -266,6 +509,7 @@ fn main() {
         && (config_path.exists() || data_dir.join("relay.db").exists());
     let logs = data_dir.join("logs");
     init_logging(Some(logs));
+    integrate_appimage(&data_dir);
     if proot {
         tracing::info!("running inside Proot: no tray, closing the window quits");
     }
@@ -300,6 +544,7 @@ fn main() {
             shutdown: Mutex::new(CancellationToken::new()),
             task: Mutex::new(None),
             quitting: AtomicBool::new(false),
+            updates: Arc::new(Updater::default()),
         })
         .invoke_handler(tauri::generate_handler![
             local_connection,
@@ -310,6 +555,8 @@ fn main() {
             link_to_brain,
             unlink,
             open_data_folder,
+            desktop_updates,
+            install_desktop_update,
             quit
         ])
         .setup(move |app| {
@@ -557,29 +804,35 @@ fn set_autostart(on: bool) {
     if !cfg!(target_os = "linux") || in_proot() {
         return;
     }
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| relay::link::home_dir().join(".config"))
-        .join("autostart");
-    let file = dir.join("relay.desktop");
+    let file = autostart_file();
     if !on {
         let _ = std::fs::remove_file(&file);
         return;
     }
-    // An AppImage runs from a temporary mount; $APPIMAGE is the real file.
-    let exe = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok());
-    let Some(exe) = exe else { return };
-    let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Relay\nComment=Keeps this computer linked to your Relay brain\nExec=\"{}\" --minimized\nIcon=relay-desktop\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-        exe.display()
+    let Some(exe) = launch_path() else { return };
+    let entry = desktop_entry(
+        &exe,
+        "Keeps this computer linked to your Relay brain",
+        " --minimized\nX-GNOME-Autostart-enabled=true",
     );
-    if std::fs::create_dir_all(&dir).is_ok()
+    if std::fs::read_to_string(&file).ok().as_deref() == Some(entry.as_str()) {
+        return;
+    }
+    if let Some(dir) = file.parent()
+        && std::fs::create_dir_all(dir).is_ok()
         && let Err(e) = std::fs::write(&file, entry)
     {
         tracing::warn!("could not set Relay to start on login: {e}");
     }
+}
+
+fn autostart_file() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| relay::link::home_dir().join(".config"))
+        .join("autostart")
+        .join("relay.desktop")
 }
 
 /// Logs to <data>/logs/desktop.log (there is no console in release builds).

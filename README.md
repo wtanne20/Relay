@@ -38,7 +38,9 @@ other GPUs work through Vulkan), a phone, and a free [Tailscale](https://tailsca
    - **Windows:** run `RelaySetup-<version>.exe`. Windows may say it protected your PC because the installer isn't
      code-signed: click **More info → Run anyway**. Keep the defaults and finish with **Open Relay now**.
    - **Arch Linux:** install `fuse2` (`sudo pacman -S fuse2`), make `Relay-<version>-x86_64.AppImage` executable
-     (`chmod +x`) and run it. See [Linux](#linux) for what differs.
+     (`chmod +x`) and run it once. It copies itself to `~/Applications/Relay.AppImage` and adds Relay, with its
+     icon, to your app menu; after that, start it from the menu and delete the download. See [Linux](#linux) for
+     what differs.
 3. **First start.** Relay asks whether this computer is the brain; pick **This computer is the brain**. It finds
    your GPU, downloads llama.cpp, picks the largest model that fits in your VRAM and loads it. The model status
    shows at the bottom left of the Relay window.
@@ -95,6 +97,13 @@ The Linux app is the same Relay as on Windows (brain, desktop window, tray icon,
   `Relay-<version>-arm64-proot.tar.gz` for Proot on an Android phone: unpack it and run `./install.sh`, which
   installs the libraries it needs with apt or pacman and adds `relay-desktop` to `~/.local/bin` and the app menu.
   In Proot it runs without a tray, and closing the window quits.
+- **Installing the AppImage.** The first time it runs, the AppImage copies itself to
+  `~/Applications/Relay.AppImage`, puts its icon in `~/.local/share/icons` and adds
+  `~/.local/share/applications/relay-desktop.desktop`, so Relay shows in the app menu (and dock) with its icon. Running a
+  newer download later replaces that copy; an older one leaves it alone. Set `RELAY_NO_INSTALL=1` to skip this.
+- **Updates.** **Settings → Updates → Install and restart** downloads the new AppImage (or, in Proot, the new
+  `relay-desktop`), checks it against GitHub's SHA-256, puts it over the old one and restarts Relay. On a linked
+  computer this updates that computer's own app.
 - **GPU.** Relay only downloads llama.cpp's CPU build on Linux. To use your GPU, install or build a CUDA or Vulkan
   `llama-server` (see llama.cpp's build guide), then put it on your `PATH` or in `~/llama.cpp`, or set
   `llama_server_path` in `config.toml`, and click **Restart model**. On ARM64 there is no download at all, so

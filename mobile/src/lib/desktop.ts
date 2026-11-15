@@ -6,6 +6,7 @@
  * connects to that brain).
  */
 import type { Credentials } from './storage';
+import type { UpdateInfo } from './types';
 
 interface TauriGlobal {
   core: { invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T> };
@@ -90,5 +91,9 @@ export const desktop = {
   unlink: () => invoke<void>('unlink'),
   serverStatus: () => invoke<ServerStatus>('server_status'),
   openDataFolder: () => invoke<void>('open_data_folder'),
+  /** Linux: this computer's own app version and the latest release. */
+  updates: (refresh = false) => invoke<UpdateInfo>('desktop_updates', { refresh }),
+  /** Linux: downloads the new AppImage (or Proot binary) over this one and restarts into it. */
+  installUpdate: () => invoke<void>('install_desktop_update'),
   quit: () => invoke<void>('quit'),
 };

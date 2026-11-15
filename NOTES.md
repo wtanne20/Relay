@@ -2,6 +2,20 @@
 
 > Running log. **Last updated: 2026-11-09 — desktop app for Proot (arm64 .deb), v1.0.8.**
 
+## Linux installs and updates itself (2026-11-15)
+
+- AppImage (not Proot, `RELAY_NO_INSTALL=1` skips): on launch `integrate_appimage` in the desktop app copies
+  `$APPIMAGE` to `~/Applications/Relay.AppImage` (unless the copy there is newer, per `<data>/appimage-version`),
+  writes the icon into `~/.local/share/icons/hicolor/{128,256,512}/apps/relay-desktop.png` and
+  `~/.local/share/applications/relay-desktop.desktop` (`StartupWMClass=relay-desktop`), and repoints autostart.
+- Updates on Linux run in the desktop process (`desktop_updates` / `install_desktop_update` Tauri commands, own
+  `Updater`), not through the brain's `/updates/install`, so a linked computer updates itself.
+  `updates::Package::{AppImage, ProotBinary}`: download next to the target (SHA-256 checked), chmod 755, rename
+  over it (a versioned AppImage name gets the new version), then `restart_into` starts a `sh` that waits for this
+  PID to exit and execs the new file (APPDIR paths stripped from the env), and quits. Proot unpacks
+  `relay-desktop` from the tarball with `tar`. UI: `updateKind === 'linux'` in `mobile/src/lib/updates.ts`.
+- NOT verified on a real Arch desktop (no AppImage built here); unit tests + clippy only.
+
 ## Builds trimmed to Windows, Arch and Proot (2026-11-15)
 
 Owner only wants the Relay app for Windows, Arch Linux x86-64 and Proot. Dropped the `.deb`s and the

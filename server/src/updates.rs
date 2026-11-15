@@ -1,6 +1,13 @@
 //! Update checks against Relay's GitHub releases, and installing a new
-//! version on Windows: the installer is downloaded, its SHA-256 checked
-//! against the one GitHub publishes, and run (it closes and reopens Relay).
+//! version. Every download's SHA-256 is checked against the one GitHub
+//! publishes before it is used.
+//!
+//! - Windows: the installer is downloaded and run (it closes and reopens
+//!   Relay).
+//! - Linux AppImage: the new AppImage is downloaded next to the old one and
+//!   renamed over it, then the desktop app restarts into it.
+//! - Linux arm64 (Proot): the new tarball is downloaded, its `relay-desktop`
+//!   unpacked and renamed over the running binary, then the app restarts.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -39,6 +46,40 @@ pub struct Release {
     pub android: Option<Asset>,
     /// Relay-Dev.apk
     pub android_dev: Option<Asset>,
+    /// Relay-<version>-x86_64.AppImage
+    pub appimage: Option<Asset>,
+    /// Relay-<version>-arm64-proot.tar.gz
+    pub proot: Option<Asset>,
+}
+
+/// How this copy of Relay was installed, which decides how it updates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Package {
+    /// Installed with RelaySetup.exe.
+    WindowsInstaller,
+    /// This AppImage file; an update replaces it.
+    AppImage(PathBuf),
+    /// The `relay-desktop` binary from the Proot tarball; an update replaces it.
+    ProotBinary(PathBuf),
+}
+
+impl Package {
+    /// The release file this package updates from.
+    pub fn asset<'a>(&self, r: &'a Release) -> Option<&'a Asset> {
+        match self {
+            Package::WindowsInstaller => r.windows.as_ref(),
+            Package::AppImage(_) => r.appimage.as_ref(),
+            Package::ProotBinary(_) => r.proot.as_ref(),
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Package::WindowsInstaller => "Windows installer",
+            Package::AppImage(_) => "AppImage",
+            Package::ProotBinary(_) => "Proot download",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -50,7 +91,8 @@ pub enum Install {
         done_bytes: u64,
         total_bytes: u64,
     },
-    /// The installer is running; Relay is about to close.
+    /// The new version is in place (Linux) or its installer is running
+    /// (Windows); Relay is about to close and open again.
     Installing,
     Failed {
         error: String,
@@ -122,6 +164,8 @@ pub fn parse_release(v: &Value) -> Result<Release> {
         windows: find(&|n| n.starts_with("RelaySetup") && n.ends_with(".exe")),
         android: find(&|n| n == "Relay.apk"),
         android_dev: find(&|n| n == "Relay-Dev.apk"),
+        appimage: find(&|n| n.starts_with("Relay-") && n.ends_with("-x86_64.AppImage")),
+        proot: find(&|n| n.starts_with("Relay-") && n.ends_with("-arm64-proot.tar.gz")),
     })
 }
 
@@ -177,8 +221,23 @@ impl Updater {
     /// release in the background.
     pub async fn install(self: &std::sync::Arc<Self>, dir: PathBuf) -> Result<Release> {
         if !cfg!(windows) {
-            bail!("Relay can only install updates itself on Windows");
+            bail!("this Relay updates itself from its own app window");
         }
+        self.install_package(Package::WindowsInstaller, dir, |_| {})
+            .await
+    }
+
+    /// Starts downloading the latest release for `package` in the
+    /// background. Windows runs the installer; on Linux the new version
+    /// replaces the old file and `on_ready` gets its path, to restart into.
+    /// `dir` is where downloads wait (Windows only; Linux downloads next to
+    /// the file it replaces, so the swap is a rename on one disk).
+    pub async fn install_package(
+        self: &std::sync::Arc<Self>,
+        package: Package,
+        dir: PathBuf,
+        on_ready: impl FnOnce(PathBuf) + Send + 'static,
+    ) -> Result<Release> {
         if matches!(
             self.install_state(),
             Install::Downloading { .. } | Install::Installing
@@ -189,26 +248,44 @@ impl Updater {
         if !newer(&release.version, CURRENT) {
             bail!("Relay {CURRENT} is already the latest version");
         }
-        let asset = release
-            .windows
-            .clone()
-            .ok_or_else(|| anyhow!("Relay {} has no Windows installer yet", release.version))?;
+        let asset = package
+            .asset(&release)
+            .cloned()
+            .ok_or_else(|| anyhow!("Relay {} has no {} yet", release.version, package.label()))?;
         let Some(sha) = asset.sha256.clone() else {
-            bail!("GitHub didn't publish a checksum for the installer, so Relay won't run it");
+            bail!("GitHub didn't publish a checksum for the update, so Relay won't use it");
         };
         *lock(&self.install) = Install::Downloading {
             done_bytes: 0,
             total_bytes: asset.size,
         };
         let this = self.clone();
+        let version = release.version.clone();
         tokio::spawn(async move {
             let result = async {
-                let path = this.download(&asset, &sha, &dir).await?;
-                launch(&path)
+                match &package {
+                    Package::WindowsInstaller => {
+                        let path = this.download(&asset, &sha, &dir).await?;
+                        launch(&path)?;
+                        Ok(None)
+                    }
+                    Package::AppImage(old) => this
+                        .replace_appimage(&asset, &sha, old, &version)
+                        .await
+                        .map(Some),
+                    Package::ProotBinary(old) => {
+                        this.replace_binary(&asset, &sha, old).await.map(Some)
+                    }
+                }
             }
             .await;
             *lock(&this.install) = match result {
-                Ok(()) => Install::Installing,
+                Ok(new_path) => {
+                    if let Some(p) = new_path {
+                        on_ready(p);
+                    }
+                    Install::Installing
+                }
                 Err(e) => {
                     tracing::warn!("update failed: {e:#}");
                     Install::Failed {
@@ -220,6 +297,78 @@ impl Updater {
         Ok(release)
     }
 
+    /// Puts the new AppImage where the old one is. A file named for the old
+    /// version (Relay-1.0.11-x86_64.AppImage) is replaced by one named for
+    /// the new version; any other name (Relay.AppImage) is kept. The running
+    /// app keeps its copy open, so renaming over it is safe.
+    async fn replace_appimage(
+        &self,
+        asset: &Asset,
+        sha: &str,
+        old: &Path,
+        version: &str,
+    ) -> Result<PathBuf> {
+        let dir = old
+            .parent()
+            .ok_or_else(|| anyhow!("can't tell which folder the AppImage is in"))?;
+        let name = old
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("can't read the AppImage's name"))?;
+        let new_name = renamed_for(name, CURRENT, version);
+        let new_path = dir.join(&new_name);
+        let part = dir.join(format!(".{new_name}.part"));
+        self.download_to(asset, sha, &part)
+            .await
+            .map_err(|e| writable_hint(e, dir))?;
+        set_executable(&part).await?;
+        tokio::fs::rename(&part, &new_path).await?;
+        if new_path != old {
+            let _ = tokio::fs::remove_file(old).await;
+        }
+        Ok(new_path)
+    }
+
+    /// Unpacks `relay-desktop` from the Proot tarball over the running one.
+    async fn replace_binary(&self, asset: &Asset, sha: &str, old: &Path) -> Result<PathBuf> {
+        let dir = old
+            .parent()
+            .ok_or_else(|| anyhow!("can't tell which folder Relay is in"))?;
+        let work = dir.join(".relay-update");
+        let _ = tokio::fs::remove_dir_all(&work).await;
+        tokio::fs::create_dir_all(&work)
+            .await
+            .map_err(|e| writable_hint(e.into(), dir))?;
+        let result = async {
+            let tarball = work.join("relay.tar.gz");
+            self.download_to(asset, sha, &tarball).await?;
+            let out = tokio::process::Command::new("tar")
+                .arg("-xzf")
+                .arg(&tarball)
+                .arg("-C")
+                .arg(&work)
+                .output()
+                .await
+                .context("could not run tar to unpack the update")?;
+            if !out.status.success() {
+                bail!(
+                    "could not unpack the update: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            let bin = find_file(&work, "relay-desktop")
+                .ok_or_else(|| anyhow!("the update has no relay-desktop in it"))?;
+            let part = dir.join(".relay-desktop.part");
+            tokio::fs::copy(&bin, &part).await?;
+            set_executable(&part).await?;
+            tokio::fs::rename(&part, old).await?;
+            Ok(old.to_path_buf())
+        }
+        .await;
+        let _ = tokio::fs::remove_dir_all(&work).await;
+        result
+    }
+
     async fn download(&self, asset: &Asset, sha: &str, dir: &Path) -> Result<PathBuf> {
         tokio::fs::create_dir_all(dir).await?;
         let name: String = asset
@@ -229,36 +378,109 @@ impl Updater {
             .collect();
         let path = dir.join(&name);
         let tmp = dir.join(format!("{name}.part"));
+        self.download_to(asset, sha, &tmp).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        Ok(path)
+    }
+
+    /// Downloads `asset` to `path`, reporting progress, and deletes it again
+    /// unless its SHA-256 is `sha`.
+    async fn download_to(&self, asset: &Asset, sha: &str, path: &Path) -> Result<()> {
         let mut res = client()?
             .get(&asset.url)
             .send()
             .await
-            .context("could not download the installer")?
+            .context("could not download the update")?
             .error_for_status()?;
-        let mut file = tokio::fs::File::create(&tmp).await?;
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .with_context(|| format!("could not write {}", path.display()))?;
         let mut hash = Sha256::new();
         let mut done = 0u64;
-        while let Some(chunk) = res.chunk().await.context("the download broke off")? {
-            hash.update(&chunk);
-            file.write_all(&chunk).await?;
-            done += chunk.len() as u64;
-            *lock(&self.install) = Install::Downloading {
-                done_bytes: done,
-                total_bytes: asset.size.max(done),
-            };
+        let copied: Result<()> = async {
+            while let Some(chunk) = res.chunk().await.context("the download broke off")? {
+                hash.update(&chunk);
+                file.write_all(&chunk).await?;
+                done += chunk.len() as u64;
+                *lock(&self.install) = Install::Downloading {
+                    done_bytes: done,
+                    total_bytes: asset.size.max(done),
+                };
+            }
+            file.flush().await?;
+            Ok(())
         }
-        file.flush().await?;
+        .await;
         drop(file);
+        if let Err(e) = copied {
+            let _ = tokio::fs::remove_file(path).await;
+            return Err(e);
+        }
         let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if got != sha {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            bail!(
-                "the downloaded installer doesn't match GitHub's checksum, so Relay didn't run it"
-            );
+            let _ = tokio::fs::remove_file(path).await;
+            bail!("the download doesn't match GitHub's checksum, so Relay didn't use it");
         }
-        tokio::fs::rename(&tmp, &path).await?;
-        Ok(path)
+        Ok(())
     }
+}
+
+/// "Relay-1.0.11-x86_64.AppImage" -> "Relay-1.0.12-x86_64.AppImage"; a name
+/// without the old version stays as it is.
+pub fn renamed_for(name: &str, current: &str, version: &str) -> String {
+    if !current.is_empty() && name.contains(current) {
+        name.replacen(current, version, 1)
+    } else {
+        name.to_string()
+    }
+}
+
+fn writable_hint(e: anyhow::Error, dir: &Path) -> anyhow::Error {
+    let denied = e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    });
+    if denied {
+        anyhow!(
+            "Relay can't write to {}, so it can't update itself there. Move Relay to a folder you own (like ~/Applications) and try again",
+            dir.display()
+        )
+    } else {
+        e
+    }
+}
+
+#[cfg(unix)]
+async fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn set_executable(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// The first file called `name` under `dir` (a couple of levels deep).
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            let ft = entry.file_type().ok()?;
+            if ft.is_file() && entry.file_name() == name {
+                return Some(path);
+            }
+            if ft.is_dir()
+                && depth > 0
+                && let Some(found) = walk(&path, name, depth - 1)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(dir, name, 3)
 }
 
 /// Runs the installer. Windows asks for permission; the installer closes
@@ -313,6 +535,10 @@ mod tests {
                  "browser_download_url": "https://github.com/wtanne20/Relay/releases/download/v1.0.2/Relay-Dev.apk"},
                 {"name": "RelaySetup-1.0.2.exe", "size": 30, "digest": "sha256:def",
                  "browser_download_url": "https://github.com/wtanne20/Relay/releases/download/v1.0.2/RelaySetup-1.0.2.exe"},
+                {"name": "Relay-1.0.2-x86_64.AppImage", "size": 40, "digest": "sha256:0A",
+                 "browser_download_url": "https://github.com/wtanne20/Relay/releases/download/v1.0.2/Relay-1.0.2-x86_64.AppImage"},
+                {"name": "Relay-1.0.2-arm64-proot.tar.gz", "size": 50, "digest": "sha256:0b",
+                 "browser_download_url": "https://github.com/wtanne20/Relay/releases/download/v1.0.2/Relay-1.0.2-arm64-proot.tar.gz"},
                 {"name": "RelaySetup-evil.exe", "size": 1,
                  "browser_download_url": "https://example.com/RelaySetup-evil.exe"}
             ]
@@ -322,6 +548,48 @@ mod tests {
         assert_eq!(r.android.as_ref().unwrap().sha256.as_deref(), Some("abc"));
         assert_eq!(r.android_dev.as_ref().unwrap().size, 20);
         assert_eq!(r.windows.as_ref().unwrap().name, "RelaySetup-1.0.2.exe");
+        assert_eq!(
+            r.appimage.as_ref().unwrap().name,
+            "Relay-1.0.2-x86_64.AppImage"
+        );
+        assert_eq!(
+            r.proot.as_ref().unwrap().name,
+            "Relay-1.0.2-arm64-proot.tar.gz"
+        );
+        assert_eq!(
+            Package::AppImage("/x".into())
+                .asset(&r)
+                .unwrap()
+                .sha256
+                .as_deref(),
+            Some("0a")
+        );
         assert!(parse_release(&json!({"assets": []})).is_err());
+    }
+
+    #[test]
+    fn renames_versioned_appimages() {
+        assert_eq!(
+            renamed_for("Relay-1.0.11-x86_64.AppImage", "1.0.11", "1.0.12"),
+            "Relay-1.0.12-x86_64.AppImage"
+        );
+        assert_eq!(
+            renamed_for("Relay.AppImage", "1.0.11", "1.0.12"),
+            "Relay.AppImage"
+        );
+    }
+
+    #[test]
+    fn finds_the_binary_in_an_unpacked_tarball() {
+        let dir = std::env::temp_dir().join(format!("relay-find-{}", std::process::id()));
+        let inner = dir.join("Relay-1.0.2-arm64-proot");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("relay-desktop"), b"x").unwrap();
+        assert_eq!(
+            find_file(&dir, "relay-desktop"),
+            Some(inner.join("relay-desktop"))
+        );
+        assert_eq!(find_file(&dir, "nope"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

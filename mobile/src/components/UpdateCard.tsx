@@ -7,7 +7,7 @@ import { m3, radius, space, type } from './theme';
 import { Button, Icon } from './ui';
 
 function actionLabel(version: string, canInstall: boolean): string {
-  if (updateKind === 'desktop' && canInstall) return `Install ${version} and restart`;
+  if ((updateKind === 'desktop' || updateKind === 'linux') && canInstall) return `Install ${version} and restart`;
   if (updateKind === 'android') return `Download and install ${version}`;
   return RELEASE_PAGE;
 }
@@ -24,14 +24,16 @@ export function UpdateCard({ client, onlyWhenAvailable }: { client: RelayClient 
   const busy = u.phase.kind === 'downloading' || u.phase.kind === 'installing';
   if (onlyWhenAvailable && !u.available && !busy) return null;
 
-  const mine = updateKind === 'desktop' ? (u.info?.current ?? null) : appVersion();
+  const mine = updateKind === 'desktop' || updateKind === 'linux' ? (u.info?.current ?? null) : appVersion();
   let status: string;
   if (u.phase.kind === 'downloading') status = `Downloading… ${Math.round(u.phase.progress * 100)}%`;
   else if (u.phase.kind === 'installing')
     status =
-      updateKind === 'desktop'
-        ? `Installing. ${desktopOS} may ask for permission; Relay closes and opens again by itself.`
-        : 'Follow Android’s prompt to install the update.';
+      updateKind === 'linux'
+        ? 'Installed. Relay is restarting with the new version.'
+        : updateKind === 'desktop'
+          ? `Installing. ${desktopOS} may ask for permission; Relay closes and opens again by itself.`
+          : 'Follow Android’s prompt to install the update.';
   else if (u.phase.kind === 'error') status = u.phase.message;
   else if (u.checking && !u.info) status = 'Checking for updates…';
   else if (u.available && latest) status = mine ? `You have ${mine}.` : 'A new version is out.';
