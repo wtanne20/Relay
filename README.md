@@ -29,7 +29,7 @@ Nothing is exposed to the internet.
 
 ## Quick start
 
-You need a PC running Windows 10/11 or a 64-bit Debian- or Ubuntu-based Linux (an NVIDIA GPU is best; on Windows
+You need a PC running Windows 10/11 or Arch Linux (x86-64) (an NVIDIA GPU is best; on Windows
 other GPUs work through Vulkan), a phone, and a free [Tailscale](https://tailscale.com) account.
 
 1. **Tailscale.** Install it on the PC (<https://tailscale.com/download>) and on the phone (App Store or Play
@@ -37,9 +37,8 @@ other GPUs work through Vulkan), a phone, and a free [Tailscale](https://tailsca
 2. **PC app.** Get it from the [latest release](../../releases/latest) (see [Downloads](#downloads)):
    - **Windows:** run `RelaySetup-<version>.exe`. Windows may say it protected your PC because the installer isn't
      code-signed: click **More info → Run anyway**. Keep the defaults and finish with **Open Relay now**.
-   - **Linux:** install `Relay-<version>-amd64.deb` with `sudo apt install ./Relay-<version>-amd64.deb` and open
-     **Relay** from your app menu (or run `relay-desktop`). On other distributions, make
-     `Relay-<version>-x86_64.AppImage` executable (`chmod +x`) and run it. See [Linux](#linux) for what differs.
+   - **Arch Linux:** install `fuse2` (`sudo pacman -S fuse2`), make `Relay-<version>-x86_64.AppImage` executable
+     (`chmod +x`) and run it. See [Linux](#linux) for what differs.
 3. **First start.** Relay asks whether this computer is the brain; pick **This computer is the brain**. It finds
    your GPU, downloads llama.cpp, picks the largest model that fits in your VRAM and loads it. The model status
    shows at the bottom left of the Relay window.
@@ -92,9 +91,10 @@ llama-server's output goes to `logs\llama-server.log`.
 
 The Linux app is the same Relay as on Windows (brain, desktop window, tray icon, pairing), with a few differences:
 
-- **Downloads.** `Relay-<version>-amd64.deb` for Debian and Ubuntu, `Relay-<version>-x86_64.AppImage` for other
-  x64 distributions, and `Relay-<version>-arm64.deb` for Debian or Ubuntu in Proot on an Android phone (there it
-  runs without a tray, and closing the window quits).
+- **Downloads.** `Relay-<version>-x86_64.AppImage` for Arch Linux (it needs `fuse2`), and
+  `Relay-<version>-arm64-proot.tar.gz` for Proot on an Android phone: unpack it and run `./install.sh`, which
+  installs the libraries it needs with apt or pacman and adds `relay-desktop` to `~/.local/bin` and the app menu.
+  In Proot it runs without a tray, and closing the window quits.
 - **GPU.** Relay only downloads llama.cpp's CPU build on Linux. To use your GPU, install or build a CUDA or Vulkan
   `llama-server` (see llama.cpp's build guide), then put it on your `PATH` or in `~/llama.cpp`, or set
   `llama_server_path` in `config.toml`, and click **Restart model**. On ARM64 there is no download at all, so
@@ -185,8 +185,8 @@ Both apps are built by GitHub Actions in this repository:
 - **Windows installer**: *Actions → Windows installer* → the latest run → artifact **RelaySetup-&lt;version&gt;**.
   The workflow runs the test suite on Windows, builds `relay.exe` (statically linked, no Visual C++ runtime needed),
   builds the installer with Inno Setup, and installs and uninstalls it once as a check.
-- **Linux app**: *Actions → Linux desktop* → artifacts **RelayLinux-amd64-&lt;version&gt;** (`.deb` and `.AppImage`,
-  plus `relay-host-x86_64-linux.zip`) and **RelayLinux-arm64-&lt;version&gt;** (`.deb` for Proot). The workflow runs
+- **Linux app**: *Actions → Linux desktop* → artifacts **RelayLinux-amd64-&lt;version&gt;** (the `.AppImage`, for
+  Arch) and **RelayLinux-arm64-&lt;version&gt;** (the `.tar.gz` for Proot). The workflow runs
   the test suite on Linux and builds the desktop app with Tauri.
 - **Android app**: *Actions → Android app* → artifact **Relay-android** (`Relay.apk`). Open it on the phone and
   allow installing from that source when asked. It is signed with a development key, which is fine for your own

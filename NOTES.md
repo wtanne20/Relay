@@ -2,6 +2,15 @@
 
 > Running log. **Last updated: 2026-11-09 — desktop app for Proot (arm64 .deb), v1.0.8.**
 
+## Builds trimmed to Windows, Arch and Proot (2026-11-15)
+
+Owner only wants the Relay app for Windows, Arch Linux x86-64 and Proot. Dropped the `.deb`s and the
+"hands" host zips (`relay-host-*-linux.zip`, `host.yml`, `dev/pwa.sh`); the Linux app links a computer to
+a brain itself. `linux.yml` now ships `Relay-<v>-x86_64.AppImage` (Arch, needs `fuse2`) and
+`Relay-<v>-arm64-proot.tar.gz` (`relay-desktop` + icon + `install.sh`, which is `dev/proot-install.sh`:
+installs WebKitGTK/GTK with apt or pacman, puts the app in `~/.local/bin` and the app menu).
+Android APKs are unchanged.
+
 ## Desktop app in Proot (2026-11-09, v1.0.8)
 
 Owner wants to chat from inside Proot (Android phone, Debian/Ubuntu shown through Termux:X11 or VNC)
