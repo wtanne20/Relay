@@ -18,7 +18,8 @@ import java.util.concurrent.TimeUnit
  * exactly when), even with the app closed, and notifies about tasks that
  * finished or need approval since the last check: scheduled and queued
  * tasks that started while nobody had the app open. The PC keeps a short
- * log of those (`GET /notices`) with names and status only.
+ * log of those (`GET /notices`): the task's name, status and a one-line
+ * summary of what happened.
  */
 class NoticeWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
   companion object {
@@ -79,7 +80,8 @@ class NoticeWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params)
             val sid = n.optString("session_id")
             val status = n.optString("status")
             if (sid.isEmpty() || Notifier.recentlyTold(ctx, sid, status)) continue
-            Notifier.tell(ctx, scheme, sid, n.optString("project_name"), n.optString("title"), status)
+            val summary = if (n.isNull("summary")) null else n.optString("summary")
+            Notifier.tell(ctx, scheme, sid, n.optString("project_name"), n.optString("title"), status, summary)
           }
         }
         p.edit().putLong(KEY_LAST, newest).apply()

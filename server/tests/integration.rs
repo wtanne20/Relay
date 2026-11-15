@@ -1934,6 +1934,16 @@ async fn queued_and_scheduled_tasks_run_in_the_background() {
     let done: Vec<&Value> = n["notices"].as_array().expect("arr").iter().filter(|x| x["status"] == "done").collect();
     assert!(done.len() >= 3, "{n}");
     assert!(done.iter().any(|x| x["title"] == "First"), "{n}");
+    // Each with a line on what happened, written by the model for a task.
+    assert!(
+        done.iter().any(|x| x["title"] == "First" && x["summary"] == "Mock task summary: all done."),
+        "{n}"
+    );
+    // A phone watching one chat asks for its newest notice.
+    let one = h.get(&format!("/notices?session={first_chat}")).await;
+    assert_eq!(one["session_id"], first_chat.as_str());
+    assert_eq!(one["notices"][0]["status"], "done", "{one}");
+    assert_eq!(one["notices"][0]["summary"], "Mock task summary: all done.", "{one}");
 
     // Schedules.
     let (s, v) = h

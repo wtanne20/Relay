@@ -10,9 +10,15 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 
 /**
- * Shows "finished / failed / needs your approval" notifications for both the
- * live watcher (WatchService) and the periodic check-in (NoticeWorker), and
+ * Shows "done / failed / needs approval" notifications for both the live
+ * watcher (WatchService) and the periodic check-in (NoticeWorker), and
  * remembers what was shown so the two don't tell you the same thing twice.
+ *
+ * Collapsed, a notification reads at a glance:
+ *   Relay · My project
+ *   Morning summary · Done
+ *   3 new emails, none urgent; rain after 4 PM.
+ * The lock screen shows only the title until the phone is unlocked.
  */
 object Notifier {
   const val CHANNEL_EVENTS = "tasks"
@@ -63,27 +69,33 @@ object Notifier {
     project: String,
     title: String,
     status: String,
+    summary: String? = null,
     decorate: ((NotificationCompat.Builder, Int) -> Unit)? = null,
   ) {
     remember(ctx, sessionId, status)
     if (WatchService.viewing == sessionId) return
     ensureChannel(ctx)
-    val label = when (status) {
-      "done" -> "finished"
-      "error" -> "failed"
-      "stopped" -> "was stopped"
-      "approval" -> "needs your approval"
-      else -> status
-    }
+    val heading = heading(title, status)
+    val body = summary?.trim()?.ifBlank { null } ?: fallback(status)
     val open = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://session/${Uri.encode(sessionId)}"))
       .setPackage(ctx.packageName)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     val nid = "$sessionId:$status".hashCode()
     val b = NotificationCompat.Builder(ctx, CHANNEL_EVENTS)
       .setSmallIcon(icon(ctx))
-      .setContentTitle(project.ifBlank { "Relay" })
-      .setContentText("${title.ifBlank { "A chat" }} $label")
+      .setContentTitle(heading)
+      .setContentText(body)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+      .setSubText(project.ifBlank { null })
       .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      .setPublicVersion(
+        NotificationCompat.Builder(ctx, CHANNEL_EVENTS)
+          .setSmallIcon(icon(ctx))
+          .setContentTitle(heading)
+          .setSubText(project.ifBlank { null })
+          .build(),
+      )
       .setAutoCancel(true)
       .setContentIntent(
         PendingIntent.getActivity(ctx, sessionId.hashCode(), open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
@@ -95,6 +107,25 @@ object Notifier {
     } catch (e: SecurityException) {
       // Notifications are turned off for Relay.
     }
+  }
+
+  /** "Morning summary · Done": the task's name and how it ended. */
+  fun heading(name: String, status: String): String {
+    val label = when (status) {
+      "done" -> "Done"
+      "error" -> "Failed"
+      "stopped" -> "Stopped"
+      "approval" -> "Needs approval"
+      else -> status
+    }
+    return "${name.ifBlank { "A chat" }} · $label"
+  }
+
+  /** The body when Relay on the PC sent no summary (an older version). */
+  private fun fallback(status: String) = when (status) {
+    "error" -> "Tap to see what went wrong."
+    "approval" -> "Tap to answer."
+    else -> "Tap to see the reply."
   }
 
   fun icon(ctx: Context): Int {

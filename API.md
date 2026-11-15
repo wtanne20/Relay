@@ -591,10 +591,20 @@ Adds a run to the queue now, without changing `next_run`.
 
 ### `GET /notices?after={id}&limit=20`
 
-What finished, failed, was stopped or asked for approval since notice `after` (oldest first), with only names and
-status: `{"notices": [{"id": 12, "at": "…", "status": "done", "project_id": "…", "project_name": "…",
-"session_id": "…", "title": "…"}], "last_id": 12}`. Without `after`, only `last_id`. The Android app without a push
-service checks this every 15 minutes or so, so tasks that ran while it was closed still notify.
+What finished, failed, was stopped or asked for approval since notice `after` (oldest first):
+`{"notices": [{"id": 12, "at": "…", "status": "done", "project_id": "…", "project_name": "…",
+"session_id": "…", "title": "Morning summary", "summary": "3 new emails, none urgent; rain after 4 PM."}],
+"last_id": 12}`. Without `after`, only `last_id`. The Android app without a push service checks this every 15 minutes
+or so, so tasks that ran while it was closed still notify.
+
+`title` is the task's name for a queued or scheduled run (otherwise the chat's title). `summary` is one or two plain
+lines on what happened, at most 110 characters, sized for a collapsed notification, or `null`: for a task the model
+writes it from the last reply, for a chat it is the reply's first lines, for a failure the error. Notifications show it
+as **"Morning summary · Done"** over the summary. Expo push never carries the summary, since it passes through Expo's
+servers.
+
+`GET /notices?session={id}` gives only the newest notice about one chat: `{"session_id": "…", "notices": [ … ]}`
+(empty when there is none). The watcher uses it to wait for a finished chat's summary before it notifies.
 
 ## Linked computers
 

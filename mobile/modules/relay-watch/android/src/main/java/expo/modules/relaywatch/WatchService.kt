@@ -29,8 +29,10 @@ import java.util.concurrent.TimeUnit
  * the way a tracker app keeps running: Android allows it because of the
  * ongoing "working" notification. It asks Relay on the PC (over Tailscale,
  * with the app's token) which chats are running, and shows a notification
- * when one finishes, fails, is stopped or needs approval. Only the project
- * name, chat title and status are shown on the lock screen. An approval
+ * when one finishes, fails, is stopped or needs approval: the task's name
+ * and status, with a line or two on what happened (which Relay writes just
+ * after the task ends, so the watcher waits a few seconds for it). Only the
+ * name and status are shown on the lock screen. An approval
  * notification also shows what the agent wants to do once the phone is
  * unlocked, with Allow and Deny buttons that answer it right there. It stops
  * itself once nothing is running.
@@ -47,6 +49,8 @@ class WatchService : Service() {
     private const val CHANNEL_WORKING = "relay_working"
     private const val ONGOING_ID = 7301
     private const val POLL_MS = 4000L
+    /** How long a finished chat waits for its summary before notifying without one. */
+    private const val SUMMARY_WAIT_MS = 30L * 1000
     /** Give up after this long without reaching the PC. */
     private const val UNREACHABLE_MS = 30L * 60 * 1000
 
@@ -54,7 +58,11 @@ class WatchService : Service() {
     var viewing: String? = null
   }
 
-  private data class Chat(val status: String, val title: String, val project: String)
+  /** [updated] is the PC's last change to the chat, as Relay writes times. */
+  private data class Chat(val status: String, val title: String, val project: String, val updated: String = "")
+
+  /** A finished chat whose notification waits for its summary. */
+  private data class Waiting(val status: String, val until: Long)
 
   private val http = OkHttpClient.Builder()
     .connectTimeout(15, TimeUnit.SECONDS)
@@ -70,6 +78,7 @@ class WatchService : Service() {
   private val chats = HashMap<String, Chat>()
   private val sockets = HashMap<String, WebSocket>()
   private val approvals = HashSet<String>()
+  private val waiting = HashMap<String, Waiting>()
   /** Approval notifications still showing: tool call id -> notification id. */
   private val asking = HashMap<String, Int>()
   private var idlePolls = 0
@@ -154,12 +163,15 @@ class WatchService : Service() {
     } catch (e: Exception) {
       // The PC is asleep or out of reach; try again shortly.
     }
+    summaries()
     val now = System.currentTimeMillis()
     var running: List<Chat> = emptyList()
+    var finishing = 0
     synchronized(lock) {
       if (reached) lastReached = now
       running = chats.values.filter { it.status == "running" }
-      if (running.isEmpty()) idlePolls++ else idlePolls = 0
+      finishing = waiting.size
+      if (running.isEmpty() && finishing == 0) idlePolls++ else idlePolls = 0
     }
     if ((reached && idlePolls >= 2) || now - lastReached > UNREACHABLE_MS) {
       stopSelf()
@@ -167,6 +179,7 @@ class WatchService : Service() {
     }
     val text = when {
       !reached -> "Can't reach your PC right now"
+      running.isEmpty() && finishing > 0 -> "Wrapping up"
       running.size == 1 -> "Working: ${running[0].title.ifBlank { "a chat" }}"
       else -> "${running.size} chats working"
     }
@@ -182,14 +195,66 @@ class WatchService : Service() {
         val s = list.optJSONObject(i) ?: continue
         val id = s.optString("id")
         if (id.isEmpty()) continue
-        val now = Chat(s.optString("status"), s.optString("title"), s.optString("project_name"))
+        val now = Chat(s.optString("status"), s.optString("title"), s.optString("project_name"), s.optString("updated_at"))
         val before = chats[id]
         if (before?.status == "running" && now.status != "running") finished.add(id to now)
         chats[id] = now
         if (now.status == "running") watch(id) else sockets.remove(id)?.close(1000, null)
       }
     }
-    finished.forEach { (id, c) -> tell(id, c, c.status) }
+    finished.forEach { (id, c) -> finish(id, c.status) }
+  }
+
+  /** Waits for Relay's summary of a chat that just finished (see [summaries]). */
+  private fun finish(id: String, status: String) {
+    synchronized(lock) {
+      waiting[id] = Waiting(status, System.currentTimeMillis() + SUMMARY_WAIT_MS)
+    }
+  }
+
+  /**
+   * Notifies about finished chats once Relay has written their summary (a
+   * notice newer than the chat's last change), or without one when it takes
+   * too long or Relay on the PC is too old to write one.
+   */
+  private fun summaries() {
+    val pending = synchronized(lock) { waiting.toMap() }
+    for ((id, w) in pending) {
+      val c = synchronized(lock) { chats[id] } ?: continue
+      var ready = false
+      var summary: String? = null
+      var title = c.title
+      // The chat's own status may still read "running" for a moment after
+      // its stream said it ended; its notice is only trusted after that.
+      if (c.status != "running" && c.updated.isNotEmpty()) {
+        val req = Request.Builder()
+          .url("$baseUrl/notices?session=${Uri.encode(id)}")
+          .header("Authorization", "Bearer $token")
+          .build()
+        try {
+          http.newCall(req).execute().use { res ->
+            if (res.isSuccessful) {
+              val body = JSONObject(res.body?.string() ?: "{}")
+              if (!body.has("session_id")) {
+                ready = true // An older Relay: no summaries to wait for.
+              } else {
+                val n = body.optJSONArray("notices")?.optJSONObject(0)
+                if (n != null && n.optString("status") == w.status && n.optString("at") >= c.updated) {
+                  ready = true
+                  summary = if (n.isNull("summary")) null else n.optString("summary")
+                  title = n.optString("title").ifBlank { c.title }
+                }
+              }
+            }
+          }
+        } catch (e: Exception) {
+          // Try again on the next check.
+        }
+      }
+      if (!ready && System.currentTimeMillis() < w.until) continue
+      synchronized(lock) { waiting.remove(id) }
+      tell(id, c.copy(title = title), w.status, summary = summary)
+    }
   }
 
   /** Opens the chat's live stream to hear about approvals right away. */
@@ -224,7 +289,11 @@ class WatchService : Service() {
                   chats[id] = c!!
                 }
               }
-              c?.let { tell(id, it, st) }
+              if (c != null) {
+                finish(id, st)
+                // Check for the summary soon instead of at the next poll.
+                handler?.postDelayed({ summaries() }, 2500)
+              }
             }
             null
           }
@@ -253,19 +322,17 @@ class WatchService : Service() {
     })
   }
 
-  private fun tell(id: String, c: Chat, status: String, approval: JSONObject? = null) {
+  private fun tell(id: String, c: Chat, status: String, approval: JSONObject? = null, summary: String? = null) {
     val call = approval?.optString("tool_call_id").orEmpty()
     if (status != "approval" || call.isEmpty()) {
-      Notifier.tell(this, scheme, id, c.project, c.title, status)
+      Notifier.tell(this, scheme, id, c.project, c.title, status, summary)
       return
     }
-    val project = c.project.ifBlank { "Relay" }
-    val summary = "${c.title.ifBlank { "A chat" }} needs your approval"
+    val heading = Notifier.heading(c.title, "approval")
     Notifier.tell(this, scheme, id, c.project, c.title, status) { b, nid ->
       val (question, gist) = describe(approval!!)
       b.setContentText(question)
         .setStyle(NotificationCompat.BigTextStyle().bigText(if (gist.isEmpty()) question else "$question\n$gist"))
-        .setSubText(c.title.ifBlank { null })
         .setCategory(NotificationCompat.CATEGORY_REMINDER)
         // The lock screen shows only the chat; what it wants to do shows
         // once the phone is unlocked.
@@ -273,8 +340,8 @@ class WatchService : Service() {
         .setPublicVersion(
           NotificationCompat.Builder(this, Notifier.CHANNEL_EVENTS)
             .setSmallIcon(icon())
-            .setContentTitle(project)
-            .setContentText(summary)
+            .setContentTitle(heading)
+            .setSubText(c.project.ifBlank { null })
             .build(),
         )
         .addAction(0, "Deny", decideIntent(id, call, "deny", nid))
