@@ -451,6 +451,10 @@ export class RelayClient {
   attachmentUrl(name: string): string {
     return `${this.creds.url}/attachments/${encodeURIComponent(name)}`;
   }
+  /** A message for the running agent: it reads it after its current step. 409 when nothing runs. */
+  steer(id: string, text: string) {
+    return this.request<{ pending: string[] }>('POST', `/sessions/${encodeURIComponent(id)}/steer`, { text });
+  }
   stop(id: string) {
     return this.request<{ stopping: boolean }>('POST', `/sessions/${encodeURIComponent(id)}/stop`, {});
   }

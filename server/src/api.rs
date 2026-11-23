@@ -243,6 +243,7 @@ pub fn router(state: AppState) -> Router {
         .route("/updates", get(check_updates))
         .route("/updates/install", post(install_update))
         .route("/sessions/{id}/stop", post(stop_task))
+        .route("/sessions/{id}/steer", post(steer_task))
         .route("/sessions/{id}/approval", post(answer_approval))
         .route("/approval-rules", get(list_rules).post(add_rule))
         .route("/approval-rules/{id}", axum::routing::delete(delete_rule))
@@ -2145,6 +2146,28 @@ async fn send_prompt(
         StatusCode::ACCEPTED,
         Json(json!({ "message": message, "status": "running" })),
     ))
+}
+
+#[derive(Deserialize)]
+struct SteerBody {
+    text: String,
+}
+
+/// A message for the agent while it works: it reads it after its current
+/// step. 409 when nothing is running (send it as a prompt instead).
+async fn steer_task(
+    State(s): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    Json(body): Json<SteerBody>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    match s.agent.steer(&id, &body.text) {
+        Ok(()) => Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({ "pending": s.agent.steering(&id) })),
+        )),
+        Err(e @ crate::agent::SteerError::Empty) => Err(ApiError::BadRequest(e.to_string())),
+        Err(e @ crate::agent::SteerError::NotRunning) => Err(ApiError::Conflict(e.to_string())),
+    }
 }
 
 async fn stop_task(

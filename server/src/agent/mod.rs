@@ -92,6 +92,12 @@ pub enum Event {
     LoadingModel {
         active: bool,
     },
+    /// Messages the user sent while the agent was working that it hasn't
+    /// read yet (it reads them after its current step). Sent whenever the
+    /// list changes; empty once they are all in the chat.
+    Steering {
+        pending: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,6 +154,29 @@ struct RunningTask {
     /// Ends the run's future outright when it doesn't stop on its own after
     /// being cancelled (see [`STOP_GRACE`]).
     abort: Option<tokio::task::AbortHandle>,
+    /// Messages sent to steer the run while it works.
+    steer: Arc<Mutex<Steer>>,
+}
+
+/// Messages the user sent to a running task. The agent takes them between
+/// steps (never in the middle of a model reply or between a tool call and
+/// its result), so the history the model sees stays well formed.
+#[derive(Default)]
+struct Steer {
+    notes: Vec<String>,
+    /// The run has given its last answer: later messages wait in the task
+    /// queue for the next run instead.
+    closed: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SteerError {
+    #[error("the message is empty")]
+    Empty,
+    /// Nothing is running, or the run is finishing; send it as a new prompt
+    /// or queue it instead.
+    #[error("the agent is not working in this chat")]
+    NotRunning,
 }
 
 /// How long a stopped task may take to wind down before it is ended
@@ -312,6 +341,67 @@ impl AgentManager {
 
     pub fn is_running(&self, session_id: &str) -> bool {
         lock(&self.running).contains_key(session_id)
+    }
+
+    /// Hands a message to the running task in this chat. The agent reads it
+    /// after its current step, as if the user had said it there.
+    pub fn steer(&self, session_id: &str, text: &str) -> Result<(), SteerError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(SteerError::Empty);
+        }
+        let pending = {
+            let running = lock(&self.running);
+            let task = running.get(session_id).ok_or(SteerError::NotRunning)?;
+            let mut st = lock(&task.steer);
+            if st.closed {
+                return Err(SteerError::NotRunning);
+            }
+            st.notes.push(text.to_string());
+            st.notes.clone()
+        };
+        tracing::info!(session = %session_id, waiting = pending.len(), "message to steer the agent");
+        self.emit(session_id, Event::Steering { pending });
+        Ok(())
+    }
+
+    /// Messages sent to the running task that it hasn't read yet.
+    pub fn steering(&self, session_id: &str) -> Vec<String> {
+        lock(&self.running)
+            .get(session_id)
+            .map(|t| lock(&t.steer).notes.clone())
+            .unwrap_or_default()
+    }
+
+    fn steer_slot(&self, session_id: &str) -> Arc<Mutex<Steer>> {
+        lock(&self.running)
+            .get(session_id)
+            .map(|t| t.steer.clone())
+            .unwrap_or_default()
+    }
+
+    /// Saves waiting steering messages into the chat, where the model reads
+    /// them on its next step. Returns how many there were.
+    async fn take_steering(&self, session_id: &str, steer: &Arc<Mutex<Steer>>) -> Result<usize> {
+        let notes = std::mem::take(&mut lock(steer).notes);
+        if notes.is_empty() {
+            return Ok(0);
+        }
+        for text in &notes {
+            let saved = self
+                .save(
+                    session_id,
+                    NewMessage {
+                        role: "user".into(),
+                        content: text.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            self.emit(session_id, Event::Message { message: saved });
+        }
+        self.emit(session_id, Event::Steering { pending: Vec::new() });
+        Ok(notes.len())
     }
 
     pub fn forget(&self, session_id: &str) {
@@ -522,6 +612,7 @@ impl AgentManager {
                     allow_all,
                     run_id,
                     abort: None,
+                    steer: Arc::default(),
                 },
             );
         }
@@ -608,6 +699,38 @@ impl AgentManager {
             }
         });
         Ok(user_msg)
+    }
+
+    /// A run that stopped (or failed) before reading the messages sent to
+    /// steer it: they go to the task queue as one follow-up, which is sent
+    /// to this chat next (and can still be taken back there).
+    async fn requeue_steering(&self, session: &Session) {
+        let notes = {
+            let running = lock(&self.running);
+            let Some(task) = running.get(&session.id) else {
+                return;
+            };
+            let mut st = lock(&task.steer);
+            st.closed = true;
+            std::mem::take(&mut st.notes)
+        };
+        if notes.is_empty() {
+            return;
+        }
+        let item = crate::tasks::NewItem {
+            project_id: session.project_id.clone(),
+            session_id: Some(session.id.clone()),
+            schedule_id: None,
+            follow_up: true,
+            allow_all: false,
+            name: session.title.clone(),
+            prompt: notes.join("\n\n"),
+        };
+        match self.db.call(move |c| crate::tasks::enqueue(c, &item)).await {
+            Ok(_) => tracing::info!(session = %session.id, "unread steering messages queued as a follow-up"),
+            Err(e) => tracing::error!("could not queue unread steering messages: {e:#}"),
+        }
+        self.emit(&session.id, Event::Steering { pending: Vec::new() });
     }
 
     /// Cleans up after a run whose task ended without finishing normally.
@@ -761,6 +884,7 @@ impl AgentManager {
         if let Err(e) = &title {
             tracing::error!("failed to store final status: {e:#}");
         }
+        self.requeue_steering(&session).await;
         lock(&self.running).remove(&session.id);
         self.finished.notify_one();
         let error_text = error.clone();
@@ -996,10 +1120,14 @@ impl AgentManager {
         let mut continues = 0;
         let mut loop_guard = false;
         let mut pictures: HashMap<String, String> = HashMap::new();
+        let steer = self.steer_slot(&session.id);
         while step < conf.agent.max_steps {
             if cancel.is_cancelled() {
                 return Ok(LoopEnd::Stopped);
             }
+            // Messages the user sent while the last step ran: the tool
+            // results are all saved by now, so they go in after them.
+            self.take_steering(&session.id, &steer).await?;
             if !self.wait_for_model(&session.id, cancel).await? {
                 return Ok(LoopEnd::Stopped);
             }
@@ -1188,6 +1316,17 @@ impl AgentManager {
                 continue;
             }
             if turn.tool_calls.is_empty() {
+                // A message came in while the answer was being written: carry
+                // on and answer it too, in this same run. Otherwise this is
+                // the end, and later messages wait for the next run.
+                let more = {
+                    let mut st = lock(&steer);
+                    st.closed = st.notes.is_empty();
+                    !st.closed
+                };
+                if more {
+                    continue;
+                }
                 self.emit(
                     &session.id,
                     Event::Final {

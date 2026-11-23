@@ -186,12 +186,31 @@ export default function ChatScreen() {
     }
   };
 
+  /**
+   * Hands a message to the agent while it works: it reads it after its
+   * current step (a model reply or a tool call), and takes it into account
+   * from there. If the run is just finishing, the message waits in line.
+   */
+  const steerMessage = async (text: string) => {
+    try {
+      const res = await client.steer(id, text);
+      stream.setSteering(res.pending);
+      setInput('');
+      setSendError(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) await queueMessage(text);
+      else setSendError(describeError(e));
+    }
+  };
+
   const send = async () => {
     const text = input.trim();
     if ((!text && !pics.items.length) || sending) return;
     if (running && text) {
       setSending(true);
-      await queueMessage(text);
+      // Pictures and files go with a new prompt, so they wait for the next one.
+      if (pics.items.length) await queueMessage(text);
+      else await steerMessage(text);
       setSending(false);
       return;
     }
@@ -504,6 +523,22 @@ export default function ChatScreen() {
             />
           ) : null}
 
+          {running && stream.steering.length ? (
+            <View style={[styles.pending, page]}>
+              {stream.steering.map((text, i) => (
+                <View key={`steer-${i}`} style={styles.pendingRow}>
+                  <Icon name="message-arrow-right-outline" size={16} color={m3.primary} />
+                  <View style={styles.pendingText}>
+                    <Text style={[type.bodyMedium, { color: m3.onSurface }]} numberOfLines={2}>
+                      {text}
+                    </Text>
+                    <Text style={type.bodySmall}>The agent reads this after its current step</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
           {pending.length ? (
             <View style={[styles.pending, page]}>
               {pending.map((p) => (
@@ -531,8 +566,8 @@ export default function ChatScreen() {
                   ? 'Waiting for your answer…'
                   : running
                     ? plain
-                      ? 'Writing…'
-                      : 'Agent is working…'
+                      ? 'Add something while it writes…'
+                      : 'Tell the agent something while it works…'
                     : plain
                       ? 'Message Relay'
                       : 'Message the agent'

@@ -44,6 +44,8 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
   const [title, setTitle] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [loadingModel, setLoadingModel] = useState(false);
+  /** Messages sent to the running agent that it hasn't read yet. */
+  const [steering, setSteering] = useState<string[]>([]);
 
   const messagesRef = useRef<Message[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -116,6 +118,7 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           dropArgs();
           setDraft(ev.running && ev.draft ? ev.draft : null);
           setApproval(ev.running ? (ev.pending_approval ?? null) : null);
+          setSteering(ev.running ? (ev.steering ?? []) : []);
           if (ev.last_message_id !== null && ev.last_message_id !== lastId()) {
             catchUp().catch((e) => setLinkError(describeError(e)));
           }
@@ -130,6 +133,8 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
             dropArgs();
             setDraft(null);
             setApproval(null);
+            // Unread ones move to the task queue, shown as waiting messages.
+            setSteering([]);
           }
           break;
         case 'text_delta':
@@ -168,6 +173,9 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
           break;
         case 'loading_model':
           setLoadingModel(ev.active);
+          break;
+        case 'steering':
+          setSteering(ev.pending);
           break;
         case 'resync':
           catchUp().catch((e) => setLinkError(describeError(e)));
@@ -320,6 +328,8 @@ export function useSessionStream(client: RelayClient | null, sessionId: string) 
     title,
     compacting,
     loadingModel,
+    steering,
+    setSteering,
     loadOlder,
     applyMessages,
     markRunning,

@@ -59,6 +59,7 @@ pub async fn handle(mut socket: WebSocket, state: AppState, session_id: String) 
         "last_message_id": last_id,
         "draft": draft,
         "pending_approval": pending,
+        "steering": state.agent.steering(&session_id),
     });
     if send_json(&mut socket, &hello).await.is_err() {
         return;

@@ -388,21 +388,27 @@ export const AssistantTurn = memo(function AssistantTurn({
         .filter((c) => results.get(c.id) && !results.get(c.id)?.is_error)
         .map((c) => fileChange(c.name, readArgs(c.arguments)))
         .filter((c): c is FileChange => !!c);
-  // While a file is being written, the words before it are a note, not the answer.
-  const liveNote = running && live && draft?.content?.trim() ? draft.content.trim() : '';
-  const answer = lastIsAnswer ? last.content : running && draft?.content && !liveNote ? draft.content : '';
-  const answerReasoning = lastIsAnswer ? last.reasoning : running && draft?.content ? draft.reasoning : '';
+  // Until the reply is finished there is no telling whether the words being
+  // written are a note before the next step or the final answer, so they
+  // are always drawn as a note (small, grey), right where a finished note
+  // sits. Only a finished answer gets the full reading style: thinking
+  // text never changes size or moves while the agent works.
+  const liveNote = running ? (draft?.content?.trim() ?? '') : '';
+  const answer = lastIsAnswer ? last.content : '';
+  const answerReasoning = lastIsAnswer ? last.reasoning : '';
   const liveStatus = liveWriting && live
     ? `${live.tool === 'write_file' ? 'Writing' : 'Editing'} ${live.path ? live.path.split(/[\\/]/).pop() : 'a file'}…`
     : pendingCall
     ? toolSummary(pendingCall, undefined, true)
-    : running && !draft?.content
-      ? draft?.reasoning
-        ? thinkingStatus(draft.reasoning)
-        : 'Working…'
+    : running
+      ? liveNote
+        ? 'Writing…'
+        : draft?.reasoning
+          ? thinkingStatus(draft.reasoning)
+          : 'Working…'
       : null;
   const answerSeconds = lastIsAnswer ? secondsBefore(last) : undefined;
-  const showSteps = calls.length > 0 || !!live || (steps.length > 0 && !answer);
+  const showSteps = calls.length > 0 || !!live || !!liveNote || (steps.length > 0 && !answer);
   // One fold-out for all the work, including the thinking behind the answer.
   if (showSteps && answerReasoning?.trim())
     steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning, seconds: answerSeconds });
@@ -430,9 +436,9 @@ export const AssistantTurn = memo(function AssistantTurn({
             </Text>
             <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
           </Pressable>
-          {open ? (
+          {open || liveNote ? (
             <View style={styles.stepsList}>
-              {steps.map((st) =>
+              {(open ? steps : []).map((st) =>
                 st.kind === 'tool' ? (
                   <ToolActivityRow key={st.key} call={st.call} result={results.get(st.call.id)} running={running} />
                 ) : st.kind === 'thought' ? (
@@ -443,9 +449,14 @@ export const AssistantTurn = memo(function AssistantTurn({
                   </Text>
                 ),
               )}
+              {liveNote && open && draft?.reasoning?.trim() ? <Reasoning text={draft.reasoning} /> : null}
+              {liveNote ? (
+                <Text selectable style={[type.bodyMedium, styles.stepNote]}>
+                  {liveNote}
+                </Text>
+              ) : null}
             </View>
           ) : null}
-          {liveNote ? <Text style={[type.bodyMedium, styles.stepNote]}>{liveNote}</Text> : null}
           {live ? <CodeChange change={live} live={liveWriting} /> : null}
         </View>
       ) : null}

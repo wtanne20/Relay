@@ -1,9 +1,10 @@
 import { router, usePathname } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
+import { SIDEBAR_COMPACT_BELOW } from '../lib/layout';
 import { CHATS_ID, type ModelStatus, type Project, type Session } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
 import { BrainBanner, locationLabel, useHere } from './Location';
@@ -92,9 +93,12 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
 
   const go = (href: Parameters<typeof router.replace>[0]) => router.replace(href);
   const here = useHere();
+  // Small windows keep the sidebar, a little narrower, so the page still fits.
+  const { width } = useWindowDimensions();
+  const compact = width < SIDEBAR_COMPACT_BELOW;
 
   return (
-    <View style={styles.side}>
+    <View style={[styles.side, compact && styles.sideCompact]}>
       <View style={styles.brand}>
         <Logo size={28} />
         <Text style={[type.titleMedium, styles.grow]}>Relay</Text>
@@ -171,13 +175,13 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
                 label={p.name}
                 where={where && !where.brain ? where : null}
                 active={activeProject === p.id}
-                onPress={() => setOpen((o) => ({ ...o, [p.id]: !expanded }))}
+                onPress={() => go({ pathname: '/project/[id]', params: { id: p.id, name: p.name } })}
                 trailing={
                   <IconButton
-                    icon="dots-horizontal"
-                    label={`Open ${p.name}`}
+                    icon={expanded ? 'chevron-down' : 'chevron-right'}
+                    label={expanded ? `Hide chats in ${p.name}` : `Show chats in ${p.name}`}
                     size={18}
-                    onPress={() => go({ pathname: '/project/[id]', params: { id: p.id, name: p.name } })}
+                    onPress={() => setOpen((o) => ({ ...o, [p.id]: !expanded }))}
                   />
                 }
               />
@@ -349,6 +353,7 @@ const styles = StyleSheet.create({
     paddingTop: space.md,
     paddingHorizontal: space.md,
   },
+  sideCompact: { width: 240, paddingHorizontal: space.sm },
   grow: { flex: 1, minWidth: 0 },
   brand: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingLeft: space.sm, height: 48 },
   newChat: {
