@@ -9,6 +9,7 @@
 //! - user text mentioning "hello.txt" -> write_file(hello.txt, "hi")
 //! - user text starting with "run:"   -> run_command(<rest>)
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
+//! - user text containing "steer me"  -> a reply that takes about a second
 //! - user text containing "write code" -> slowly writes a longer app.py
 //! - user text containing "edit code"  -> slowly edits app.py
 //! - anything else                    -> echoes the prompt
@@ -280,6 +281,10 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "written"
             };
             chunks.extend(text_chunks(&format!("Style: {style}")));
+        } else if lower.contains("steer me") {
+            // Long enough to send a message while it's being written.
+            delay = Duration::from_millis(100);
+            chunks.extend(text_chunks("Working on it, one careful step at a time."));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));

@@ -2187,3 +2187,66 @@ async fn scheduled_runs_can_be_stopped_and_edited_while_running() {
     assert_eq!(status(&second_id), Some(json!("done")), "{q}");
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn messages_sent_while_the_agent_works_steer_it() {
+    let h = Harness::start().await;
+    let (_, v) = h.post("/projects/chats/sessions", json!({"title": "Steer"})).await;
+    let id = v["session"]["id"].as_str().expect("id").to_string();
+
+    // Nothing running: there's nothing to steer.
+    let (s, v) = h.post(&format!("/sessions/{id}/steer"), json!({"text": "hi"})).await;
+    assert_eq!(s, 409, "{v}");
+
+    // A message sent while the reply is being written is read right after
+    // it, in the same run, and answered too.
+    let (s, _) = h.post(&format!("/sessions/{id}/prompt"), json!({"content": "steer me"})).await;
+    assert_eq!(s, 202);
+    let (s, v) = h.post(&format!("/sessions/{id}/steer"), json!({"text": "  "})).await;
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = h.post(&format!("/sessions/{id}/steer"), json!({"text": "also check the tests"})).await;
+    assert_eq!(s, 202, "{v}");
+    assert_eq!(v["pending"], json!(["also check the tests"]));
+    let mut done = false;
+    for _ in 0..100 {
+        if h.get(&format!("/sessions/{id}")).await["session"]["status"] == "done" {
+            done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(done, "the run never finished");
+    let msgs = h.get(&format!("/sessions/{id}/messages")).await;
+    let seen: Vec<(String, String)> = msgs["messages"]
+        .as_array()
+        .expect("arr")
+        .iter()
+        .map(|m| (m["role"].as_str().unwrap_or("").to_string(), m["content"].as_str().unwrap_or("").to_string()))
+        .collect();
+    let roles: Vec<&str> = seen.iter().map(|(r, _)| r.as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "user", "assistant"], "{seen:?}");
+    assert_eq!(seen[2].1, "also check the tests");
+    assert_eq!(seen[3].1, "You said: also check the tests");
+
+    // A run that is stopped before it reads the message passes it on to
+    // the queue, so it is sent next instead of being lost.
+    let (s, _) = h.post(&format!("/sessions/{id}/prompt"), json!({"content": "slow story"})).await;
+    assert_eq!(s, 202);
+    let (s, _) = h.post(&format!("/sessions/{id}/steer"), json!({"text": "then this"})).await;
+    assert_eq!(s, 202);
+    let (s, _) = h.post(&format!("/sessions/{id}/stop"), json!({})).await;
+    assert_eq!(s, 200);
+    let mut answered = false;
+    for _ in 0..100 {
+        let msgs = h.get(&format!("/sessions/{id}/messages")).await;
+        let arr = msgs["messages"].as_array().expect("arr");
+        if arr.last().map(|m| m["content"].clone()) == Some(json!("You said: then this")) {
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(answered, "the unread message was not sent after the stop");
+    h.wait_queue_idle().await;
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

@@ -123,8 +123,12 @@ export const Composer = forwardRef<
         {extraActions}
         {running && value.trim() ? (
           <RoundButton
-            icon="clock-plus-outline"
-            label="Send when the agent is done"
+            icon={attachments.items.length ? 'clock-plus-outline' : 'arrow-up'}
+            label={
+              attachments.items.length
+                ? 'Send when the agent is done'
+                : 'Tell the agent now (it reads this after its current step)'
+            }
             onPress={onSend}
             disabled={busy}
             busy={busy}

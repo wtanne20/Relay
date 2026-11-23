@@ -21,7 +21,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 - [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
-- [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/approval`
+- [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/steer`, `POST /sessions/{id}/approval`
 - [Always-allow rules and activity](#always-allow-rules-and-activity): `GET/POST /approval-rules`, `DELETE /approval-rules/{id}`, `GET/DELETE /activity`
 - [Background tasks](#background-tasks): `GET/POST /queue`, `DELETE /queue/{id}`, `POST /queue/{id}/first`, `POST /queue/clear`, `GET/POST /schedules`, `GET/PATCH/DELETE /schedules/{id}`, `POST /schedules/{id}/run`, `GET /notices`
 - [Linked computers](#linked-computers): `GET /hello`, `POST /devices/pair-code`, `POST /devices/claim`, `GET /devices/link`, `GET/PATCH/DELETE /devices/{id}`, `GET /devices/{id}/browse`
@@ -428,6 +428,23 @@ its chat marked `stopped`. (A task that crashes is marked `error` the same way, 
 { "stopping": true }
 ```
 
+### `POST /sessions/{id}/steer`
+
+A message for the agent while it works, to steer it with new information or a change of plan. The agent reads it
+after its current step (the model reply being written, or the tool call running), as a user message after the
+tool results, and carries on from there. If the reply being written was the final answer, the run continues and
+answers the new message too. Messages are never put in the middle of a model reply or between a tool call and its
+result, so the history the model sees stays well formed.
+
+```json
+{ "text": "Use the staging database, not production" }
+```
+
+`202` with the messages still waiting to be read: `{ "pending": ["Use the staging database, not production"] }`.
+`409` when nothing is running in the chat (or the run is just finishing): send it as a prompt, or queue it with
+`POST /queue`. If the task is stopped (or fails) before it reads them, the waiting messages are queued as one
+follow-up for the chat (see [Background tasks](#background-tasks)), so they are sent next and not lost.
+
 ---
 
 ### `POST /sessions/{id}/approval`
@@ -766,12 +783,23 @@ The `hello` event carries the current status and, if a task is running, the part
   "error": null,
   "last_message_id": 44,
   "draft": { "content": "Looking at the failing", "reasoning": "The tests fail because…" },
-  "pending_approval": null
+  "pending_approval": null,
+  "steering": []
 }
 ```
 
 `draft` is `null` when no task is running. `pending_approval` is the waiting tool call (same shape as in
-`approval_request`) or `null`.
+`approval_request`) or `null`. `steering` lists the messages sent with `POST /sessions/{id}/steer` that the agent
+hasn't read yet.
+
+#### `steering`
+
+The messages sent to steer the running task that it hasn't read yet, whenever that list changes. Each one arrives
+as a `message` event (role `user`) when the agent reads it, and the list is sent again, empty.
+
+```json
+{ "type": "steering", "pending": ["Use the staging database, not production"] }
+```
 
 #### `status`
 

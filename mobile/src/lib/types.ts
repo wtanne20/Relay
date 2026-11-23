@@ -234,6 +234,8 @@ export type ServerEvent =
       last_message_id: number | null;
       draft: Draft | null;
       pending_approval?: PendingApproval | null;
+      /** Messages sent to steer the running task that it hasn't read yet. */
+      steering?: string[];
     }
   | { type: 'status'; status: SessionStatus; error: string | null }
   | { type: 'text_delta'; text: string }
@@ -256,7 +258,9 @@ export type ServerEvent =
   | { type: 'approval_resolved'; tool_call_id: string; approved: boolean }
   | { type: 'title'; title: string }
   | { type: 'compacting'; active: boolean }
-  | { type: 'loading_model'; active: boolean };
+  | { type: 'loading_model'; active: boolean }
+  /** Messages sent while the agent works that it hasn't read yet. */
+  | { type: 'steering'; pending: string[] };
 
 export interface PendingApproval {
   tool_call_id: string;

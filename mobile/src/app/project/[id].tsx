@@ -325,6 +325,8 @@ const styles = StyleSheet.create({
   itemFirst: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, paddingTop: space.xs },
   itemLast: { borderBottomLeftRadius: radius.xl, borderBottomRightRadius: radius.xl, paddingBottom: space.xs },
   row: {
+    flex: 1,
+    minWidth: 0,
     minHeight: 72,
     flexDirection: 'row',
     alignItems: 'center',
