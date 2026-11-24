@@ -132,13 +132,15 @@ export default function ChatScreen() {
       else if (m.role === 'assistant') {
         const prev = out[out.length - 1];
         if (prev?.kind === 'turn') prev.messages.push(m);
-        else out.push({ key: `t${m.id}`, kind: 'turn', messages: [m], latest: false });
+        // Keyed by what it answers, so the reply being written keeps its
+        // place (and its smooth text) when its first message is saved.
+        else out.push({ key: `t${prev?.key ?? 'start'}`, kind: 'turn', messages: [m], latest: false });
       }
     }
     const tail = out[out.length - 1];
     if (tail?.kind === 'turn') tail.latest = true;
     else if (running && !stream.compacting && !stream.loadingModel)
-      out.push({ key: 'pending', kind: 'turn', messages: [], latest: true });
+      out.push({ key: `t${tail?.key ?? 'start'}`, kind: 'turn', messages: [], latest: true });
     if (running && stream.compacting) out.push({ key: 'compacting', kind: 'compacting' });
     if (running && stream.loadingModel) out.push({ key: 'loading', kind: 'loading' });
     return out.reverse();
