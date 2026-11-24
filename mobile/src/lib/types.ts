@@ -443,6 +443,8 @@ export interface HubDownload {
   done_bytes: number;
   state: 'downloading' | 'done' | 'failed' | 'cancelled';
   error?: string | null;
+  /** What it's for: "image:<starter>" or "image-file" for image models; absent for chat models. */
+  group?: string;
 }
 
 export interface Disk {

@@ -13,6 +13,7 @@ struct H {
     token: String,
     http: reqwest::Client,
     seen: common::mock_sd::Requests,
+    dir: std::path::PathBuf,
 }
 
 impl H {
@@ -53,6 +54,7 @@ impl H {
             token,
             http: reqwest::Client::new(),
             seen,
+            dir,
         }
     }
 
@@ -318,4 +320,125 @@ async fn image_chat_makes_and_refines_pictures() {
         .unwrap();
     assert_eq!(resp.status(), 404);
     assert_eq!(h.get("/images/status").await["engine"]["external"], true);
+}
+
+/// A tiny Hugging Face: repository trees and file downloads.
+async fn mock_hf(files: &'static [(&'static str, &'static str, &'static [u8])]) -> String {
+    use axum::extract::Path;
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route(
+            "/api/models/{owner}/{name}/tree/main",
+            get(move |Path((o, n)): Path<(String, String)>| async move {
+                let repo = format!("{o}/{n}");
+                let entries: Vec<Value> = files
+                    .iter()
+                    .filter(|(r, _, _)| *r == repo)
+                    .map(|(_, p, b)| json!({"type": "file", "path": p, "size": b.len()}))
+                    .collect();
+                axum::Json(Value::Array(entries))
+            }),
+        )
+        .route(
+            "/{owner}/{name}/resolve/main/{*path}",
+            get(move |Path((o, n, p)): Path<(String, String, String)>| async move {
+                let repo = format!("{o}/{n}");
+                files
+                    .iter()
+                    .find(|(r, f, _)| *r == repo && *f == p)
+                    .map(|(_, _, b)| b.to_vec())
+                    .ok_or(axum::http::StatusCode::NOT_FOUND)
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(axum::serve(l, app).into_future());
+    url
+}
+
+#[tokio::test]
+async fn downloads_a_starter_model_and_sets_it_up() {
+    let hf = mock_hf(&[
+        ("leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q4_K.gguf", b"diffusion"),
+        ("leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q8_0.gguf", b"bigger diffusion"),
+        ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", b"encoder"),
+        ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors", b"vae"),
+        ("someone/sdxl-thing", "sd_xl_base_1.0.safetensors", b"checkpoint"),
+        ("someone/sdxl-thing", "text_encoder/model-00001-of-00002.safetensors", b"shard"),
+    ])
+    .await;
+    // SAFETY: only this test talks to Hugging Face.
+    unsafe { std::env::set_var("RELAY_HF_URL", &hf) };
+    let h = H::start().await;
+    let own = h.dir.join("data/image-models");
+
+    let v = h.get("/images/downloads").await;
+    let z = v["starters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "z-image-turbo")
+        .unwrap()
+        .clone();
+    assert_eq!(z["set_up"], false, "{z}");
+    assert!(z["missing_bytes"].as_u64().unwrap() > 1_000_000_000, "{z}");
+
+    let (s, v) = h.post("/images/downloads/z-image-turbo", json!({"big": false})).await;
+    assert_eq!(s, 202, "{v}");
+    assert_eq!(v["downloads"].as_array().unwrap().len(), 3, "{v}");
+
+    // The files land in their folders and the model is set up on its own.
+    let mut models = Value::Null;
+    for _ in 0..200 {
+        models = h.get("/image-models").await;
+        if !models["models"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        std::fs::read(own.join("diffusion_models/z_image_turbo-Q4_K.gguf")).unwrap(),
+        b"diffusion"
+    );
+    assert_eq!(std::fs::read(own.join("vae/ae.safetensors")).unwrap(), b"vae");
+    let m = &models["models"][0];
+    assert_eq!(m["name"], "Z-Image Turbo", "{models}");
+    assert_eq!(m["recipe"], "z-image-turbo");
+    assert_eq!(m["files"]["diffusion_model"], "diffusion_models/z_image_turbo-Q4_K.gguf");
+    assert_eq!(m["files"]["llm"], "text_encoders/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+    assert_eq!(m["files"]["vae"], "vae/ae.safetensors");
+
+    let v = h.get("/images/downloads").await;
+    let z = &v["starters"][0];
+    assert_eq!(z["id"], "z-image-turbo");
+    assert_eq!(z["set_up"], true, "{z}");
+    assert_eq!(z["missing_bytes"], 0, "{z}");
+
+    // Any file of any repository, into the folder it's for.
+    let v = h.get("/images/hub/files?repo=someone/sdxl-thing").await;
+    let files = v["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{v}");
+    assert_eq!(files[0]["category"], "checkpoints");
+    let (s, v) = h
+        .post(
+            "/images/hub/download",
+            json!({"repo": "someone/sdxl-thing", "file": "sd_xl_base_1.0.safetensors", "category": "checkpoints"}),
+        )
+        .await;
+    assert_eq!(s, 202, "{v}");
+    let path = own.join("checkpoints/sd_xl_base_1.0.safetensors");
+    for _ in 0..100 {
+        if path.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"checkpoint");
+    let (s, _) = h
+        .post(
+            "/images/hub/download",
+            json!({"repo": "someone/sdxl-thing", "file": "x.safetensors", "category": "nowhere"}),
+        )
+        .await;
+    assert_eq!(s, 400);
 }

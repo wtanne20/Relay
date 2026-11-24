@@ -4,6 +4,7 @@ import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, Te
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { alert } from '../components/Dialogs';
+import { ImageDownloads } from '../components/ImageDownloads';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
 import { Sheet } from '../components/Sheet';
 import { m3, mono, radius, space, type } from '../components/theme';
@@ -147,7 +148,7 @@ export default function ImageModelsScreen() {
       <SectionTitle title="Your image models" />
       {models.length === 0 ? (
         <Text style={[type.bodyMedium, styles.note]}>
-          None yet. Download a model&apos;s files into the folders below, then set it up here.
+          None yet. Download one below: it&apos;s set up for you once its files are in.
         </Text>
       ) : (
         <Group>
@@ -187,6 +188,14 @@ export default function ImageModelsScreen() {
           ))}
         </Group>
       )}
+
+      <ImageDownloads
+        client={client!}
+        onChanged={() => {
+          load();
+          loadCatalog(true);
+        }}
+      />
 
       {catalog?.suggestions.length ? (
         <>
@@ -268,9 +277,8 @@ export default function ImageModelsScreen() {
         <NavRow icon="folder-plus-outline" label="Add a models folder" value="For example your ComfyUI or SD WebUI models folder" onPress={() => setAddingFolder(true)} />
       </Group>
       <Text style={[type.bodySmall, styles.note]}>
-        Most models come in parts: the main model, a text encoder and a VAE. Each model type&apos;s page on Hugging Face
-        lists them (tap a type when setting one up). Z-Image Turbo is a good first model: it&apos;s fast and fits in 8 GB
-        of VRAM as GGUF.
+        Most models come in parts: the main model, a text encoder and a VAE. Download a model above to get every part
+        at once, or put files you already have in these folders and tap Rescan folders.
       </Text>
 
       <SetupSheet

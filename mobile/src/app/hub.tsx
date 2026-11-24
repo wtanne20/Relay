@@ -63,7 +63,7 @@ export default function HubScreen() {
   const pollDownloads = useCallback(async () => {
     if (!client) return;
     try {
-      const d = (await client.hubDownloads()).downloads.filter((x) => x.repo !== 'move');
+      const d = (await client.hubDownloads()).downloads.filter((x) => x.repo !== 'move' && !x.group);
       setDownloads(d);
       if (d.some((x) => x.state === 'downloading')) timer.current = setTimeout(pollDownloads, 1000);
     } catch {

@@ -270,6 +270,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hello", get(hello))
         .merge(crate::tasks::routes())
         .merge(crate::imagegen::routes::routes())
+        .merge(crate::imagegen::hub::routes())
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.
