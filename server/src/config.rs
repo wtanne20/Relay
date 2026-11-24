@@ -39,6 +39,41 @@ pub struct Config {
     pub llama: LlamaConfig,
     pub push: PushConfig,
     pub routing: RoutingConfig,
+    pub images: ImagesConfig,
+}
+
+/// Image generation with stable-diffusion.cpp's sd-server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ImagesConfig {
+    /// Path to sd-server.exe. Empty = download it automatically.
+    pub sd_server_path: String,
+    /// Port sd-server listens on (always bound to 127.0.0.1).
+    pub port: u16,
+    /// Extra model folders laid out like ComfyUI's or SD WebUI's `models`
+    /// folder (checkpoints/, diffusion_models/, text_encoders/, vae/,
+    /// loras/ ...). `<data>/image-models` is always used.
+    pub model_dirs: Vec<String>,
+    /// Keep weights in RAM where possible, using less VRAM (slower).
+    pub offload_to_cpu: bool,
+    /// Stop the image model after this many minutes without a picture. 0
+    /// keeps it until a chat needs the GPU.
+    pub idle_unload_minutes: u32,
+    /// Any other sd-server arguments.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for ImagesConfig {
+    fn default() -> Self {
+        Self {
+            sd_server_path: String::new(),
+            port: 8771,
+            model_dirs: Vec::new(),
+            offload_to_cpu: false,
+            idle_unload_minutes: 10,
+            extra_args: Vec::new(),
+        }
+    }
 }
 
 /// Sends quick questions to a small model and everything else to a big one.
@@ -253,6 +288,7 @@ impl Default for Config {
             llama: LlamaConfig::default(),
             push: PushConfig::default(),
             routing: RoutingConfig::default(),
+            images: ImagesConfig::default(),
         }
     }
 }
@@ -405,6 +441,12 @@ impl Config {
             if !ok {
                 return Err(msg.to_string());
             }
+        }
+        if self.images.port == 0 || self.images.port == l.port {
+            return Err("the image model needs its own port".into());
+        }
+        if self.images.idle_unload_minutes > 24 * 60 {
+            return Err("image unload time must be at most a day".into());
         }
         if l.extra_args
             .iter()
@@ -574,7 +616,30 @@ impl LoadedConfig {
         );
         dirs
     }
+
+    /// Relay's own image model folder.
+    pub fn image_models_dir(&self) -> PathBuf {
+        self.data_dir.join("image-models")
+    }
+
+    /// Folders sd-server looks for image models in, Relay's own first.
+    pub fn image_model_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.image_models_dir()];
+        for p in &self.config.images.model_dirs {
+            let d = self.resolve(p);
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        dirs
+    }
 }
+
+pub const SD_SERVER_EXE: &str = if cfg!(windows) {
+    "sd-server.exe"
+} else {
+    "sd-server"
+};
 
 /// Runtime-editable configuration shared by the API, agent and model
 /// manager. Changes are validated and written back to config.toml.

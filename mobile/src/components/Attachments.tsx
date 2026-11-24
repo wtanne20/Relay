@@ -337,7 +337,7 @@ export function MessageFiles({ files }: { files: FileRef[] }) {
 }
 
 /** Loads a stored picture with the token (the web can't send headers with <img>). */
-function useAuthedUri(client: RelayClient | null, name: string): string | null {
+export function useAuthedUri(client: RelayClient | null, name: string): string | null {
   const [uri, setUri] = useState<string | null>(null);
   const url = client ? client.attachmentUrl(name) : null;
   const made = useRef<string | null>(null);

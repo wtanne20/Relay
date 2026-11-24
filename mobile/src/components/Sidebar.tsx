@@ -5,8 +5,10 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDi
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { SIDEBAR_COMPACT_BELOW } from '../lib/layout';
+import { imagesApi, type ImageChat, type ImageProject } from '../lib/images';
 import { CHATS_ID, type ModelStatus, type Project, type Session } from '../lib/types';
 import { AddProjectSheet } from './AddProjectSheet';
+import { NewImageProjectSheet } from './NewImageProjectSheet';
 import { BrainBanner, locationLabel, useHere } from './Location';
 import { m3, radius, space, statusColor, type } from './theme';
 import { Icon, IconButton, Logo } from './ui';
@@ -28,6 +30,9 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [adding, setAdding] = useState(false);
+  const [imageProjects, setImageProjects] = useState<ImageProject[]>([]);
+  const [imageChats, setImageChats] = useState<Record<string, ImageChat[]>>({});
+  const [addingImages, setAddingImages] = useState(false);
   /** Queued and running background tasks. */
   const [taskCount, setTaskCount] = useState(0);
   const openRef = useRef(open);
@@ -35,6 +40,8 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
 
   const activeSession = pathname.startsWith('/session/') ? pathname.slice('/session/'.length) : null;
   const activeProject = pathname.startsWith('/project/') ? pathname.split('/')[2] : null;
+  const activeImageChat = pathname.startsWith('/image/') ? pathname.slice('/image/'.length) : null;
+  const activeImageProject = pathname.startsWith('/images/') ? pathname.split('/')[2] : null;
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -61,6 +68,12 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         ids.forEach((id, i) => (next[id] = lists[i]));
         return next;
       });
+      const img = imagesApi(client);
+      const ips = await img.projects().catch(() => [] as ImageProject[]);
+      setImageProjects(ips);
+      const openImages = ips.filter((p) => expanded[`img:${p.id}`]);
+      const imageLists = await Promise.all(openImages.map((p) => img.chats(p.id).catch(() => [] as ImageChat[])));
+      setImageChats(Object.fromEntries(openImages.map((p, i) => [p.id, imageLists[i]])));
     } catch {
       // The status row at the bottom shows when the server is unreachable.
       setModel(null);
@@ -90,6 +103,15 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
       .then((s) => setOpen((o) => (o[s.project_id] ? o : { ...o, [s.project_id]: true })))
       .catch(() => undefined);
   }, [activeSession, client]);
+
+  // When an image chat is open, expand its image project.
+  useEffect(() => {
+    if (!activeImageChat || !client) return;
+    imagesApi(client)
+      .chat(activeImageChat)
+      .then((c) => setOpen((o) => (o[`img:${c.project_id}`] ? o : { ...o, [`img:${c.project_id}`]: true })))
+      .catch(() => undefined);
+  }, [activeImageChat, client]);
 
   const go = (href: Parameters<typeof router.replace>[0]) => router.replace(href);
   const here = useHere();
@@ -211,6 +233,61 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
             </View>
           );
         })}
+
+        <View style={styles.sectionRow}>
+          <Text style={[type.labelMedium, styles.section]}>IMAGES</Text>
+          <IconButton icon="image-plus" label="New image project" onPress={() => setAddingImages(true)} size={18} />
+        </View>
+        {imageProjects.length === 0 ? (
+          <Text style={[type.bodySmall, styles.noChats]}>Make pictures on your GPU</Text>
+        ) : null}
+        {imageProjects.map((p) => {
+          const key = `img:${p.id}`;
+          const expanded = !!open[key];
+          const list = imageChats[p.id] ?? [];
+          return (
+            <View key={key}>
+              <Row
+                icon={expanded ? 'image-multiple' : 'image-multiple-outline'}
+                label={p.name}
+                active={activeImageProject === p.id}
+                onPress={() => go({ pathname: '/images/[id]', params: { id: p.id, name: p.name } })}
+                trailing={
+                  <IconButton
+                    icon={expanded ? 'chevron-down' : 'chevron-right'}
+                    label={expanded ? `Hide image chats in ${p.name}` : `Show image chats in ${p.name}`}
+                    size={18}
+                    onPress={() => setOpen((o) => ({ ...o, [key]: !expanded }))}
+                  />
+                }
+              />
+              {expanded ? (
+                <View style={styles.chats}>
+                  {list.length === 0 ? <Text style={[type.bodySmall, styles.noChats]}>No image chats yet</Text> : null}
+                  {list.slice(0, CHATS_SHOWN).map((c) => (
+                    <Row
+                      key={c.id}
+                      label={c.title}
+                      small
+                      active={activeImageChat === c.id}
+                      status={c.status === 'running' ? 'running' : 'idle'}
+                      busyLabel="Drawing…"
+                      onPress={() => go({ pathname: '/image/[id]', params: { id: c.id, title: c.title } })}
+                    />
+                  ))}
+                  {list.length > CHATS_SHOWN ? (
+                    <Row
+                      label={`All ${list.length} image chats`}
+                      small
+                      muted
+                      onPress={() => go({ pathname: '/images/[id]', params: { id: p.id, name: p.name } })}
+                    />
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
       </ScrollView>
 
       <View style={styles.footer}>
@@ -258,6 +335,16 @@ export function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         </Pressable>
       </View>
 
+      <NewImageProjectSheet
+        visible={addingImages}
+        onClose={() => setAddingImages(false)}
+        onCreated={(p) => {
+          setAddingImages(false);
+          setOpen((o) => ({ ...o, [`img:${p.id}`]: true }));
+          emit('projects');
+          go({ pathname: '/images/[id]', params: { id: p.id, name: p.name } });
+        }}
+      />
       <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
@@ -283,7 +370,9 @@ function Row({
   status,
   trailing,
   where,
+  busyLabel = 'Working…',
 }: {
+  busyLabel?: string;
   where?: { text: string; online: boolean } | null;
   label: string;
   icon?: Parameters<typeof Icon>[0]['name'];
@@ -324,7 +413,7 @@ function Row({
           </Text>
           {busy ? (
             <Text style={[type.bodySmall, styles.working]} numberOfLines={1}>
-              Working…
+              {busyLabel}
             </Text>
           ) : null}
           {where ? (

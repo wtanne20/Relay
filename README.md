@@ -176,6 +176,24 @@ has no offline recognizer, or its language pack isn't downloaded, voice mode off
 use the phone's online speech service instead, which you have to choose. Voice mode needs a phone app built from this version or later (it adds native speech
 modules); it isn't offered in the desktop app.
 
+### Images
+
+The **Images** section (home screen and sidebar) holds image projects. A project has a **style** that is added to
+every prompt (and words to leave out), and a default model. Each **image chat** in it develops one picture: describe
+it, then keep sending changes ("give it a scarf", "make it night"). The last picture is used as the starting point
+until you clear it; models that can follow edits (FLUX.1 Kontext, Qwen Image Edit) get it as a reference, others
+redraw from it. Pick size, how many pictures, steps and seed in the composer.
+
+Pictures are made on the PC by [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s `sd-server`,
+which Relay downloads on first use (or set `[images] sd_server_path`). Put model files (`.gguf` or
+`.safetensors`, from Hugging Face or Civitai) in `%LOCALAPPDATA%\Relay\image-models` or add a folder in
+**Settings → Image models**; Relay offers ready setups for the files it finds and checks each model has every part
+its family needs (for example diffusion model, text encoder and VAE).
+
+The chat model and the image model **take turns on the GPU**: making a picture waits for any chat that is working,
+then unloads the chat model and starts sd-server; the next chat message stops sd-server and loads the chat model
+again. sd-server also stops after 10 idle minutes (configurable).
+
 ---
 
 ## Downloads
@@ -318,7 +336,8 @@ cargo run -- serve                                 # terminal 2: finds the "mode
 ```
 
 Prompts mentioning `hello.txt` make it call `write_file`, `run: <command>` calls `run_command`, and anything else
-is echoed. `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
+is echoed. `server/examples/mock_sd.rs` does the same for sd-server (gradient pictures; `dev.ps1 -Mock` uses
+both). `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
 
 ## Security notes
 

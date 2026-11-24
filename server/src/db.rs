@@ -226,6 +226,7 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     crate::approvals::ensure_schema(&conn)?;
     crate::knowledge::ensure_schema(&conn)?;
     crate::tasks::ensure_schema(&conn)?;
+    crate::imagegen::store::ensure_schema(&conn)?;
     Ok(conn)
 }
 

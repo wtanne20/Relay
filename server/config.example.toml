@@ -73,6 +73,19 @@ model_name = "local"
 # Find/download llama.cpp and pick a model automatically when not set.
 auto_setup = true
 
+[images]
+# Image generation with stable-diffusion.cpp's sd-server. Empty path = look in
+# the data folder, then download the latest release on first use.
+sd_server_path = ""
+port = 8771
+# Extra folders with image model files (<data>/image-models is always used).
+model_dirs = []
+# Keep weights in RAM and move them to the GPU as needed (slower, less VRAM).
+offload_to_cpu = false
+# Stop sd-server after this many idle minutes (0 = keep it until a chat needs the GPU).
+idle_unload_minutes = 10
+extra_args = []
+
 [push]
 # Expo push notifications when a task finishes, fails, is stopped or needs
 # approval. Only the project name, session title and status are sent.

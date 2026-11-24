@@ -201,6 +201,9 @@ export default function RootLayout() {
               <Stack.Screen name="stats" options={{ title: 'Speed and memory' }} />
               <Stack.Screen name="project/instructions" options={{ title: 'Instructions' }} />
               <Stack.Screen name="share" options={{ title: 'Send to Relay' }} />
+              <Stack.Screen name="images/[id]" options={{ title: 'Images' }} />
+              <Stack.Screen name="image/[id]" options={{ headerShown: false }} />
+              <Stack.Screen name="image-models" options={{ title: 'Image models' }} />
             </Stack>
           </Shell>
         </ThemeProvider>

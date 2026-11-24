@@ -412,7 +412,7 @@ pub async fn download_llama_server(
     Ok(exe)
 }
 
-async fn download_file(
+pub(crate) async fn download_file(
     http: &reqwest::Client,
     url: &str,
     dest: &Path,
@@ -444,7 +444,7 @@ async fn download_file(
     Ok(())
 }
 
-async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
+pub(crate) async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     let status = if cfg!(windows) {
         let script = format!(
             "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
@@ -475,7 +475,7 @@ async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_file(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+pub(crate) fn find_file(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     let direct = dir.join(name);
     if direct.is_file() {
         return Some(direct);
