@@ -1,4 +1,5 @@
 import type { RelayClient } from './api';
+import type { HubDownload, HubRepo } from './types';
 
 /** Image generation (stable-diffusion.cpp on the brain). */
 
@@ -159,6 +160,46 @@ export interface GenerateRequest {
 
 const LONG = 120_000;
 
+/** One file of a starter model. */
+export interface StarterFile {
+  slot: string;
+  category: string;
+  repo: string;
+  name: string;
+  size_bytes: number;
+  have: boolean;
+}
+
+/** A model type with every file it needs, picked for the GPU, downloaded in one tap. */
+export interface Starter {
+  id: string;
+  recipe: string;
+  name: string;
+  blurb: string;
+  edit: boolean;
+  /** The bigger, sharper version (the GPU has room). */
+  big: boolean;
+  files: StarterFile[];
+  total_bytes: number;
+  missing_bytes: number;
+  set_up: boolean;
+  downloading: boolean;
+  error: string | null;
+}
+
+/** A model file in a Hugging Face repository. */
+export interface ImageHubFile {
+  file: string;
+  name: string;
+  size_bytes: number;
+  quant: string | null;
+  /** The folder it most likely goes in. */
+  category: string;
+  have: boolean;
+}
+
+export const isImageDownload = (d: HubDownload) => !!d.group?.startsWith('image');
+
 export const imagesApi = (c: RelayClient) => ({
   status: () => c.request<ImagesStatus>('GET', '/images/status'),
   prepare: () => c.request<unknown>('POST', '/images/prepare', {}),
@@ -169,6 +210,22 @@ export const imagesApi = (c: RelayClient) => ({
   settings: () => c.request<ImageSettings>('GET', '/images/settings'),
   patchSettings: (p: Partial<Omit<ImageSettings, 'own_folder'>>) =>
     c.request<ImageSettings>('PATCH', '/images/settings', p),
+
+  starters: () => c.request<{ starters: Starter[]; vram_mb: number; folder: string }>('GET', '/images/downloads'),
+  /** Downloads a starter's missing files; it's set up when they're in. */
+  downloadStarter: (id: string) =>
+    c.request<{ downloads: HubDownload[] }>('POST', `/images/downloads/${encodeURIComponent(id)}`, {}, LONG),
+  hubSearch: (q: string) =>
+    c.request<{ results: HubRepo[] }>('GET', `/images/hub/search?q=${encodeURIComponent(q)}`, undefined, LONG),
+  hubFiles: (repo: string) =>
+    c.request<{ repo: string; files: ImageHubFile[]; categories: string[] }>(
+      'GET',
+      `/images/hub/files?repo=${encodeURIComponent(repo)}`,
+      undefined,
+      LONG,
+    ),
+  hubDownload: (repo: string, file: string, category: string) =>
+    c.request<{ download: HubDownload }>('POST', '/images/hub/download', { repo, file, category }, LONG),
 
   models: async () => (await c.request<{ models: ImageModel[] }>('GET', '/image-models')).models,
   createModel: (name: string, recipe: string, files: Record<string, string>) =>

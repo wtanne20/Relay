@@ -14,6 +14,11 @@ use tokio_util::sync::CancellationToken;
 
 const HF: &str = "https://huggingface.co";
 
+/// Hugging Face's address; `RELAY_HF_URL` points it at a test server.
+fn hf() -> String {
+    std::env::var("RELAY_HF_URL").unwrap_or_else(|_| HF.to_string())
+}
+
 fn client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("relay/", env!("CARGO_PKG_VERSION")))
@@ -33,15 +38,19 @@ pub fn valid_repo(repo: &str) -> bool {
     matches!(repo.split_once('/'), Some((a, b)) if ok(a) && ok(b))
 }
 
-/// A path inside a repository: relative, no `..`, ends in .gguf.
-pub fn valid_file(file: &str) -> bool {
+/// A path inside a repository: relative, no `..`.
+pub fn valid_path(file: &str) -> bool {
     !file.is_empty()
         && !file.starts_with('/')
         && !file.contains('\\')
         && file
             .split('/')
             .all(|p| !p.is_empty() && p != "." && p != "..")
-        && file.to_ascii_lowercase().ends_with(".gguf")
+}
+
+/// A path inside a repository that is a .gguf file.
+pub fn valid_file(file: &str) -> bool {
+    valid_path(file) && file.to_ascii_lowercase().ends_with(".gguf")
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -53,15 +62,23 @@ pub struct RepoHit {
 }
 
 pub async fn search(query: &str) -> Result<Vec<RepoHit>> {
+    search_with(query, Some("gguf")).await
+}
+
+/// Searches every model repository, or only those with `filter` (a tag).
+pub async fn search_with(query: &str, filter: Option<&str>) -> Result<Vec<RepoHit>> {
+    let mut q = vec![
+        ("search", query),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+        ("limit", "40"),
+    ];
+    if let Some(f) = filter {
+        q.push(("filter", f));
+    }
     let resp: Value = client()?
-        .get(format!("{HF}/api/models"))
-        .query(&[
-            ("search", query),
-            ("filter", "gguf"),
-            ("sort", "downloads"),
-            ("direction", "-1"),
-            ("limit", "40"),
-        ])
+        .get(format!("{}/api/models", hf()))
+        .query(&q)
         .send()
         .await
         .context("could not reach Hugging Face")?
@@ -217,19 +234,42 @@ pub async fn files(repo: &str) -> Result<Vec<GgufFile>> {
 
 /// The repository's models, and its vision file if any.
 pub async fn files_and_projector(repo: &str) -> Result<(Vec<GgufFile>, Option<GgufFile>)> {
+    let tree = tree(repo).await?;
+    Ok((group_files(&tree), pick_projector(&tree)))
+}
+
+/// Every entry of a repository (files and folders, all levels).
+pub async fn tree(repo: &str) -> Result<Vec<Value>> {
     if !valid_repo(repo) {
         bail!("not a Hugging Face repository name: {repo}");
     }
-    let tree: Value = client()?
-        .get(format!("{HF}/api/models/{repo}/tree/main?recursive=true"))
+    let resp = client()?
+        .get(format!("{}/api/models/{repo}/tree/main?recursive=true", hf()))
         .send()
         .await
-        .context("could not reach Hugging Face")?
-        .error_for_status()?
-        .json()
-        .await?;
-    let tree = tree.as_array().map(Vec::as_slice).unwrap_or_default();
-    Ok((group_files(tree), pick_projector(tree)))
+        .context("could not reach Hugging Face")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        || resp.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        bail!("{repo} needs a Hugging Face sign-in");
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!("{repo} isn't on Hugging Face");
+    }
+    let tree: Value = resp.error_for_status()?.json().await?;
+    Ok(match tree {
+        Value::Array(a) => a,
+        _ => Vec::new(),
+    })
+}
+
+/// A tree entry's size (the real size for files stored in LFS).
+pub fn entry_size(e: &Value) -> u64 {
+    e.get("lfs")
+        .and_then(|l| l.get("size"))
+        .or_else(|| e.get("size"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -251,6 +291,10 @@ pub struct Download {
     pub done_bytes: u64,
     pub state: DownloadState,
     pub error: Option<String>,
+    /// What the download is for, e.g. "image:z-image-turbo" for the files
+    /// of an image model. Absent for chat models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(skip)]
     cancel: CancellationToken,
 }
@@ -295,11 +339,34 @@ impl Downloads {
         let dir = repo
             .split('/')
             .fold(models_dir.to_path_buf(), |p, s| p.join(s));
-        let dest = model.file.split('/').fold(dir.clone(), |p, s| p.join(s));
+        let files = model
+            .parts
+            .iter()
+            .map(|p| (p.clone(), p.split('/').fold(dir.clone(), |d, s| d.join(s))))
+            .collect();
+        self.start_files(repo, &model.file, files, model.size_bytes, None)
+    }
+
+    /// Starts downloading files of `repo` in the background, each
+    /// `(path in the repository, where to save it)`, shown as one download
+    /// named `label`. Files already saved are kept, never overwritten.
+    pub fn start_files(
+        self: &Arc<Self>,
+        repo: &str,
+        label: &str,
+        files: Vec<(String, PathBuf)>,
+        total_bytes: u64,
+        group: Option<String>,
+    ) -> Result<Download> {
+        let Some((_, dest)) = files.first() else {
+            bail!("nothing to download");
+        };
         {
             let l = self.list.lock().unwrap_or_else(|e| e.into_inner());
             if l.iter().any(|d| {
-                d.repo == repo && d.file == model.file && d.state == DownloadState::Downloading
+                d.state == DownloadState::Downloading
+                    && ((d.repo == repo && d.file == label)
+                        || files.iter().any(|(_, f)| d.dest == f.to_string_lossy()))
             }) {
                 bail!("that model is already downloading");
             }
@@ -307,12 +374,13 @@ impl Downloads {
         let d = Download {
             id: uuid::Uuid::new_v4().to_string(),
             repo: repo.to_string(),
-            file: model.file.clone(),
+            file: label.to_string(),
             dest: dest.to_string_lossy().into_owned(),
-            total_bytes: model.size_bytes,
+            total_bytes,
             done_bytes: 0,
             state: DownloadState::Downloading,
             error: None,
+            group,
             cancel: CancellationToken::new(),
         };
         self.list
@@ -323,7 +391,7 @@ impl Downloads {
         let (id, repo, cancel) = (d.id.clone(), repo.to_string(), d.cancel.clone());
         tokio::spawn(async move {
             let r = tokio::select! {
-                r = this.run(&id, &repo, &dir, &model.parts) => r,
+                r = this.run(&id, &repo, &files) => r,
                 _ = cancel.cancelled() => Err(anyhow!("cancelled")),
             };
             match r {
@@ -331,12 +399,12 @@ impl Downloads {
                 Err(e) if cancel.is_cancelled() => {
                     tracing::info!("download {repo} cancelled");
                     let _ = e;
-                    remove_partials(&dir, &model.parts).await;
+                    remove_partials(&files).await;
                     this.update(&id, |d| d.state = DownloadState::Cancelled);
                 }
                 Err(e) => {
                     tracing::warn!("download {repo} failed: {e:#}");
-                    remove_partials(&dir, &model.parts).await;
+                    remove_partials(&files).await;
                     this.update(&id, |d| {
                         d.state = DownloadState::Failed;
                         d.error = Some(format!("{e:#}"));
@@ -347,11 +415,10 @@ impl Downloads {
         Ok(d)
     }
 
-    async fn run(&self, id: &str, repo: &str, dir: &Path, parts: &[String]) -> Result<()> {
+    async fn run(&self, id: &str, repo: &str, files: &[(String, PathBuf)]) -> Result<()> {
         let http = client()?;
         let mut base: u64 = 0;
-        for part in parts {
-            let dest = part.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
+        for (part, dest) in files {
             if let Some(parent) = dest.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
@@ -360,14 +427,14 @@ impl Downloads {
                 base += dest.metadata().map(|m| m.len()).unwrap_or(0);
                 continue;
             }
-            let url = format!("{HF}/{repo}/resolve/main/{part}?download=true");
-            let tmp = part_path(&dest);
+            let url = format!("{}/{repo}/resolve/main/{part}?download=true", hf());
+            let tmp = part_path(dest);
             let done = fetch(&http, &url, &tmp, |n| {
                 let now = base + n;
                 self.update(id, |d| d.done_bytes = now);
             })
             .await?;
-            tokio::fs::rename(&tmp, &dest).await?;
+            tokio::fs::rename(&tmp, dest).await?;
             base += done;
         }
         Ok(())
@@ -572,6 +639,7 @@ impl Downloads {
             done_bytes: 0,
             state: DownloadState::Downloading,
             error: None,
+            group: None,
             cancel: CancellationToken::new(),
         };
         self.list
@@ -671,6 +739,7 @@ impl Downloads {
             done_bytes: 0,
             state: DownloadState::Downloading,
             error: None,
+            group: None,
             cancel: CancellationToken::new(),
         };
         self.list
@@ -767,10 +836,9 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-async fn remove_partials(dir: &Path, parts: &[String]) {
-    for part in parts {
-        let dest = part.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
-        let _ = tokio::fs::remove_file(part_path(&dest)).await;
+async fn remove_partials(files: &[(String, PathBuf)]) {
+    for (_, dest) in files {
+        let _ = tokio::fs::remove_file(part_path(dest)).await;
     }
 }
 
