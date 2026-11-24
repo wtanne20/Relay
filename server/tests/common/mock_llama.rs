@@ -285,6 +285,21 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
             // Long enough to send a message while it's being written.
             delay = Duration::from_millis(100);
             chunks.extend(text_chunks("Working on it, one careful step at a time."));
+        } else if lower.contains("formatted answer") {
+            // A Markdown reply, for trying out how answers stream in.
+            delay = Duration::from_millis(35);
+            chunks.push(chunk(json!({"reasoning_content": "Lay it out with a list and some code."}), None));
+            chunks.extend(text_chunks(concat!(
+                "Here's how **streaming** works in Relay.\n\n",
+                "## The steps\n\n",
+                "1. The model sends a few tokens at a time.\n",
+                "2. Relay forwards them over the WebSocket.\n",
+                "3. The app shows them at an even pace, already formatted.\n\n",
+                "A quick example:\n\n",
+                "```python\ndef greet(name):\n    return f\"Hello, {name}!\"\n```\n\n",
+                "That's all: see [the API notes](https://example.com/api) for the event names, ",
+                "and use `text_delta` for the text itself."
+            )));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));

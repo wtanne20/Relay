@@ -376,68 +376,82 @@ function Table({ head, rows, k, color }: { head: string[]; rows: string[][]; k: 
   );
 }
 
+function sameBlock(a: Block, b: Block): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * One block, redrawn only when it changes: while a reply streams in, only
+ * its last block grows, so the ones above it are left alone.
+ */
+const BlockView = memo(
+  function BlockView({ b, k: key, color }: { b: Block; k: string; color: string }) {
+    switch (b.kind) {
+      case 'code':
+        return isMockup(b.lang, b.text) ? (
+          <MockupCard key={key} lang={b.lang} source={b.text} complete={b.closed} />
+        ) : (
+          <CodeBlock key={key} lang={b.lang} text={b.text} />
+        );
+      case 'heading':
+        return (
+          <Text
+            key={key}
+            selectable
+            style={[styles.heading, { color, fontSize: HEADING_SIZE[Math.min(b.level, 4) - 1] }]}
+          >
+            {renderInline(b.text, key)}
+          </Text>
+        );
+      case 'rule':
+        return <View key={key} style={styles.rule} />;
+      case 'quote':
+        return (
+          <View key={key} style={styles.quote}>
+            <Text selectable style={[styles.para, { color: colors.textMuted }]}>
+              {renderInline(b.text, key)}
+            </Text>
+          </View>
+        );
+      case 'list':
+        return (
+          <View key={key} style={styles.list}>
+            {b.items.map((item, j) => (
+              <View key={`${key}-${j}`} style={styles.listItem}>
+                <Text style={[styles.para, styles.listMarker, { color: colors.textMuted }]}>
+                  {b.ordered ? `${b.start + j}.` : '•'}
+                </Text>
+                <ListItem text={item} k={`${key}-${j}`} color={color} />
+              </View>
+            ))}
+          </View>
+        );
+      case 'table':
+        return <Table key={key} head={b.head} rows={b.rows} k={key} color={color} />;
+      case 'para': {
+        // A download link on its own line: [Download app.apk](relay-download://app.apk)
+        const dl = b.text.trim().match(/^\[([^\]]+)\]\(relay-download:\/\/([^)\s]+)\)$/i);
+        if (dl) return <DownloadButton key={key} label={dl[1]} path={dl[2]} />;
+        const only = b.text.trim().match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/i);
+        if (only) return <LinkButton key={key} label={only[1]} url={only[2]} />;
+        return (
+          <Text key={key} selectable style={[styles.para, { color }]}>
+            {renderInline(b.text, key)}
+          </Text>
+        );
+      }
+    }
+  },
+  (a, b) => a.k === b.k && a.color === b.color && sameBlock(a.b, b.b),
+);
+
 function MarkdownImpl({ text, color = colors.text }: { text: string; color?: string }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   return (
     <View>
-      {blocks.map((b, i) => {
-        const key = `b${i}`;
-        switch (b.kind) {
-          case 'code':
-            return isMockup(b.lang, b.text) ? (
-              <MockupCard key={key} lang={b.lang} source={b.text} complete={b.closed} />
-            ) : (
-              <CodeBlock key={key} lang={b.lang} text={b.text} />
-            );
-          case 'heading':
-            return (
-              <Text
-                key={key}
-                selectable
-                style={[styles.heading, { color, fontSize: HEADING_SIZE[Math.min(b.level, 4) - 1] }]}
-              >
-                {renderInline(b.text, key)}
-              </Text>
-            );
-          case 'rule':
-            return <View key={key} style={styles.rule} />;
-          case 'quote':
-            return (
-              <View key={key} style={styles.quote}>
-                <Text selectable style={[styles.para, { color: colors.textMuted }]}>
-                  {renderInline(b.text, key)}
-                </Text>
-              </View>
-            );
-          case 'list':
-            return (
-              <View key={key} style={styles.list}>
-                {b.items.map((item, j) => (
-                  <View key={`${key}-${j}`} style={styles.listItem}>
-                    <Text style={[styles.para, styles.listMarker, { color: colors.textMuted }]}>
-                      {b.ordered ? `${b.start + j}.` : '•'}
-                    </Text>
-                    <ListItem text={item} k={`${key}-${j}`} color={color} />
-                  </View>
-                ))}
-              </View>
-            );
-          case 'table':
-            return <Table key={key} head={b.head} rows={b.rows} k={key} color={color} />;
-          case 'para': {
-            // A download link on its own line: [Download app.apk](relay-download://app.apk)
-            const dl = b.text.trim().match(/^\[([^\]]+)\]\(relay-download:\/\/([^)\s]+)\)$/i);
-            if (dl) return <DownloadButton key={key} label={dl[1]} path={dl[2]} />;
-            const only = b.text.trim().match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/i);
-            if (only) return <LinkButton key={key} label={only[1]} url={only[2]} />;
-            return (
-              <Text key={key} selectable style={[styles.para, { color }]}>
-                {renderInline(b.text, key)}
-              </Text>
-            );
-          }
-        }
-      })}
+      {blocks.map((b, i) => (
+        <BlockView key={`b${i}`} k={`b${i}`} b={b} color={color} />
+      ))}
     </View>
   );
 }
