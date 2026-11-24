@@ -5,6 +5,7 @@
 ; What it does:
 ;  - installs the Relay Windows app (relay-desktop.exe, which runs the server
 ;    and sits in the tray) and the relay.exe command-line tool to Program Files\Relay
+;  - installs the bundled skills (server\skills, e.g. PCB design) to Program Files\Relay\skills
 ;  - Start menu: "Relay" (the app) and "Relay data folder"; optional desktop
 ;    icon and start-with-Windows (starts minimised to the tray)
 ;  - adds a firewall rule that lets only Tailscale addresses (100.64.0.0/10)
@@ -69,6 +70,13 @@ Source: "{#DesktopExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "relay.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\server\config.example.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
+; Skills that ship with Relay (e.g. PCB design). Relay reads them from here
+; next to the exe; they are replaced on every update.
+Source: "..\server\skills\*"; DestDir: "{app}\skills"; Excludes: "__pycache__,*.pyc,build,fab"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Drop skill files removed since the last version.
+Type: filesandordirs; Name: "{app}\skills"
 
 [Icons]
 Name: "{group}\Relay"; Filename: "{app}\relay-desktop.exe"; WorkingDir: "{app}"; Comment: "Chat with your coding agents and manage projects"

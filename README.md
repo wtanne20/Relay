@@ -71,7 +71,7 @@ Relay keeps its settings and data in `%LOCALAPPDATA%\Relay`: `config.toml`, `rel
 | GPU | `nvidia-smi` reports the GPU name, VRAM and the CUDA version the driver supports. |
 | llama.cpp | Uses `llama_server_path` if set; else an existing `llama-server.exe` (Relay's folder, `PATH`, `%USERPROFILE%\llama.cpp`, `C:\llama.cpp`, `Program Files\llama.cpp`); else downloads the latest official release from github.com/ggml-org/llama.cpp: the CUDA build matching your driver (plus its CUDA runtime) on NVIDIA, otherwise the Vulkan build. Progress shows in the app. |
 | Model | Uses `model_path` if set; else scans `%USERPROFILE%\.lmstudio\models`, LM Studio's older cache folder and `%LOCALAPPDATA%\Relay\models` for `.gguf` files (skipping vision projectors and extra split parts) and picks the largest that fits in VRAM minus 2.5 GB. Change it any time in the app. |
-| Skills | Reads skills from `%LOCALAPPDATA%\Relay\skills` and LM Studio's `%USERPROFILE%\.lmstudio\skills`. |
+| Skills | Reads skills from `%LOCALAPPDATA%\Relay\skills`, LM Studio's `%USERPROFILE%\.lmstudio\skills` and the skills that ship with Relay (`skills` next to `relay.exe`, see [server/skills](server/skills/README.md)), such as **PCB design**. |
 | Tailscale | `tailscale status` gives the PC's Tailscale IP, which goes into the QR code. |
 | Token | A random 256-bit API token is generated and saved in `config.toml`. |
 
