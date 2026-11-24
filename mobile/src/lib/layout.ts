@@ -1,17 +1,24 @@
 import { Platform, useWindowDimensions, type ViewStyle } from 'react-native';
 
+import { isDesktop } from './desktop';
+
 /** Window width from which the desktop layout (sidebar + main pane) is used. */
 export const WIDE_MIN = 900;
 /** Comfortable reading width for chat and settings on wide windows. */
 export const PAGE_MAX = 820;
 
+/** Below this width the desktop sidebar is drawn narrower to leave room for the page. */
+export const SIDEBAR_COMPACT_BELOW = 1000;
+
 /**
- * True for the desktop layout: the Windows app (or a wide browser window
- * during development). Phones always get the phone layout.
+ * True for the desktop layout: always in the desktop app, whatever the
+ * window size, so the sidebar never disappears from a small window; in a
+ * browser (during development) from WIDE_MIN. Phones always get the phone
+ * layout.
  */
 export function useWide(): boolean {
   const { width } = useWindowDimensions();
-  return Platform.OS === 'web' && width >= WIDE_MIN;
+  return Platform.OS === 'web' && (isDesktop || width >= WIDE_MIN);
 }
 
 /** Centers page content at a readable width on wide windows. */

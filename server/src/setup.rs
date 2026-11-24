@@ -86,7 +86,7 @@ pub fn parse_cuda_version(s: &str) -> Option<(u32, u32)> {
     })
 }
 
-async fn run_capture(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) async fn run_capture(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -116,6 +116,11 @@ pub struct Tailscale {
 }
 
 pub async fn detect_tailscale() -> Option<Tailscale> {
+    parse_tailscale_status(&tailscale_status_json().await?)
+}
+
+/// The raw output of `tailscale status --json`, if Tailscale is installed.
+pub async fn tailscale_status_json() -> Option<String> {
     let mut candidates = vec!["tailscale".to_string()];
     if cfg!(windows) {
         for var in ["ProgramFiles", "ProgramFiles(x86)"] {
@@ -132,7 +137,7 @@ pub async fn detect_tailscale() -> Option<Tailscale> {
     }
     for c in candidates {
         if let Some(out) = run_capture(&c, &["status", "--json"]).await {
-            return parse_tailscale_status(&out);
+            return Some(out);
         }
     }
     None
@@ -407,7 +412,7 @@ pub async fn download_llama_server(
     Ok(exe)
 }
 
-async fn download_file(
+pub(crate) async fn download_file(
     http: &reqwest::Client,
     url: &str,
     dest: &Path,
@@ -439,7 +444,7 @@ async fn download_file(
     Ok(())
 }
 
-async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
+pub(crate) async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     let status = if cfg!(windows) {
         let script = format!(
             "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
@@ -470,7 +475,7 @@ async fn extract_zip(zip: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_file(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+pub(crate) fn find_file(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     let direct = dir.join(name);
     if direct.is_file() {
         return Some(direct);

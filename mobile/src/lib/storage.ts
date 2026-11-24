@@ -65,3 +65,26 @@ export async function loadPushPrefs(): Promise<PushPrefs> {
 export async function savePushPrefs(prefs: PushPrefs): Promise<void> {
   await SecureStore.setItemAsync(PUSH_KEY, JSON.stringify(prefs));
 }
+
+const LAST_TARGET_KEY = 'relay.lastTarget';
+
+/**
+ * Where the home screen's next chat goes: a project id, or the plain-chat id.
+ * Kept in the same store as everything else, so the phone remembers it too
+ * (the web build uses localStorage, under the key it always used).
+ */
+export async function loadLastTarget(): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(LAST_TARGET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveLastTarget(id: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(LAST_TARGET_KEY, id);
+  } catch {
+    // Not important: plain chat is picked next time.
+  }
+}

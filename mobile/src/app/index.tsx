@@ -14,20 +14,26 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
+import { StoredImage } from '../components/ImageBits';
+import { NewImageProjectSheet } from '../components/NewImageProjectSheet';
 import { alert } from '../components/Dialogs';
-import { AttachMenu, AttachmentStrip, useAttachments } from '../components/Attachments';
-import { ModelChip, ModelSheet, modelLabel } from '../components/ModelPicker';
+import { useAttachments } from '../components/Attachments';
+import { Composer } from '../components/Composer';
+import { ModelSheet, modelLabel } from '../components/ModelPicker';
 import { UpdateCard } from '../components/UpdateCard';
 import { m3, radius, space, type } from '../components/theme';
+import { BrainBanner, LocationChip } from '../components/Location';
 import { Avatar, Banner, Button, Icon, IconButton, Logo, StatusBadge } from '../components/ui';
 import { describeError } from '../lib/api';
 import { useConnection } from '../lib/connection';
 import { emit, on } from '../lib/events';
 import { relativeTime } from '../lib/format';
-import { enterToSend, useWide } from '../lib/layout';
+import { useWide } from '../lib/layout';
+import { autoRow, useRouting } from '../lib/routing';
+import { loadLastTarget, saveLastTarget } from '../lib/storage';
+import { imagesApi, type ImageProject } from '../lib/images';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
 
-const LAST_TARGET = 'relay.lastTarget';
 const CHATS_SHOWN = 12;
 
 function greeting(): string {
@@ -36,22 +42,6 @@ function greeting(): string {
   if (h < 12) return 'Good morning';
   if (h < 18) return 'Good afternoon';
   return 'Good evening';
-}
-
-function remembered(): string {
-  try {
-    return globalThis.localStorage?.getItem(LAST_TARGET) ?? CHATS_ID;
-  } catch {
-    return CHATS_ID;
-  }
-}
-
-function remember(id: string) {
-  try {
-    globalThis.localStorage?.setItem(LAST_TARGET, id);
-  } catch {
-    // Not important: plain chat is picked next time.
-  }
 }
 
 /**
@@ -65,15 +55,22 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [chats, setChats] = useState<Session[] | null>(null);
   const [loaded, setLoaded] = useState<string | null>(null);
+  const routing = useRouting();
   /** Model picked for the next chat; null follows the project or what's loaded. */
   const [model, setModel] = useState<string | null>(null);
   const [pickingModel, setPickingModel] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pics = useAttachments();
-  const [target, setTarget] = useState<string>(remembered());
+  const [target, setTarget] = useState<string>(CHATS_ID);
+  /** Projects as last loaded, so a remembered pick can be checked against them. */
+  const known = useRef<Project[] | null>(null);
+  /** True once the user picks here, so a late restore doesn't override them. */
+  const chosen = useRef(false);
   const [picking, setPicking] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [imageProjects, setImageProjects] = useState<ImageProject[]>([]);
+  const [addingImages, setAddingImages] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -81,6 +78,8 @@ export default function Home() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState(false);
   const input = useRef<React.ComponentRef<typeof TextInput>>(null);
+  /** Queued and running background tasks (the badge on Tasks). */
+  const [taskCount, setTaskCount] = useState(0);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -90,9 +89,18 @@ export default function Home() {
         client.sessions(CHATS_ID),
         client.model().catch(() => null),
       ]);
+      known.current = ps;
       setProjects(ps);
       setChats(cs);
+      client
+        .queue()
+        .then((q) => setTaskCount(q.queued + q.running))
+        .catch(() => setTaskCount(0));
       setLoaded(m?.default_model || m?.model_path || null);
+      imagesApi(client)
+        .projects()
+        .then(setImageProjects)
+        .catch(() => setImageProjects([]));
       setTarget((cur) => (cur === CHATS_ID || ps.some((p) => p.id === cur) ? cur : CHATS_ID));
       setError(null);
     } catch (e) {
@@ -105,6 +113,19 @@ export default function Home() {
       load();
     }, [load]),
   );
+  // Pick the project from last time. Until the projects arrive it's taken on
+  // trust; load() falls back to a plain chat if that project is gone.
+  useEffect(() => {
+    let live = true;
+    loadLastTarget().then((id) => {
+      if (!live || !id || chosen.current) return;
+      const ps = known.current;
+      if (id === CHATS_ID || !ps || ps.some((p) => p.id === id)) setTarget(id);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   useEffect(() => {
     const a = on('projects', load);
     const b = on('chats', load);
@@ -113,6 +134,15 @@ export default function Home() {
       b();
     };
   }, [load]);
+  // While a chat is working, check back so its "Working…" line clears.
+  const anyWorking = !!chats?.some((c) => c.status === 'running');
+  useFocusEffect(
+    useCallback(() => {
+      if (!anyWorking) return;
+      const t = setInterval(load, 4000);
+      return () => clearInterval(t);
+    }, [anyWorking, load]),
+  );
 
   if (loading) {
     return (
@@ -124,7 +154,6 @@ export default function Home() {
   if (!client) return <Redirect href="/connect" />;
 
   const project = projects?.find((p) => p.id === target) ?? null;
-  const canSend = (!!text.trim() || pics.items.length > 0) && !busy;
   const open = (href: Parameters<typeof router.push>[0]) => (wide ? router.replace(href) : router.push(href));
 
   const send = async () => {
@@ -154,6 +183,44 @@ export default function Home() {
     }
   };
 
+  /** A new chat in the chosen place, opened in voice mode. */
+  const talk = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const s = await client.createSession(project?.id ?? CHATS_ID);
+      if (model) await client.setSessionModel(s.id, model);
+      setModel(null);
+      emit('chats');
+      open({ pathname: '/session/[id]', params: { id: s.id, title: s.title, voice: '1' } });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Adds the prompt to the background queue instead of starting it now. */
+  const queue = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const item = await client.enqueue({ prompt: text.trim(), project_id: project?.id ?? CHATS_ID });
+      setText('');
+      setTaskCount((n) => n + 1);
+      alert('Added to the queue', `“${item.name}” runs on your PC when the tasks before it are done. See it under Tasks.`, [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Open Tasks', onPress: () => open('/tasks') },
+      ]);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** An empty plain chat, opened right away. */
   const newChat = async () => {
     setStarting(true);
@@ -169,8 +236,9 @@ export default function Home() {
   };
 
   const choose = (id: string) => {
+    chosen.current = true;
     setTarget(id);
-    remember(id);
+    saveLastTarget(id);
     setPicking(false);
     input.current?.focus();
   };
@@ -307,7 +375,21 @@ export default function Home() {
             <Logo size={32} />
             <Text style={type.titleLarge}>Relay</Text>
           </View>
-          <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
+          <View style={styles.appBarActions}>
+            <View>
+              <IconButton
+                icon="calendar-clock"
+                label={taskCount ? `Tasks, ${taskCount} running or waiting` : 'Tasks'}
+                onPress={() => router.push('/tasks')}
+              />
+              {taskCount ? (
+                <View style={styles.badge} pointerEvents="none">
+                  <Text style={[type.labelMedium, { color: m3.onPrimary, fontSize: 11 }]}>{taskCount}</Text>
+                </View>
+              ) : null}
+            </View>
+            <IconButton icon="cog-outline" label="Settings" onPress={() => router.push('/settings')} />
+          </View>
         </View>
       ) : null}
       <ScrollView
@@ -337,8 +419,41 @@ export default function Home() {
             {wide ? <Logo size={40} /> : null}
             <Text style={[type.displaySmall, wide && styles.greetingWide]}>{greeting()}</Text>
           </View>
+          {!wide ? (
+            <View style={styles.brainPhone}>
+              <BrainBanner onPress={() => open('/devices')} />
+            </View>
+          ) : null}
 
-          <View style={styles.composer}>
+          <Composer
+            ref={input}
+            roomy
+            phone={!wide}
+            value={text}
+            onChangeText={setText}
+            onSend={send}
+            placeholder={project ? `What should we do in ${project.name}?` : 'Ask anything'}
+            attachments={pics}
+            busy={busy}
+            model={{
+              value: model,
+              fallback: project?.model ?? loaded,
+              auto: !!routing && !project?.model,
+              onPress: () => setPickingModel(true),
+            }}
+            onTalk={talk}
+            talkLabel="Start a voice chat"
+            sendLabel="Start chat"
+            autoFocus={wide}
+            extraActions={
+              <IconButton
+                icon="tray-plus"
+                label="Add to queue instead: it runs when earlier tasks are done"
+                onPress={queue}
+                disabled={!text.trim() || pics.items.length > 0 || busy}
+              />
+            }
+            header={
             <View style={styles.topRow}>
               <Pressable
                 onPress={() => setPicking((v) => !v)}
@@ -353,45 +468,24 @@ export default function Home() {
               >
                 <Icon
                   name={project ? 'folder-outline' : 'chat-outline'}
-                  size={20}
+                  size={18}
+                  color={picking ? m3.onSecondaryContainer : m3.onSurfaceVariant}
+                />
+                <Text
+                  style={[type.labelLarge, styles.targetLabel, picking && { color: m3.onSecondaryContainer }]}
+                  numberOfLines={1}
+                >
+                  {project ? project.name : 'Chat'}
+                </Text>
+                <Icon
+                  name={picking ? 'chevron-up' : 'chevron-down'}
+                  size={16}
                   color={picking ? m3.onSecondaryContainer : m3.onSurfaceVariant}
                 />
               </Pressable>
             </View>
-            <AttachmentStrip items={pics.items} onRemove={pics.remove} />
-            <TextInput
-              ref={input}
-              style={[styles.input, !wide && styles.inputPhone]}
-              value={text}
-              onChangeText={setText}
-              onKeyPress={enterToSend(send)}
-              placeholder={project ? `What should we do in ${project.name}?` : 'Ask anything'}
-              placeholderTextColor={m3.outline}
-              selectionColor={m3.primary}
-              multiline
-              autoFocus={wide}
-              accessibilityLabel="Prompt"
-            />
-            <View style={styles.row}>
-              <View style={styles.modelSlot}>
-                <AttachMenu onPick={pics.pick} disabled={busy} />
-                <ModelChip model={model} fallback={project?.model ?? loaded} onPress={() => setPickingModel(true)} />
-              </View>
-              <Pressable
-                onPress={send}
-                disabled={!canSend}
-                style={[styles.send, canSend ? styles.sendOn : styles.sendOff]}
-                accessibilityRole="button"
-                accessibilityLabel="Start chat"
-              >
-                {busy ? (
-                  <ActivityIndicator color={m3.onPrimary} />
-                ) : (
-                  <Icon name="arrow-up" size={22} color={canSend ? m3.onPrimary : m3.outline} />
-                )}
-              </Pressable>
-            </View>
-
+            }
+          >
             {picking ? (
               <View style={[styles.menu, !wide && styles.menuPhone]}>
                 {menuItem(CHATS_ID, 'chat-outline', 'Chat', 'Ask anything. No files or code')}
@@ -414,7 +508,7 @@ export default function Home() {
                 </Pressable>
               </View>
             ) : null}
-          </View>
+          </Composer>
 
           <Text style={[type.bodySmall, styles.hint]}>
             {project
@@ -468,11 +562,17 @@ export default function Home() {
                       <Text style={type.bodyLarge} numberOfLines={1}>
                         {s.title}
                       </Text>
-                      <Text style={type.bodySmall} numberOfLines={1}>
-                        {relativeTime(s.updated_at)}
-                      </Text>
+                      {s.status === 'running' ? (
+                        <Text style={[type.bodySmall, styles.working]} numberOfLines={1}>
+                          Working…
+                        </Text>
+                      ) : (
+                        <Text style={type.bodySmall} numberOfLines={1}>
+                          {relativeTime(s.updated_at)}
+                        </Text>
+                      )}
                     </View>
-                    {s.status === 'running' || s.status === 'error' ? <StatusBadge status={s.status} /> : null}
+                    {s.status === 'error' ? <StatusBadge status={s.status} /> : null}
                   </Pressable>
                 </View>
               ))}
@@ -500,7 +600,7 @@ export default function Home() {
           </View>
           {projects?.length === 0 ? (
             <Text style={[type.bodyMedium, styles.empty]}>
-              A project is a folder on your PC the agent can work in. Give one a name and Relay makes the folder.
+              A project is a folder the agent can work in, on the brain or on any computer linked to it.
             </Text>
           ) : null}
           {projects?.length ? (
@@ -538,9 +638,12 @@ export default function Home() {
                       ) : (
                         <Avatar label={p.name} size={32} />
                       )}
-                      <Text style={[type.bodyLarge, styles.grow]} numberOfLines={1}>
-                        {p.name}
-                      </Text>
+                      <View style={styles.grow}>
+                        <Text style={type.bodyLarge} numberOfLines={1}>
+                          {p.name}
+                        </Text>
+                        <LocationChip location={p.location} compact />
+                      </View>
                     </Pressable>
                     {selecting ? null : (
                       <IconButton icon="dots-vertical" label={`Remove ${p.name}`} onPress={() => confirmDelete(p)} />
@@ -550,6 +653,49 @@ export default function Home() {
               ))}
             </View>
           ) : null}
+
+          <View style={styles.sectionRow}>
+            <Text style={[type.titleSmall, styles.section]}>Images</Text>
+            <Button title="New image project" icon="image-plus" variant="tonal" onPress={() => setAddingImages(true)} />
+          </View>
+          {imageProjects.length === 0 ? (
+            <Text style={[type.bodyMedium, styles.empty]}>
+              Make and refine pictures with an image model on your GPU. The chat model steps aside while it draws.
+            </Text>
+          ) : (
+            <View style={styles.group}>
+              {imageProjects.map((p, i) => (
+                <View key={p.id}>
+                  {i > 0 ? <View style={styles.divider} /> : null}
+                  <Pressable
+                    onPress={() => open({ pathname: '/images/[id]', params: { id: p.id, name: p.name } })}
+                    style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                      styles.item,
+                      (hovered || pressed) && styles.hover,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={p.name}
+                  >
+                    <View style={styles.cover}>
+                      {p.cover ? (
+                        <StoredImage name={p.cover} style={StyleSheet.absoluteFill} />
+                      ) : (
+                        <Icon name="image-multiple-outline" size={18} color={m3.onSurfaceVariant} />
+                      )}
+                    </View>
+                    <View style={styles.grow}>
+                      <Text style={type.bodyLarge} numberOfLines={1}>
+                        {p.name}
+                      </Text>
+                      <Text style={type.bodySmall} numberOfLines={1}>
+                        {p.chat_count === 1 ? '1 image chat' : `${p.chat_count} image chats`} · {relativeTime(p.updated_at)}
+                      </Text>
+                    </View>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
 
           <Pressable
             onPress={() => open('/archived')}
@@ -598,21 +744,32 @@ export default function Home() {
         visible={pickingModel}
         onClose={() => setPickingModel(false)}
         value={model}
-        defaultTitle={project?.model ? 'Same as the project' : 'The default model'}
+        defaultTitle={project?.model ? 'Same as the project' : routing ? 'Auto' : 'The default model'}
         defaultBody={
           project?.model
             ? `${project.name}: ${modelLabel(project.model)}`
-            : loaded
-              ? `Now: ${modelLabel(loaded)}`
-              : 'The model chosen in Settings'
+            : routing
+              ? autoRow(routing, loaded).body
+              : loaded
+                ? `Now: ${modelLabel(loaded)}`
+                : 'The model chosen in Settings'
         }
         onPick={async (path) => setModel(path || null)}
+      />
+      <NewImageProjectSheet
+        visible={addingImages}
+        onClose={() => setAddingImages(false)}
+        onCreated={(p) => {
+          setAddingImages(false);
+          emit('projects');
+          open({ pathname: '/images/[id]', params: { id: p.id, name: p.name } });
+        }}
       />
       <AddProjectSheet
         visible={adding}
         onClose={() => setAdding(false)}
-        onCreate={async (name, path) => {
-          const p = await client.createProject(name, path);
+        onCreate={async (name, path, deviceId) => {
+          const p = await client.createProject(name, path, deviceId);
           setAdding(false);
           choose(p.id);
           emit('projects');
@@ -686,6 +843,8 @@ function PairCard() {
 }
 
 const styles = StyleSheet.create({
+  working: { color: m3.primary },
+  brainPhone: { marginBottom: space.md },
   flex: { flex: 1, backgroundColor: m3.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: m3.surface },
   grow: { flex: 1, minWidth: 0 },
@@ -698,6 +857,19 @@ const styles = StyleSheet.create({
     paddingRight: space.xs,
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  appBarActions: { flexDirection: 'row', alignItems: 'center' },
+  badge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: m3.primary,
+  },
   content: { padding: space.lg },
   contentWide: { paddingHorizontal: space.xl, paddingTop: 72 },
   column: { width: '100%', maxWidth: 720, alignSelf: 'center', gap: space.md },
@@ -710,37 +882,21 @@ const styles = StyleSheet.create({
   },
   helloPhone: { justifyContent: 'flex-start', marginHorizontal: space.xs, marginBottom: space.xs },
   greetingWide: { fontSize: 40, lineHeight: 48 },
-  composer: {
-    backgroundColor: m3.surfaceContainerHigh,
-    borderRadius: radius.xl,
-    padding: space.md,
-    zIndex: 10,
-    borderWidth: 1,
-    borderColor: m3.outlineVariant,
-  },
-  input: {
-    minHeight: 56,
-    maxHeight: 320,
-    color: m3.onSurface,
-    fontSize: 17,
-    lineHeight: 25,
-    paddingHorizontal: space.md,
-    paddingTop: space.sm,
-  },
-  inputPhone: { minHeight: 44, fontSize: 16, lineHeight: 22 },
-  row: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm, marginTop: space.sm },
   topRow: { flexDirection: 'row', alignItems: 'center' },
   target: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+    height: 36,
+    flexShrink: 1,
+    paddingLeft: space.md,
+    paddingRight: space.sm,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: m3.outlineVariant,
   },
+  targetLabel: { flexShrink: 1, color: m3.onSurfaceVariant },
   targetOn: { backgroundColor: m3.secondaryContainer, borderColor: m3.secondaryContainer },
-  modelSlot: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 },
   hover: { backgroundColor: m3.hover },
   selected: { backgroundColor: m3.secondaryContainer },
   checkSlot: { width: 32, alignItems: 'center' },
@@ -776,12 +932,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 6,
   },
-  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  sendOn: { backgroundColor: m3.primary },
-  sendOff: { backgroundColor: m3.surfaceContainerHighest },
   menu: {
     position: 'absolute',
-    top: space.md + 44,
+    top: space.md + 40,
     left: space.md,
     width: 340,
     maxWidth: '92%',
@@ -828,6 +981,15 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   projectRow: { flexDirection: 'row', alignItems: 'center', paddingRight: space.xs },
+  cover: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: m3.surfaceContainerHigh,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: 52 },
   pair: {
     alignSelf: 'center',

@@ -12,3 +12,8 @@ model_path = "@MODEL@"
 port = 18082
 extra_args = ["--load-ms", "1500"]
 auto_setup = false
+
+[images]
+# A fake sd-server: gradient pictures, a few seconds each. Prompts with "fail" fail, "slow" take longer.
+sd_server_path = "@MOCK_SD@"
+port = 18771

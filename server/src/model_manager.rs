@@ -15,6 +15,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::config::{LlamaConfig, SharedConfig};
+use crate::gpu::Gpu;
 use crate::setup::{self, Hardware};
 
 const MAX_RESTARTS: usize = 3;
@@ -95,11 +96,20 @@ pub struct ModelManager {
     status: Arc<RwLock<ModelStatus>>,
     tx: mpsc::Sender<Cmd>,
     activity: Arc<Activity>,
+    /// How fast each model has written replies.
+    speeds: Arc<crate::stats::Speeds>,
+    /// Shared with the image model.
+    gpu: Arc<Gpu>,
 }
 
 impl ModelManager {
     /// Starts the supervisor task and returns immediately.
     pub fn start(shared: Arc<SharedConfig>, hardware: Hardware) -> Self {
+        Self::start_with_gpu(shared, hardware, Gpu::new())
+    }
+
+    /// Like [`ModelManager::start`], sharing the GPU with the image model.
+    pub fn start_with_gpu(shared: Arc<SharedConfig>, hardware: Hardware, gpu: Arc<Gpu>) -> Self {
         let cfg = shared.get().llama;
         let (data_dir, logs_dir) = shared.read(|l| (l.data_dir.clone(), l.logs_dir()));
         let status = Arc::new(RwLock::new(ModelStatus {
@@ -119,6 +129,7 @@ impl ModelManager {
             last_used: std::sync::Mutex::new(Instant::now()),
         });
         let sup = Supervisor {
+            gpu: gpu.clone(),
             activity: activity.clone(),
             cfg,
             shared,
@@ -130,11 +141,46 @@ impl ModelManager {
             http: reqwest::Client::new(),
         };
         tokio::spawn(sup.run());
-        Self {
+        let this = Self {
             status,
             tx,
             activity,
+            speeds: Arc::default(),
+            gpu: gpu.clone(),
+        };
+        let stopper = this.clone();
+        let busy = this.clone();
+        gpu.set_chat_hooks(
+            Arc::new(move || {
+                let m = stopper.clone();
+                Box::pin(async move { m.unload_and_wait().await })
+            }),
+            Arc::new(move || busy.in_use()),
+        );
+        this
+    }
+
+    /// Unloads the model and waits (up to 30 s) until llama-server stopped.
+    pub async fn unload_and_wait(&self) {
+        if !self.gpu.is_chat_loaded() {
+            // Not running, but maybe waiting to load: keep it unloaded.
+            let _ = self.tx.try_send(Cmd::Unload);
+            return;
         }
+        self.unload().await;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.gpu.is_chat_loaded() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    pub fn gpu(&self) -> &Arc<Gpu> {
+        &self.gpu
+    }
+
+    /// Writing speeds per model since Relay started.
+    pub fn speeds(&self) -> &crate::stats::Speeds {
+        &self.speeds
     }
 
     /// Notes that the model is wanted (a chat was opened or a prompt sent),
@@ -229,6 +275,7 @@ impl ModelManager {
 }
 
 struct Supervisor {
+    gpu: Arc<Gpu>,
     activity: Arc<Activity>,
     /// Snapshot taken at the start of each lifecycle.
     cfg: LlamaConfig,
@@ -327,6 +374,7 @@ impl Supervisor {
         }
         loop {
             let outcome = self.run_once().await;
+            self.gpu.chat_running(false);
             match outcome {
                 Outcome::Unloaded => {
                     failures.clear();
@@ -446,6 +494,11 @@ impl Supervisor {
             .unwrap_or_else(|e| e.into_inner())
             .model_path = self.cfg.model_path.clone();
 
+        // The image model may be on the GPU: wait for its picture, then stop it.
+        if let Some(outcome) = self.claim_gpu().await {
+            return outcome;
+        }
+
         let mut child = match self.spawn().await {
             Ok(c) => c,
             Err(e) => {
@@ -455,6 +508,7 @@ impl Supervisor {
             }
         };
         let pid = child.id();
+        self.gpu.chat_running(true);
         self.set(
             ModelState::Starting,
             Some("Loading model".into()),
@@ -516,6 +570,29 @@ impl Supervisor {
                         kill(&mut child).await;
                         return Outcome::Unloaded;
                     }
+                }
+            }
+        }
+    }
+
+    /// Takes the GPU from the image model. Some(outcome) if a command came
+    /// first (an unload, restart or shutdown).
+    async fn claim_gpu(&mut self) -> Option<Outcome> {
+        let status = self.status.clone();
+        let gpu = self.gpu.clone();
+        let claim = gpu.claim_for_chat(move || {
+            let mut s = status.write().unwrap_or_else(|e| e.into_inner());
+            s.message = Some("Waiting for a picture to finish".into());
+        });
+        tokio::pin!(claim);
+        loop {
+            tokio::select! {
+                _ = &mut claim => return None,
+                cmd = self.rx.recv() => {
+                    if matches!(cmd, Some(Cmd::Wake)) {
+                        continue;
+                    }
+                    return Some(cmd_outcome(cmd));
                 }
             }
         }

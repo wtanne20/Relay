@@ -19,6 +19,8 @@ import { Icon, IconButton } from './ui';
 
 /** Blocks scripts and every network request; inline styles and data: images only. */
 const CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+/** Before the model's own styles, as the server does: no body margin, borders inside widths. */
+const RESET = '<style>html,body{margin:0}*,*::before,*::after{box-sizing:border-box}</style>';
 const DEFAULT_SIZE = { width: 1280, height: 800 };
 /** Tall mockups (phone screens) are shrunk to this height in the chat. */
 const INLINE_MAX_HEIGHT = 520;
@@ -42,7 +44,7 @@ export function mockupSize(source: string): { width: number; height: number } {
 
 /** The page to show: the content policy first in <head>, as the server does. */
 export function mockupPage(source: string, svg: boolean): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${CSP}"><meta charset="utf-8">`;
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${CSP}"><meta charset="utf-8">${RESET}`;
   if (svg) {
     return `<!doctype html><html><head>${meta}<style>html,body{margin:0;background:#fff}svg{display:block;max-width:100%;height:auto}</style></head><body>${source}</body></html>`;
   }
@@ -59,7 +61,15 @@ export function mockupPage(source: string, svg: boolean): string {
   return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
 }
 
-/** Live, sandboxed preview for the desktop app: no scripts, no network. */
+/**
+ * Live, sandboxed preview for the desktop app: no scripts, no network.
+ *
+ * Once it has loaded, the frame is measured: a design wider than the size it
+ * asked for (a fixed-width layout, a drawn phone bezel) is shrunk to fit
+ * whole instead of being cut off on the right. Reading the frame needs
+ * allow-same-origin; scripts stay off (no allow-scripts, and the content
+ * policy blocks them), so nothing inside can use that.
+ */
 function Frame({
   page,
   size,
@@ -71,17 +81,26 @@ function Frame({
   width: number;
   maxHeight: number;
 }) {
-  const scale = Math.min(1, width / size.width, maxHeight / size.height);
+  const [content, setContent] = useState(size);
+  useEffect(() => setContent(size), [page, size.width, size.height]); // eslint-disable-line react-hooks/exhaustive-deps
+  const measure = (e: { currentTarget: HTMLIFrameElement }) => {
+    const doc = e.currentTarget.contentDocument?.documentElement;
+    if (!doc) return;
+    const w = Math.min(4 * size.width, Math.max(size.width, Math.ceil(doc.scrollWidth)));
+    if (w !== content.width) setContent({ width: w, height: Math.round((size.height * w) / size.width) });
+  };
+  const scale = Math.min(1, width / content.width, maxHeight / content.height);
   return (
-    <View style={{ width: size.width * scale, height: size.height * scale, overflow: 'hidden' }}>
+    <View style={{ width: content.width * scale, height: content.height * scale, overflow: 'hidden' }}>
       {createElement('iframe', {
         srcDoc: page,
-        sandbox: '',
+        sandbox: 'allow-same-origin',
         referrerPolicy: 'no-referrer',
         title: 'Mockup',
+        onLoad: measure,
         style: {
-          width: size.width,
-          height: size.height,
+          width: content.width,
+          height: content.height,
           border: 0,
           // The wrapper is a flex box: without this the frame shrinks to fit
           // before it is scaled, and the mockup comes out cut short.

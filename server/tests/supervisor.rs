@@ -30,25 +30,27 @@ fn start(
     )
 }
 
-/// Path to the mock_llama example binary, building it if needed.
+/// Path to the mock_llama example binary, building it if needed. Cargo says
+/// where it put the binary: the test executable's own folder isn't a guide,
+/// because newer Cargo versions keep test binaries under `target/*/build/`.
 fn mock_exe() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.parent()?.join("examples");
-    let p = dir.join(format!("mock_llama{}", std::env::consts::EXE_SUFFIX));
-    if !p.is_file() {
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "--example", "mock_llama"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .ok()?;
-        assert!(status.success(), "building the mock_llama example failed");
-    }
+    let out = std::process::Command::new(env!("CARGO"))
+        .args(["build", "--example", "mock_llama", "--message-format=json"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .ok()?;
+    assert!(out.status.success(), "building the mock_llama example failed");
+    let p = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["target"]["name"] == "mock_llama")
+        .find_map(|v| v["executable"].as_str().map(PathBuf::from));
     assert!(
-        p.is_file(),
-        "mock_llama example not found at {}",
-        p.display()
+        p.as_ref().is_some_and(|p| p.is_file()),
+        "mock_llama example not found ({p:?})"
     );
-    Some(p)
+    p
 }
 
 fn free_port() -> u16 {
