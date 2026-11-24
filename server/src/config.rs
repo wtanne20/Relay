@@ -179,7 +179,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_steps: 50,
+            max_steps: 100,
             command_timeout_seconds: 120,
             approval: ApprovalMode::Never,
             thinking: true,

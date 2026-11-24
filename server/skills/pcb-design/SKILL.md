@@ -21,6 +21,16 @@ Run commands with **KiCad's Python**, which has KiCad's `pcbnew` module:
 
 The examples below write this as `pcb <command>`.
 
+**Give long commands time.** `layout`, `route` and `fab` run KiCad and the router and take from under a
+minute to 10+ minutes, far longer than run_command's default timeout. Always pass `timeout_seconds`:
+`900` for `layout`, `1800` for `route` and `fab`. If a command still says it timed out, run it again with
+`3600`; don't switch approach.
+
+**Work straight through.** This is one long task: after each command, read the output and immediately
+make your next tool call (fix the design, run the next step). Don't stop to report progress or to say
+what you'll do next; the user sees every step as it happens. Stop only when `pcb fab` prints `DONE` and
+you hand over (section 6), or when you need a decision only the user can make (say exactly what).
+
 First run `pcb doctor`. If something is missing, tell the user exactly what to install:
 
 - **KiCad 9**: https://www.kicad.org/download/ (includes kicad-cli, symbols, footprints and 3D models)
@@ -121,7 +131,8 @@ Read the output, change the design file, run the same command again. Typical fix
 | `unconnected` after routing | give the router room near the listed position, then route again |
 | `clearance` | move parts apart, or lower that netclass's clearance (JLCPCB minimum 0.127 mm) |
 
-Don't edit files in `build/` by hand; they are regenerated. `routing` takes 10 seconds to a few minutes.
+Don't edit files in `build/` by hand; they are regenerated. Routing takes 10 seconds to several minutes,
+so use the timeouts from section 0.
 `--passes 80` gives Freerouting more attempts on a hard board.
 
 ## 5. Outputs (`fab/`)

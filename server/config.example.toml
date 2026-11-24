@@ -20,7 +20,7 @@ shell = "powershell.exe"
 
 [agent]
 # Model round-trips per prompt before the agent stops.
-max_steps = 50
+max_steps = 100
 # run_command timeout when the model doesn't pick one.
 command_timeout_seconds = 120
 # "never" (fully autonomous), "commands" (ask before run_command) or

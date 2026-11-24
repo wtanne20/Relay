@@ -995,7 +995,7 @@ impl DeviceClient {
                 let mut out = String::new();
                 match state {
                     "timed_out" => {
-                        out.push_str(&format!("timed out after {timeout}s; process killed\n"))
+                        out.push_str(&format!("timed out after {timeout}s; process killed. If it needs longer, run it again with a larger timeout_seconds (up to {MAX}).\n", MAX = crate::tools::MAX_COMMAND_TIMEOUT))
                     }
                     "cancelled" => out.push_str("cancelled by user; process killed\n"),
                     _ => {

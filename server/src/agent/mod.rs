@@ -1119,6 +1119,11 @@ impl AgentManager {
         // them was a loop (then repetition is penalized harder from here on).
         let mut continues = 0;
         let mut loop_guard = false;
+        // Replies that announced a next step without acting, carried on so far,
+        // and whether any tool ran since the last one (so a model that keeps
+        // only announcing isn't nudged forever).
+        let mut nudges = 0;
+        let mut used_tools = false;
         let mut pictures: HashMap<String, String> = HashMap::new();
         let steer = self.steer_slot(&session.id);
         while step < conf.agent.max_steps {
@@ -1314,6 +1319,30 @@ impl AgentManager {
                 let saved = self.save(&session.id, note).await?;
                 self.emit(&session.id, Event::Message { message: saved });
                 continue;
+            }
+            // A local model often ends a turn by saying what it will do next
+            // ("Now I'll route the board.") instead of doing it, which leaves
+            // the task paused until the user says "continue". Carry it on,
+            // once per announcement, as long as tools ran since the last nudge.
+            if turn.tool_calls.is_empty()
+                && used_tools
+                && nudges < MAX_NUDGES
+                && announces_next_step(&turn.content)
+            {
+                nudges += 1;
+                used_tools = false;
+                tracing::info!("reply announced a next step without acting; continuing ({nudges}/{MAX_NUDGES})");
+                let note = NewMessage {
+                    role: CONTINUE_ROLE.into(),
+                    content: NUDGE_PROMPT.into(),
+                    ..Default::default()
+                };
+                let saved = self.save(&session.id, note).await?;
+                self.emit(&session.id, Event::Message { message: saved });
+                continue;
+            }
+            if !turn.tool_calls.is_empty() {
+                used_tools = true;
             }
             if turn.tool_calls.is_empty() {
                 // A message came in while the answer was being written: carry
@@ -2156,6 +2185,69 @@ const LOOP_PRESENCE_PENALTY: f64 = 1.5;
 /// Relay's own "carry on" note after a cut-off reply. The model sees it as a
 /// user message; the chat shows it as a small marker.
 pub const CONTINUE_ROLE: &str = "continue";
+/// How many times one run is carried on after a reply that only announced
+/// its next step.
+const MAX_NUDGES: usize = 6;
+/// The note that carries such a reply on.
+const NUDGE_PROMPT: &str = "(Relay) You said what you'll do next but didn't do it, so the task stopped. Carry on now: make the tool calls instead of describing them, and keep going until the task is finished. If it is already finished, or you need something from the user, say so plainly instead.";
+
+/// True when a reply with no tool calls ends by announcing a next step
+/// ("Now I'll run the router:", "Let me fix the footprint.") rather than
+/// finishing or asking the user something.
+fn announces_next_step(content: &str) -> bool {
+    let text = outside_code(content);
+    let text = text.trim();
+    if text.is_empty() {
+        // Nothing said and nothing done after working with tools: a stall.
+        return true;
+    }
+    if text.ends_with('?') {
+        return false;
+    }
+    let last = text
+        .rsplit("\n\n")
+        .map(str::trim)
+        .find(|p| !p.is_empty())
+        .unwrap_or("")
+        .to_lowercase()
+        .replace('\u{2019}', "'");
+    const ASKS: [&str; 9] = [
+        "let me know",
+        "would you like",
+        "do you want",
+        "should i",
+        "if you'd like",
+        "if you want",
+        "shall i",
+        "want me to",
+        "tell me",
+    ];
+    if ASKS.iter().any(|a| last.contains(a)) {
+        return false;
+    }
+    if last.ends_with(':') {
+        return true;
+    }
+    const NEXT: [&str; 12] = [
+        "i'll ",
+        "i will ",
+        "let me ",
+        "i'm going to ",
+        "i am going to ",
+        "let's ",
+        "next, i",
+        "next i",
+        "now i",
+        "i need to ",
+        "i'm now going",
+        "proceeding to",
+    ];
+    // Only the last sentence or two: "I'll" earlier in a summary is history.
+    let chars: Vec<char> = last.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(220)..].iter().collect();
+    NEXT.iter().any(|n| tail.contains(n))
+}
+
 /// How much of an unfinished thought is handed back (characters).
 const THOUGHT_TAIL: usize = 3000;
 
@@ -2427,6 +2519,18 @@ mod tests {
         assert!(!needs_approval(ApprovalMode::Commands, "write_file"));
         assert!(needs_approval(ApprovalMode::AllChanges, "edit_file"));
         assert!(!needs_approval(ApprovalMode::AllChanges, "read_file"));
+    }
+
+    #[test]
+    fn spots_a_reply_that_only_announces_its_next_step() {
+        assert!(announces_next_step("The checks pass. Now I'll route the board:"));
+        assert!(announces_next_step("ERC is clean.\n\nNext, I need to run the layout step."));
+        assert!(announces_next_step("Let me fix the courtyard overlap by moving C3."));
+        assert!(announces_next_step(""));
+        assert!(!announces_next_step("The board is done. Files are in fab/. Let me know if you want changes."));
+        assert!(!announces_next_step("Should I use a 12 V or 24 V supply?"));
+        assert!(!announces_next_step("I'll explain what each file is for.\n\nThe Gerbers go to JLCPCB and the BOM lists every part. Everything passed."));
+        assert!(!announces_next_step("```\nlet me = 1;\n```\nDone: the script is written and tested."));
     }
 
     #[test]
