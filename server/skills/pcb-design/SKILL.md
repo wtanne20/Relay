@@ -134,7 +134,7 @@ Don't edit files in `build/` by hand; they are regenerated. `routing` takes 10 s
 | `renders/top.png`, `bottom.png`, `angle.png` | photo-style renders |
 | `renders/*.svg` | copper and assembly drawings |
 | `<name>.step` | 3D model for mechanical CAD (enclosures) |
-| `<name>.glb` | 3D model for viewers |
+| `<name>.glb` | 3D model; the Relay app shows it in 3D from a download link |
 | `REVIEW.md` | what a person must check before ordering |
 
 The KiCad project in `build/` opens in KiCad for manual tweaks. After hand edits, run `pcb drc design.py`.
@@ -145,7 +145,15 @@ Running `layout` or `route` again regenerates the board and discards hand edits.
 ERC and DRC passing means the board is manufacturable and matches the schematic. It does **not** mean
 the circuit works. When you finish, give the user:
 
-1. The renders and the list of output files.
+1. The renders and the list of output files, each as a download link on its own line, with the path
+   relative to the project folder. Always link the 3D model: the Relay app adds a **View in 3D** button
+   to `.glb` links, so the user can spin the board on their phone or desktop.
+
+   ```
+   [Download led-strip-controller.glb](relay-download://boards/led-strip/fab/led-strip-controller.glb)
+   [Download angle.png](relay-download://boards/led-strip/fab/renders/angle.png)
+   [Download led-strip-controller-gerbers.zip](relay-download://boards/led-strip/fab/led-strip-controller-gerbers.zip)
+   ```
 2. Everything in `REVIEW.md`, especially: footprints you weren't sure matched the real part, pinouts
    you took from the symbol without checking a datasheet, power path choices (current ratings, fusing,
    reverse polarity, voltage ratings), and parts without LCSC numbers.
