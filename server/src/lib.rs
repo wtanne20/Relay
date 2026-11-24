@@ -7,7 +7,9 @@ pub mod config;
 pub mod db;
 pub mod device;
 pub mod files;
+pub mod gpu;
 pub mod hub;
+pub mod imagegen;
 pub mod images;
 pub mod knowledge;
 pub mod libraries;
@@ -59,6 +61,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         tracing::warn!("marked {stale} interrupted session(s) as stopped");
     }
     db.call(|c| tasks::reset_stale(c)).await?;
+    db.call(|c| imagegen::store::reset_stale(c)).await?;
 
     let (hardware, tailscale) = tokio::join!(setup::detect_hardware(), setup::detect_tailscale());
     for g in &hardware.gpus {
@@ -66,7 +69,15 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     }
     let data_dir = cfg.data_dir.clone();
     let shared = SharedConfig::new(cfg);
-    let model = ModelManager::start(shared.clone(), hardware.clone());
+    let gpu = gpu::Gpu::new();
+    let model = ModelManager::start_with_gpu(shared.clone(), hardware.clone(), gpu.clone());
+    let image_gen = imagegen::ImageGen::new(
+        db.clone(),
+        shared.clone(),
+        hardware.clone(),
+        gpu,
+        images::dir(&data_dir),
+    );
     let pusher = Pusher::new(db.clone(), shared.clone());
     let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
     let links = Arc::new(link::LinkHub::default());
@@ -90,6 +101,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         tailscale,
         db,
         model,
+        images: image_gen,
         agent,
         pusher,
         tasks,
@@ -255,6 +267,7 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
     state.agent.stop_all().await;
     tracing::info!("stopping llama-server");
     state.model.shutdown().await;
+    state.images.engine.stop().await;
     tracing::info!("bye");
     Ok(ServeOutcome::Stopped)
 }

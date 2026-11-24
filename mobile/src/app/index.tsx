@@ -14,6 +14,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AddProjectSheet } from '../components/AddProjectSheet';
+import { StoredImage } from '../components/ImageBits';
+import { NewImageProjectSheet } from '../components/NewImageProjectSheet';
 import { alert } from '../components/Dialogs';
 import { useAttachments } from '../components/Attachments';
 import { Composer } from '../components/Composer';
@@ -29,6 +31,7 @@ import { relativeTime } from '../lib/format';
 import { useWide } from '../lib/layout';
 import { autoRow, useRouting } from '../lib/routing';
 import { loadLastTarget, saveLastTarget } from '../lib/storage';
+import { imagesApi, type ImageProject } from '../lib/images';
 import { CHATS_ID, type Project, type Session } from '../lib/types';
 
 const CHATS_SHOWN = 12;
@@ -66,6 +69,8 @@ export default function Home() {
   const chosen = useRef(false);
   const [picking, setPicking] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [imageProjects, setImageProjects] = useState<ImageProject[]>([]);
+  const [addingImages, setAddingImages] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -92,6 +97,10 @@ export default function Home() {
         .then((q) => setTaskCount(q.queued + q.running))
         .catch(() => setTaskCount(0));
       setLoaded(m?.default_model || m?.model_path || null);
+      imagesApi(client)
+        .projects()
+        .then(setImageProjects)
+        .catch(() => setImageProjects([]));
       setTarget((cur) => (cur === CHATS_ID || ps.some((p) => p.id === cur) ? cur : CHATS_ID));
       setError(null);
     } catch (e) {
@@ -645,6 +654,49 @@ export default function Home() {
             </View>
           ) : null}
 
+          <View style={styles.sectionRow}>
+            <Text style={[type.titleSmall, styles.section]}>Images</Text>
+            <Button title="New image project" icon="image-plus" variant="tonal" onPress={() => setAddingImages(true)} />
+          </View>
+          {imageProjects.length === 0 ? (
+            <Text style={[type.bodyMedium, styles.empty]}>
+              Make and refine pictures with an image model on your GPU. The chat model steps aside while it draws.
+            </Text>
+          ) : (
+            <View style={styles.group}>
+              {imageProjects.map((p, i) => (
+                <View key={p.id}>
+                  {i > 0 ? <View style={styles.divider} /> : null}
+                  <Pressable
+                    onPress={() => open({ pathname: '/images/[id]', params: { id: p.id, name: p.name } })}
+                    style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
+                      styles.item,
+                      (hovered || pressed) && styles.hover,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={p.name}
+                  >
+                    <View style={styles.cover}>
+                      {p.cover ? (
+                        <StoredImage name={p.cover} style={StyleSheet.absoluteFill} />
+                      ) : (
+                        <Icon name="image-multiple-outline" size={18} color={m3.onSurfaceVariant} />
+                      )}
+                    </View>
+                    <View style={styles.grow}>
+                      <Text style={type.bodyLarge} numberOfLines={1}>
+                        {p.name}
+                      </Text>
+                      <Text style={type.bodySmall} numberOfLines={1}>
+                        {p.chat_count === 1 ? '1 image chat' : `${p.chat_count} image chats`} · {relativeTime(p.updated_at)}
+                      </Text>
+                    </View>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
+
           <Pressable
             onPress={() => open('/archived')}
             style={({ hovered, pressed }: { pressed: boolean; hovered?: boolean }) => [
@@ -703,6 +755,15 @@ export default function Home() {
                 : 'The model chosen in Settings'
         }
         onPick={async (path) => setModel(path || null)}
+      />
+      <NewImageProjectSheet
+        visible={addingImages}
+        onClose={() => setAddingImages(false)}
+        onCreated={(p) => {
+          setAddingImages(false);
+          emit('projects');
+          open({ pathname: '/images/[id]', params: { id: p.id, name: p.name } });
+        }}
       />
       <AddProjectSheet
         visible={adding}
@@ -920,6 +981,15 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   projectRow: { flexDirection: 'row', alignItems: 'center', paddingRight: space.xs },
+  cover: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: m3.surfaceContainerHigh,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant, marginLeft: 52 },
   pair: {
     alignSelf: 'center',

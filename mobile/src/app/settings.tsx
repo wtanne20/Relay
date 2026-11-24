@@ -371,6 +371,12 @@ export default function SettingsScreen() {
           onPress={() => router.push('/stats')}
         />
         <NavRow icon="restart" label={restarting ? 'Restarting model…' : 'Restart model'} onPress={restartModel} />
+        <NavRow
+          icon="palette-outline"
+          label="Image models"
+          value="Picture models, their folders, and the image engine"
+          onPress={() => router.push('/image-models')}
+        />
       </Group>
 
       <SectionTitle title="Agent" />

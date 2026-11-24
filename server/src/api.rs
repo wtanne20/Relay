@@ -34,6 +34,8 @@ pub struct AppInner {
     pub tailscale: Option<Tailscale>,
     pub db: Db,
     pub model: ModelManager,
+    /// Image generation (sd-server), sharing the GPU with the model.
+    pub images: Arc<crate::imagegen::ImageGen>,
     pub agent: Arc<AgentManager>,
     pub pusher: Pusher,
     /// The task queue and schedules.
@@ -267,6 +269,7 @@ pub fn router(state: AppState) -> Router {
         .route("/knowledge/{id}/reindex", post(reindex_knowledge))
         .route("/hello", get(hello))
         .merge(crate::tasks::routes())
+        .merge(crate::imagegen::routes::routes())
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.

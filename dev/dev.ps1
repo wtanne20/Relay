@@ -29,12 +29,13 @@ if ($Mock) {
   New-Item -ItemType Directory -Force $data | Out-Null
   $cfg = Join-Path $data 'config.toml'
   if (-not (Test-Path $cfg)) {
-    Push-Location "$root\server"; cargo build --example mock_llama; Pop-Location
+    Push-Location "$root\server"; cargo build --example mock_llama --example mock_sd; Pop-Location
     $mock = (Join-Path $root 'server\target\debug\examples\mock_llama.exe') -replace '\\', '/'
+    $mockSd = (Join-Path $root 'server\target\debug\examples\mock_sd.exe') -replace '\\', '/'
     $model = (Join-Path $data 'model.gguf') -replace '\\', '/'
     Set-Content -Path (Join-Path $data 'model.gguf') -Value 'GGUF'
     (Get-Content (Join-Path $PSScriptRoot 'mock-config.toml') -Raw).
-      Replace('@MOCK_LLAMA@', $mock).Replace('@MODEL@', $model) | Set-Content $cfg
+      Replace('@MOCK_LLAMA@', $mock).Replace('@MOCK_SD@', $mockSd).Replace('@MODEL@', $model) | Set-Content $cfg
   }
   $env:RELAY_CONFIG = $cfg
   Write-Host "Mock mode: server on port 8766, data in $data" -ForegroundColor Cyan
