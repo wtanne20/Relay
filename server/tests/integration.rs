@@ -530,7 +530,7 @@ async fn settings_skills_and_approvals() {
 
     // --- settings ---
     let s = h.get("/settings").await;
-    assert_eq!(s["settings"]["agent"]["max_steps"], 50);
+    assert_eq!(s["settings"]["agent"]["max_steps"], 100);
     assert_eq!(s["settings"]["sampling"]["temperature"], 0.6);
     assert_eq!(s["tools"].as_array().map(Vec::len), Some(8));
     assert!(
