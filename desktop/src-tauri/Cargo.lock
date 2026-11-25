@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "relay-desktop"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "anyhow",
  "relay",
