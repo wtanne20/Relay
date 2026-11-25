@@ -437,7 +437,7 @@ async fn run_command(ctx: &ToolContext, args: &Value, cancel: &CancellationToken
             let mut out = String::new();
             match (r.exit_code, r.timed_out, r.cancelled) {
                 (_, true, _) => {
-                    out.push_str(&format!("timed out after {timeout}s; process killed\n"))
+                    out.push_str(&format!("timed out after {timeout}s; process killed. If it needs longer, run it again with a larger timeout_seconds (up to {MAX}).\n", MAX = MAX_COMMAND_TIMEOUT))
                 }
                 (_, _, true) => out.push_str("cancelled by user; process killed\n"),
                 (Some(c), _, _) => out.push_str(&format!("exit_code: {c}\n")),

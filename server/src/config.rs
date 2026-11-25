@@ -179,7 +179,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_steps: 50,
+            max_steps: 100,
             command_timeout_seconds: 120,
             approval: ApprovalMode::Never,
             thinking: true,
@@ -573,10 +573,13 @@ impl LoadedConfig {
         self.resolve(&self.config.system_prompt_path)
     }
 
-    /// All skill roots: `skills/` in the data folder, then configured extra
-    /// paths.
+    /// All skill roots: `skills/` in the data folder, the skills that ship
+    /// with Relay, then configured extra paths.
     pub fn skill_roots(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.data_dir.join("skills")];
+        if let Some(bundled) = bundled_skills_dir() {
+            roots.push(bundled);
+        }
         for p in &self.config.skills_paths {
             let r = self.resolve(p);
             let key = dunce::canonicalize(&r).unwrap_or_else(|_| r.clone());
@@ -716,6 +719,15 @@ Guidelines:
 - When you are done, reply with a concise summary of what you changed and anything the user should check.
 - If a request is ambiguous, make a reasonable choice and say what you assumed.
 "#;
+
+/// Skills that ship with Relay: the `skills` folder the installer puts next
+/// to relay.exe and relay-desktop.exe. `None` when there isn't one (tests,
+/// `cargo run`).
+pub fn bundled_skills_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.join("skills");
+    dir.is_dir().then_some(dir)
+}
 
 #[cfg(test)]
 mod tests {

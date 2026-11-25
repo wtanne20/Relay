@@ -1,4 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from 'react';
+import { router } from 'expo-router';
 import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { describeError } from '../lib/api';
@@ -273,34 +274,47 @@ function DownloadButton({ label, path }: { label: string; path: string }) {
   }
   return (
     <View style={styles.downloadWrap}>
-      <Pressable
-        onPress={async () => {
-          setBusy(true);
-          setError(null);
-          try {
-            await dl.download(path);
-          } catch (e) {
-            setError(describeError(e));
-          } finally {
-            setBusy(false);
-          }
-        }}
-        disabled={busy}
-        style={({ pressed }) => [
-          styles.linkButton,
-          pressed && !busy && { backgroundColor: colors.surfaceRaised },
-          busy && { opacity: 0.7 },
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel={`Download ${label}`}
-      >
-        {busy ? (
-          <ActivityIndicator size="small" color={colors.accent} />
-        ) : (
-          <Icon name="download" size={16} color={colors.accent} />
-        )}
-        <Text style={styles.linkButtonText}>{busy ? 'Downloading…' : label}</Text>
-      </Pressable>
+      <View style={styles.downloadRow}>
+        <Pressable
+          onPress={async () => {
+            setBusy(true);
+            setError(null);
+            try {
+              await dl.download(path);
+            } catch (e) {
+              setError(describeError(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          disabled={busy}
+          style={({ pressed }) => [
+            styles.linkButton,
+            pressed && !busy && { backgroundColor: colors.surfaceRaised },
+            busy && { opacity: 0.7 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={`Download ${label}`}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={colors.accent} />
+          ) : (
+            <Icon name="download" size={16} color={colors.accent} />
+          )}
+          <Text style={styles.linkButtonText}>{busy ? 'Downloading…' : label}</Text>
+        </Pressable>
+        {/\.(glb)$/i.test(path) ? (
+          <Pressable
+            onPress={() => router.push({ pathname: '/model3d', params: { projectId: dl.projectId, path } })}
+            style={({ pressed }) => [styles.linkButton, pressed && { backgroundColor: colors.surfaceRaised }]}
+            accessibilityRole="button"
+            accessibilityLabel={`View ${path.split('/').pop()} in 3D`}
+          >
+            <Icon name="rotate-3d-variant" size={16} color={colors.accent} />
+            <Text style={styles.linkButtonText}>View in 3D</Text>
+          </Pressable>
+        ) : null}
+      </View>
       {error ? <Text style={styles.downloadError}>{error}</Text> : null}
     </View>
   );
@@ -512,6 +526,7 @@ const styles = StyleSheet.create({
   },
   linkButtonText: { color: colors.accent, fontSize: 14, fontWeight: '600' },
   downloadWrap: { alignItems: 'flex-start', gap: 2 },
+  downloadRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   downloadError: { color: colors.danger, fontSize: 13, paddingLeft: space.md },
   cellText: { fontSize: 14, lineHeight: 20 },
 });

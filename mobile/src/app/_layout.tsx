@@ -204,6 +204,7 @@ export default function RootLayout() {
               <Stack.Screen name="images/[id]" options={{ title: 'Images' }} />
               <Stack.Screen name="image/[id]" options={{ headerShown: false }} />
               <Stack.Screen name="image-models" options={{ title: 'Image models' }} />
+              <Stack.Screen name="model3d" options={{ title: '3D view' }} />
             </Stack>
           </Shell>
         </ThemeProvider>

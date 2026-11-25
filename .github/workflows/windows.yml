@@ -61,6 +61,10 @@ jobs:
         working-directory: server
         run: cargo test --locked
 
+      - name: Test the PCB design skill (parts that don't need KiCad)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: python -m unittest discover -s server/skills/pcb-design/scripts -p "test_*.py"
+
       - name: Build relay.exe
         working-directory: server
         run: cargo build --release --locked
@@ -118,6 +122,7 @@ jobs:
           $exe = "$env:ProgramFiles\Relay\relay.exe"
           if (-not (Test-Path $exe)) { throw "relay.exe was not installed" }
           if (-not (Test-Path "$env:ProgramFiles\Relay\relay-desktop.exe")) { throw "relay-desktop.exe was not installed" }
+          if (-not (Test-Path "$env:ProgramFiles\Relay\skills\pcb-design\SKILL.md")) { throw "bundled skills were not installed" }
           Write-Host "Installed. Checking version"
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "relay.exe --version failed" }

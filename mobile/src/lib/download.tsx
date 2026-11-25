@@ -17,11 +17,7 @@ import { useClient } from './connection';
  * @param projectId  The project the file belongs to.
  * @param path       Path relative to the project folder (e.g. "app-release.apk").
  */
-export async function downloadAndOpen(
-  client: RelayClient,
-  projectId: string,
-  path: string,
-): Promise<void> {
+export async function downloadAndOpen(client: RelayClient, projectId: string, path: string): Promise<void> {
   const url = `${client.creds.url}/projects/${encodeURIComponent(projectId)}/download?path=${encodeURIComponent(path)}`;
   const filename = path.split('/').pop()?.split('\\').pop() ?? 'file';
   const headers = { Authorization: `Bearer ${client.creds.token}` };
@@ -31,6 +27,69 @@ export async function downloadAndOpen(
   } else {
     await webDownload(url, filename, headers);
   }
+}
+
+/** Bytes per chunk handed to the 3D viewer (a multiple of 3, so base64 chunks stay independent). */
+export const CHUNK_BYTES = 3 * 256 * 1024;
+
+/** A project file held on this device, read back in base64 chunks. */
+export interface FileChunks {
+  size: number;
+  chunks: number;
+  read: (index: number) => Promise<string>;
+  /** Frees the local copy. */
+  dispose: () => void;
+}
+
+/**
+ * Fetches a project file for in-app viewing (the 3D board viewer) and
+ * returns a reader for base64 chunks of it. The auth token stays in the
+ * request header; nothing sensitive goes into a URL or the web view.
+ */
+export async function fetchProjectFile(client: RelayClient, projectId: string, path: string): Promise<FileChunks> {
+  const url = `${client.creds.url}/projects/${encodeURIComponent(projectId)}/download?path=${encodeURIComponent(path)}`;
+  const headers = { Authorization: `Bearer ${client.creds.token}` };
+
+  if (Platform.OS === 'android') {
+    const dir = FileSystem.cacheDirectory;
+    if (!dir) throw new Error('no space for the download');
+    const file = `${dir}view-${Date.now()}.bin`;
+    const res = await FileSystem.downloadAsync(url, file, { headers });
+    if (res.status !== 200) {
+      await FileSystem.deleteAsync(file, { idempotent: true });
+      throw new Error(`the download failed (HTTP ${res.status})`);
+    }
+    const info = await FileSystem.getInfoAsync(file);
+    const size = info.exists ? info.size : 0;
+    return {
+      size,
+      chunks: Math.ceil(size / CHUNK_BYTES),
+      read: (i) =>
+        FileSystem.readAsStringAsync(file, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: i * CHUNK_BYTES,
+          length: Math.min(CHUNK_BYTES, size - i * CHUNK_BYTES),
+        }),
+      dispose: () => void FileSystem.deleteAsync(file, { idempotent: true }).catch(() => {}),
+    };
+  }
+
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`the download failed (HTTP ${res.status})`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  return {
+    size: bytes.length,
+    chunks: Math.ceil(bytes.length / CHUNK_BYTES),
+    read: async (i) => {
+      const part = bytes.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
+      let bin = '';
+      for (let o = 0; o < part.length; o += 0x8000) {
+        bin += String.fromCharCode.apply(null, Array.from(part.subarray(o, o + 0x8000)));
+      }
+      return btoa(bin);
+    },
+    dispose: () => {},
+  };
 }
 
 /** Android: download to the cache, then hand it to the system handler. */
@@ -103,6 +162,8 @@ function mimeFor(filename: string): string {
 // ---------------------------------------------------------------------------
 
 interface DownloadValue {
+  /** The project the links belong to. */
+  projectId: string;
   /** Download a project-relative file and open it. */
   download: (path: string) => Promise<void>;
 }
@@ -113,17 +174,12 @@ const DownloadContext = createContext<DownloadValue | null>(null);
  * Wraps the chat so any rendered `relay-download://<path>` link can fetch
  * the file from this project. Reads the client from the connection context.
  */
-export function DownloadProvider({
-  projectId,
-  children,
-}: {
-  projectId: string | null;
-  children: ReactNode;
-}) {
+export function DownloadProvider({ projectId, children }: { projectId: string | null; children: ReactNode }) {
   const client = useClient();
   const value = useMemo<DownloadValue | null>(() => {
     if (!client || !projectId) return null;
     return {
+      projectId,
       download: (path: string) => downloadAndOpen(client, projectId, path),
     };
   }, [client, projectId]);

@@ -128,6 +128,8 @@ jobs:
             PKG=Relay-$v-arm64-proot
             mkdir -p "dist/$PKG"
             cp desktop/src-tauri/target/release/relay-desktop "dist/$PKG/relay-desktop"
+            # Skills that ship with Relay; read from `skills` next to the executable.
+            cp -r server/skills "dist/$PKG/skills"
             cp desktop/src-tauri/icons/128x128.png "dist/$PKG/relay.png"
             cp dev/proot-install.sh "dist/$PKG/install.sh"
             chmod +x "dist/$PKG/relay-desktop" "dist/$PKG/install.sh"
