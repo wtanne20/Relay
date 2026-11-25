@@ -1,6 +1,6 @@
 {
   "name": "relay-mobile",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/dom-webview": "~58.0.2",
