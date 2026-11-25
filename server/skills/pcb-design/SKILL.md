@@ -12,6 +12,10 @@ design file and re-run until the checks pass.
 
 `SKILL_DIR` below means the folder this SKILL.md is in. Run every command from the project folder.
 
+**Read `SKILL_DIR/GUIDE.md` before you start a board.** It is the design guide: requirements to ask
+for, power and part choices, circuit rules per block, placement, routing, things to avoid, and the
+checklist to pass before hand-over. This file covers the commands; the guide covers the decisions.
+
 ## 0. Tools
 
 Run commands with **KiCad's Python**, which has KiCad's `pcbnew` module:
@@ -170,4 +174,5 @@ the circuit works. When you finish, give the user:
    reverse polarity, voltage ratings), and parts without LCSC numbers.
 3. A reminder to check JLCPCB's assembly preview for part rotation before paying.
 
-Add a `d.review(...)` line for every judgement call you made, so it lands in `REVIEW.md`.
+Add a `d.review(...)` line for every judgement call you made, so it lands in `REVIEW.md`. Go through
+the pre-hand-over checklist in `GUIDE.md` (section 11) before you report.
