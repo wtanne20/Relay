@@ -213,9 +213,148 @@ class Libraries:
             pads.add(str(p[1]))
         return pads
 
+    def footprint_box(self, fp_id):
+        """The part's real size, from its footprint file, in mm relative to
+        the footprint origin at rotation 0: (x0, y0, x1, y1).
+
+        Uses the courtyard (the area the part and its keep-clear need on
+        the board). A module whose courtyard includes a large antenna
+        keep-out (wider or taller than 30 mm) uses its body outline (F.Fab)
+        instead, so it can sit at a board edge with the antenna over it.
+        Falls back to the pads."""
+        cache = self.__dict__.setdefault("_box_cache", {})
+        if fp_id in cache:
+            return cache[fp_id]
+        node = sexpr.parse(read_text(self.footprint_path(fp_id)))
+        boxes = {"F.CrtYd": _Box(), "F.Fab": _Box(), "pads": _Box()}
+        segs = []  # courtyard line segments, for the keep-clear shape
+        for item in node:
+            if not isinstance(item, list) or not item or item[0] not in (
+                "fp_line", "fp_rect", "fp_circle", "fp_arc", "fp_poly"
+            ):
+                continue
+            layer = sexpr.find(item, "layer")
+            layer = str(layer[1]) if layer else ""
+            if layer not in boxes:
+                continue
+            b = boxes[layer]
+            if item[0] == "fp_circle":
+                c, e = sexpr.find(item, "center"), sexpr.find(item, "end")
+                r = ((float(e[1]) - float(c[1])) ** 2 + (float(e[2]) - float(c[2])) ** 2) ** 0.5
+                b.add(float(c[1]) - r, float(c[2]) - r)
+                b.add(float(c[1]) + r, float(c[2]) + r)
+                continue
+            for key in ("start", "mid", "end"):
+                pt = sexpr.find(item, key)
+                if pt:
+                    b.add(float(pt[1]), float(pt[2]))
+            if layer == "F.CrtYd":
+                st, en = sexpr.find(item, "start"), sexpr.find(item, "end")
+                if item[0] == "fp_line" and st and en:
+                    segs.append(((float(st[1]), float(st[2])), (float(en[1]), float(en[2]))))
+                elif item[0] == "fp_rect" and st and en:
+                    x0, y0, x1, y1 = float(st[1]), float(st[2]), float(en[1]), float(en[2])
+                    segs += [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))]
+                else:
+                    segs.append(None)  # not a straight line: no exact shape
+            pts = sexpr.find(item, "pts")
+            for xy in sexpr.find_all(pts or [], "xy"):
+                b.add(float(xy[1]), float(xy[2]))
+        for pad in sexpr.find_all(node, "pad"):
+            at, size = sexpr.find(pad, "at"), sexpr.find(pad, "size")
+            if not at or not size:
+                continue
+            x, y = float(at[1]), float(at[2])
+            w, h = float(size[1]), float(size[2])
+            if len(at) > 3 and int(round(float(at[3]))) % 180 == 90:
+                w, h = h, w
+            boxes["pads"].add(x - w / 2, y - h / 2)
+            boxes["pads"].add(x + w / 2, y + h / 2)
+        keep = self.__dict__.setdefault("_keep_cache", {})
+        keep[fp_id] = []
+        box = None
+        cy = boxes["F.CrtYd"]
+        if cy.ok and cy.w <= 30 and cy.h <= 30:
+            box = cy.tuple()
+        elif boxes["F.Fab"].ok:
+            fab = boxes["F.Fab"]
+            box = (fab.x0 - 0.25, fab.y0 - 0.25, fab.x1 + 0.25, fab.y1 + 0.25)
+            # The big courtyard is a keep-clear area (an antenna's): nothing
+            # else may sit in it, but it may hang off the board.
+            keep[fp_id] = _slabs(segs) if segs and None not in segs else [cy.tuple()]
+        elif cy.ok:
+            box = cy.tuple()
+        elif boxes["pads"].ok:
+            pb = boxes["pads"]
+            box = (pb.x0 - 0.25, pb.y0 - 0.25, pb.x1 + 0.25, pb.y1 + 0.25)
+        else:
+            box = (-0.5, -0.5, 0.5, 0.5)
+        box = tuple(round(v, 3) for v in box)
+        cache[fp_id] = box
+        return box
+
+    def footprint_keepclear(self, fp_id):
+        """Areas (local rects) other parts must stay out of, beyond the
+        part's own outline: e.g. an RF module's antenna keep-out."""
+        self.footprint_box(fp_id)
+        return self._keep_cache.get(fp_id, [])
+
+    def footprint_pad_xy(self, fp_id):
+        """{pad number: (x, y)} in mm from the footprint origin, rotation 0."""
+        cache = self.__dict__.setdefault("_padxy_cache", {})
+        if fp_id not in cache:
+            node = sexpr.parse(read_text(self.footprint_path(fp_id)))
+            out = {}
+            for pad in sexpr.find_all(node, "pad"):
+                at = sexpr.find(pad, "at")
+                if at:
+                    out.setdefault(str(pad[1]), (float(at[1]), float(at[2])))
+            cache[fp_id] = out
+        return cache[fp_id]
+
     def footprint_models(self, fp_id):
         node = sexpr.parse(read_text(self.footprint_path(fp_id)))
         return [str(m[1]) for m in sexpr.find_all(node, "model")]
+
+
+def _slabs(segs):
+    """Rectangles covering a closed outline made of axis-aligned segments
+    (how courtyards are drawn): horizontal slabs between the outline's
+    y values, each split where vertical edges cross it."""
+    ys = sorted({round(p[1], 4) for s in segs for p in s})
+    verts = [(round(a[0], 4), min(a[1], b[1]), max(a[1], b[1])) for a, b in segs if abs(a[0] - b[0]) < 1e-6]
+    rects = []
+    for y0, y1 in zip(ys, ys[1:]):
+        mid = (y0 + y1) / 2
+        xs = sorted(x for x, lo, hi in verts if lo < mid < hi)
+        for xa, xb in zip(xs[0::2], xs[1::2]):
+            rects.append((xa, y0, xb, y1))
+    return rects
+
+
+class _Box:
+    def __init__(self):
+        self.x0 = self.y0 = float("inf")
+        self.x1 = self.y1 = float("-inf")
+
+    def add(self, x, y):
+        self.x0, self.y0 = min(self.x0, x), min(self.y0, y)
+        self.x1, self.y1 = max(self.x1, x), max(self.y1, y)
+
+    @property
+    def ok(self):
+        return self.x1 >= self.x0
+
+    @property
+    def w(self):
+        return self.x1 - self.x0
+
+    @property
+    def h(self):
+        return self.y1 - self.y0
+
+    def tuple(self):
+        return (self.x0, self.y0, self.x1, self.y1)
 
 
 def split_id(lib_id):

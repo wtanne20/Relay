@@ -356,7 +356,9 @@ def placement_report(board, design):
             if area > 0.01:
                 bb = inter.BBox()
                 out.append(
-                    "%s and %s courtyards overlap (%.1f mm2 around x %.1f, y %.1f)"
-                    % (a[0], b[0], area, pcbnew.ToMM(bb.Centre().x - bx0), pcbnew.ToMM(bb.Centre().y - by0))
+                    "%s and %s courtyards overlap (%.1f mm2 around x %.1f, y %.1f): move one at least %.1f mm "
+                    "sideways or %.1f mm up/down, or remove its at= so it is placed automatically"
+                    % (a[0], b[0], area, pcbnew.ToMM(bb.Centre().x - bx0), pcbnew.ToMM(bb.Centre().y - by0),
+                       pcbnew.ToMM(bb.GetWidth()) + 0.5, pcbnew.ToMM(bb.GetHeight()) + 0.5)
                 )
     return out

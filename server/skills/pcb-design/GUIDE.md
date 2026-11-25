@@ -24,8 +24,8 @@ for less current than it carries. This guide is mostly about avoiding those.
 4. **Simple beats clever.** Prefer common parts, larger packages (0603/0805), two layers and generous
    spacing. A board that's 10 mm bigger costs almost nothing more. A board that fails costs a whole
    re-spin.
-5. **Work straight through.** Fix, rerun and continue until `pcb fab` prints `DONE`. Stop only to ask
-   the user something they must decide.
+5. **Work straight through.** Fix, rerun and continue. Stop only to ask the user something they must
+   decide, and once at the layout check-in, before routing.
 6. **Be honest at hand-over.** Passing ERC and DRC means the board can be built. It doesn't mean the
    board works. List what you weren't sure of.
 
@@ -39,7 +39,7 @@ for less current than it carries. This guide is mostly about avoiding those.
 | 2. Architecture | You have a power tree and a current budget, and every rail's regulator has headroom. |
 | 3. Parts | Every part exists in KiCad's libraries, has a footprint matching the real package, and has an LCSC number or a note saying it needs one. |
 | 4. Schematic (`pcb check`) | ERC is clean, and every pin is either connected or deliberately marked `nc`. |
-| 5. Placement (`pcb layout`) | There are no overlaps, connectors sit at the edges, and the critical parts are placed as section 6 says. |
+| 5. Placement (`pcb layout`) | There are no overlaps, connectors sit at the edges, the critical parts are placed as section 6 says, and **the user has approved the top-down layout**. |
 | 6. Routing (`pcb route`) | There are 0 unrouted connections and DRC is clean. |
 | 7. Outputs (`pcb fab`) | It prints `DONE`, and you've looked at the renders. |
 | 8. Hand-over | You've given the user the links, the REVIEW items and the bring-up steps. |
@@ -288,8 +288,10 @@ protection unless the protection sits before that split. Say which way you did i
 
 ## 6. Placement
 
-Placement decides whether the board can be routed and whether it works. Spend time on it, and place
-parts in this order:
+Placement decides whether the board can be routed and whether it works. Run `pcb sizes` first so you
+work with real part sizes. Place the mechanical parts yourself with `edge=`, `center=` or `at=`, and
+let `pcb layout` place the rest automatically (SKILL.md step 7). Then check the result against this
+order:
 
 1. **Mechanical:** board size, mounting holes (at least 3.5 mm from the edge for M3), connectors at
    the edges facing out, buttons and LEDs where people can reach and see them, and the antenna
@@ -478,7 +480,8 @@ Go through this list before you report. Anything you can't tick becomes a `d.rev
 
 ## 12. Hand-over message
 
-Give the user:
+`pcb fab` writes this message for you as `fab/HANDOVER.md` (SKILL.md step 11). Send it as your final
+reply. It already contains the items below. Add the bring-up steps if the board is new to the user:
 
 1. **One line** on what the board is and how it's powered.
 2. **Download links** on their own lines: the 3D model (`.glb`, which shows a View in 3D button),

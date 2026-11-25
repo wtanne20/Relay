@@ -85,6 +85,36 @@ def schematic_pdf(sch, path):
     _cli(["sch", "export", "pdf", "-o", path, sch], "schematic pdf")
 
 
+def layout_preview(pcb, sch, out_dir):
+    """Quick top-down pictures of the placed board (before routing) and the
+    schematic, for the user to approve the layout."""
+    os.makedirs(out_dir, exist_ok=True)
+    made = []
+    png = os.path.join(out_dir, "layout-top.png")
+    code, log = tools.run([tools.kicad_cli(), "pcb", "render", "--side", "top", "--width", "1400", "--height", "1000",
+                           "--quality", "basic", "--background", "opaque", "-o", png, pcb])
+    if code == 0 and os.path.exists(png):
+        made.append(png)
+    svg = os.path.join(out_dir, "layout-top.svg")
+    code, log = tools.run([tools.kicad_cli(), "pcb", "export", "svg", "--layers",
+                           "F.Fab,F.Courtyard,F.Silkscreen,F.Cu,Edge.Cuts", "--mode-single", "--fit-page-to-board",
+                           "--exclude-drawing-sheet", "-o", svg, pcb])
+    if code == 0 and os.path.exists(svg):
+        made.append(svg)
+    pdf = os.path.join(out_dir, "schematic.pdf")
+    code, log = tools.run([tools.kicad_cli(), "sch", "export", "pdf", "-o", pdf, sch])
+    if code == 0 and os.path.exists(pdf):
+        made.append(pdf)
+    return made
+
+
+def schematic_svg(sch, out_dir):
+    """The schematic as SVG (opens in any browser), for showing in chat."""
+    os.makedirs(out_dir, exist_ok=True)
+    code, log = tools.run([tools.kicad_cli(), "sch", "export", "svg", "--exclude-drawing-sheet", "-o", out_dir, sch])
+    return sorted(os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".svg")) if code == 0 else []
+
+
 def models_3d(pcb, out_dir, name):
     """A STEP file for mechanical CAD (enclosures) and a GLB with copper,
     mask and silkscreen for viewers (Relay, web pages, Windows 3D Viewer)."""
