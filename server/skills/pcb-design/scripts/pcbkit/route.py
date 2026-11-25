@@ -81,7 +81,7 @@ def stitch(board, net_name, pitch=4.0, via=(0.6, 0.3)):
     return added
 
 
-def autoroute(pcb_path, passes=40, threads=None, log=print, stitch_nets=(), plane_nets=()):
+def autoroute(pcb_path, passes=40, threads=None, log=print, stitch_nets=(), plane_nets=(), min_track=0.15):
     board = pcbnew.LoadBoard(pcb_path)
     strip_tracks(board)
     # Freerouting treats every pour as a solid plane that already connects
@@ -130,6 +130,17 @@ def autoroute(pcb_path, passes=40, threads=None, log=print, stitch_nets=(), plan
     strip_tracks(board)
     if not pcbnew.ImportSpecctraSES(board, ses):
         raise RuntimeError("KiCad couldn't import Freerouting's result")
+    # Freerouting sometimes necks a track down where it enters a small pad,
+    # below the fab's minimum width. Those stubs are tiny; bring them up to
+    # the minimum (DRC still checks the clearance afterwards).
+    floor = pcbnew.FromMM(min_track)
+    widened = 0
+    for t in board.GetTracks():
+        if not isinstance(t, pcbnew.PCB_VIA) and t.GetWidth() < floor:
+            t.SetWidth(floor)
+            widened += 1
+    if widened:
+        log("Widened %d track stub(s) to the %.2f mm minimum" % (widened, min_track))
     fill_zones(board)
     for net in stitch_nets:
         n = stitch(board, net)

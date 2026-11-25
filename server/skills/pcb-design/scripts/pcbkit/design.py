@@ -54,8 +54,25 @@ class Part:
         self.value = value
         self.lcsc = kw.pop("lcsc", "") or ""
         self.mpn = kw.pop("mpn", "") or ""
-        self.at = tuple(kw.pop("at", (0, 0)))
+        at = kw.pop("at", None)
+        center = kw.pop("center", None)
+        if at is not None and center is not None:
+            raise TypeError("%s: give at= or center=, not both" % ref)
+        # at: the footprint's origin (often pin 1 on connectors, not the
+        # middle). center: the middle of the part's real outline. Neither:
+        # placed automatically by `pcb layout`.
+        self.at = tuple(at) if at is not None else None
+        self.center = tuple(center) if center is not None else None
         self.rot = float(kw.pop("rot", 0))
+        self.rot_given = self.rot != 0
+        # Board edge this part must sit on ("left", "right", "top",
+        # "bottom"), for connectors and antennas. Its outline is placed flush
+        # with that edge; set rot so the part faces outwards.
+        self.edge = kw.pop("edge", None)
+        if self.edge not in (None, "left", "right", "top", "bottom"):
+            raise ValueError("%s: edge must be left, right, top or bottom" % ref)
+        self.auto_placed = False
+        self.corner = None
         self.side = kw.pop("side", "top")
         self.dnp = bool(kw.pop("dnp", False))
         self.fields = dict(kw.pop("fields", {}) or {})
@@ -108,9 +125,17 @@ class Part:
 
 
 class Design:
-    def __init__(self, name, size, corner_radius=1.0, thickness=1.6, copper_oz=1, origin=(100.0, 100.0)):
+    def __init__(self, name, size=None, corner_radius=1.0, thickness=1.6, copper_oz=1, origin=(100.0, 100.0),
+                 spacing=1.0, aspect=1.4):
+        """size=(width, height) in mm, or None to size the board from its
+        parts. spacing: minimum gap in mm between parts' outlines when they
+        are placed automatically. aspect: width/height for an automatic size."""
         self.name = name
-        self.width, self.height = size
+        self.size_given = size is not None
+        self.width, self.height = size if size is not None else (None, None)
+        self.spacing = spacing
+        self.aspect = aspect
+        self.corner_hole_inset = None
         self.corner_radius = corner_radius
         self.thickness = thickness
         self.copper_oz = copper_oz
@@ -153,8 +178,18 @@ class Design:
         ref = ref or "H%d" % self._hole_n
         p = Part(self, ref, None, footprint, "MountingHole", at=at, assemble=False)
         p._pins = []
+        p.corner = None
         self.parts.append(p)
         return p
+
+    def corner_holes(self, inset=3.5, footprint="MountingHole:MountingHole_3.2mm_M3"):
+        """Four mounting holes, `inset` mm in from each corner. Works with an
+        automatic board size (they move with the corners)."""
+        self.corner_hole_inset = inset
+        for i in range(4):
+            h = self.hole((0, 0), footprint=footprint)
+            h.corner = i
+        return self
 
     def get(self, ref):
         for p in self.parts:

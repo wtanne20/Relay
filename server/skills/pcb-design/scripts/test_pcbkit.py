@@ -60,6 +60,10 @@ class PcbkitTest(unittest.TestCase):
         for name, pads in (("R0603", ["1", "2"]), ("SOT3", ["1", "2", "3"]), ("SOT2", ["1", "2"])):
             with open(os.path.join(pretty, name + ".kicad_mod"), "w") as f:
                 f.write(footprint(pads))
+        with open(os.path.join(pretty, "TERM.kicad_mod"), "w") as f:
+            # Origin at pin 1, body off to the right, like a screw terminal.
+            f.write('(footprint "TERM"\n\t(fp_rect (start -2 -3) (end 8 3) (layer "F.CrtYd"))\n'
+                    '\t(pad "1" thru_hole rect (at 0 0) (size 2 2))\n\t(pad "2" thru_hole rect (at 5 0) (size 2 2))\n)\n')
         self.d = Design("t", size=(20, 20))
         self.d.libs.symbol_libs = {"Fake": os.path.join(self.tmp, "Fake.kicad_sym")}
         self.d.libs.footprint_libs = {"Fake": pretty}
@@ -100,6 +104,48 @@ class PcbkitTest(unittest.TestCase):
             u["VCC"]
         with self.assertRaises(ValueError):
             self.d.connect("B", r[1])  # already on net A
+
+    def test_real_part_size_comes_from_the_courtyard(self):
+        from pcbkit import placer
+
+        self.assertEqual(self.d.libs.footprint_box("Fake:TERM"), (-2.0, -3.0, 8.0, 3.0))
+        j = self.d.part("J1", "Fake:R", "Fake:TERM", "TERM", center=(10, 10), rot=90)
+        self.d.part("R1", "Fake:R", "Fake:R0603", "1k", at=(3, 3))
+        placer.auto_place(self.d)
+        # center= puts the middle of the outline there, wherever the origin is.
+        x0, y0, x1, y1 = placer.board_box(j)
+        self.assertAlmostEqual((x0 + x1) / 2, 10)
+        self.assertAlmostEqual((y0 + y1) / 2, 10)
+        self.assertAlmostEqual(x1 - x0, 6)  # rotated: 6 wide, 10 tall
+        self.assertIn("origin is NOT the middle", "\n".join(placer.sizes(self.d)))
+
+    def test_auto_place_sizes_the_board_and_keeps_parts_apart(self):
+        from pcbkit import placer
+
+        d = Design("auto", spacing=1.0)
+        d.libs = self.d.libs
+        j = d.part("J1", "Fake:R", "Fake:TERM", "TERM", edge="left", rot=90)
+        u = d.part("U1", "Fake:REG5", "Fake:SOT3")
+        caps = [d.part("C%d" % i, "Fake:R", "Fake:R0603", "1u") for i in range(1, 7)]
+        d.connect("VIN", j[1], u["IN"], caps[0][1])
+        d.connect("GND", j[2], u["GND"], *[c[2] for c in caps])
+        d.connect("OUT", u["OUT"], *[c[1] for c in caps[1:]])
+        placer.auto_place(d)
+        self.assertGreaterEqual(d.width, 20)
+        boxes = [placer.board_box(p) for p in d.parts]
+        for b in boxes:
+            self.assertGreaterEqual(b[0], -1e-6)
+            self.assertGreaterEqual(b[1], -1e-6)
+            self.assertLessEqual(b[2], d.width + 1e-6)
+            self.assertLessEqual(b[3], d.height + 1e-6)
+        for i, a in enumerate(boxes):
+            for b in boxes[i + 1:]:
+                self.assertFalse(placer._overlaps(a, b, 0.99), (a, b))
+        self.assertAlmostEqual(placer.board_box(j)[0], 0)  # flush with the left edge
+        # The input cap lands next to the regulator, not across the board.
+        ux, uy = u.at
+        cx, cy = caps[0].at
+        self.assertLess(((ux - cx) ** 2 + (uy - cy) ** 2) ** 0.5, 6)
 
 
 if __name__ == "__main__":
