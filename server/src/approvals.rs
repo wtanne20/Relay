@@ -22,6 +22,9 @@ pub enum RuleKind {
     Files,
     /// fetch_url: pages on the pattern's site (and its subdomains).
     Web,
+    /// An MCP server's tool: `<server>__<tool>`, or `<server>__*` for all
+    /// of that server's tools.
+    Mcp,
 }
 
 impl RuleKind {
@@ -30,6 +33,7 @@ impl RuleKind {
             RuleKind::Command => "command",
             RuleKind::Files => "files",
             RuleKind::Web => "web",
+            RuleKind::Mcp => "mcp",
         }
     }
 
@@ -38,6 +42,7 @@ impl RuleKind {
             "command" => Some(RuleKind::Command),
             "files" => Some(RuleKind::Files),
             "web" => Some(RuleKind::Web),
+            "mcp" => Some(RuleKind::Mcp),
             _ => None,
         }
     }
@@ -48,6 +53,7 @@ impl RuleKind {
             "run_command" => Some(RuleKind::Command),
             "write_file" | "edit_file" => Some(RuleKind::Files),
             "fetch_url" => Some(RuleKind::Web),
+            t if crate::mcp::server_of(t).is_some() => Some(RuleKind::Mcp),
             _ => None,
         }
     }
@@ -220,6 +226,15 @@ pub fn covers(kind: RuleKind, pattern: &str, call: &ToolCall, project: &Project)
             let site = site.strip_prefix("www.").unwrap_or(&site);
             !site.is_empty() && (host == site || host.ends_with(&format!(".{site}")))
         }
+        RuleKind::Mcp => {
+            let p = pattern.trim();
+            match p.strip_suffix("*") {
+                Some(prefix) => {
+                    prefix.ends_with(crate::mcp::SEPARATOR) && call.name.starts_with(prefix)
+                }
+                None => call.name == p,
+            }
+        }
     }
 }
 
@@ -285,6 +300,16 @@ pub fn suggest(call: &ToolCall, project: &Project) -> Option<RuleDraft> {
                 project_id,
             })
         }
+        RuleKind::Mcp => {
+            let server = crate::mcp::server_of(&call.name)?;
+            let tool = &call.name[server.len() + crate::mcp::SEPARATOR.len()..];
+            Some(RuleDraft {
+                label: format!("Using {tool} from the {server} MCP server"),
+                pattern: call.name.clone(),
+                kind,
+                project_id,
+            })
+        }
         RuleKind::Web => {
             let host = host_of(&arg(call, "url")?)?;
             Some(RuleDraft {
@@ -333,6 +358,15 @@ pub fn clean(draft: &RuleDraft) -> Result<RuleDraft> {
                 pattern: host,
                 ..draft.clone()
             });
+        }
+        RuleKind::Mcp => {
+            let name = pattern.strip_suffix('*').unwrap_or(&pattern);
+            let ok = crate::mcp::server_of(&pattern).is_some()
+                || (name.ends_with(crate::mcp::SEPARATOR)
+                    && crate::mcp::valid_name(name.trim_end_matches('_')));
+            if !ok || pattern.chars().any(|c| c.is_whitespace()) {
+                bail!("an MCP rule is a tool name like github__create_issue, or github__* for all of a server's tools");
+            }
         }
     }
     Ok(RuleDraft {
@@ -496,6 +530,12 @@ pub fn detail(call: &ToolCall) -> String {
         "run_command" => "command",
         "fetch_url" => "url",
         "web_search" => "query",
+        n if crate::mcp::server_of(n).is_some() => {
+            let args = serde_json::from_str::<Value>(&call.arguments)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| call.arguments.clone());
+            return args.chars().take(300).collect();
+        }
         _ => "path",
     };
     let d = arg(call, key).unwrap_or_default();

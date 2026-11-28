@@ -154,6 +154,15 @@ shows the exact command (or the file and the change) with **Allow**, **Deny** an
 task**, and you get a push notification ("… needs your approval"). Denied calls are reported to the model, which
 then tries another approach or asks you. Stopping the task while it waits cancels it.
 
+### MCP servers
+
+Settings > Tools > MCP servers connects the agent to [MCP](https://modelcontextprotocol.io) servers, the
+ready-made tools other people publish for GitHub, databases, Home Assistant and more. Add one as a program on the PC
+(usually `npx` or `uvx` plus the package, with any API keys as environment variables) or as a web address, or paste
+the `"mcpServers"` config most servers show in their instructions. Their tools work in every chat, on the PC. With
+approvals on, the agent asks before each tool call unless the server marks the tool read-only or you set the server
+to run without asking; "Always allow" works per tool. You can turn single tools off.
+
 ### Share to Relay (Android)
 
 Relay shows up in Android's share sheet. Share a link, some text, screenshots or photos, a voice note or any
@@ -337,7 +346,8 @@ cargo run -- serve                                 # terminal 2: finds the "mode
 
 Prompts mentioning `hello.txt` make it call `write_file`, `run: <command>` calls `run_command`, and anything else
 is echoed. `server/examples/mock_sd.rs` does the same for sd-server (gradient pictures; `dev.ps1 -Mock` uses
-both). `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
+both). `server/examples/mock_mcp.rs` is a small MCP server (stdio, or `--http 8790` with the header
+`Authorization: Bearer secret`) for trying MCP support. `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
 
 ## Security notes
 

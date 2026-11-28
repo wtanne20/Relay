@@ -43,6 +43,8 @@ pub struct Config {
     /// Tools added in the app: named commands with parameters the model
     /// fills in. Kept last so they're written after the other settings.
     pub custom_tools: Vec<crate::tools::custom::CustomTool>,
+    /// MCP servers whose tools the agent can use.
+    pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
 }
 
 /// Image generation with stable-diffusion.cpp's sd-server.
@@ -293,6 +295,7 @@ impl Default for Config {
             routing: RoutingConfig::default(),
             images: ImagesConfig::default(),
             custom_tools: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -459,6 +462,17 @@ impl Config {
             return Err("extra_args may not set --host, --port or the model".into());
         }
         crate::tools::custom::validate_all(&self.custom_tools)?;
+        crate::mcp::validate_all(&self.mcp_servers)?;
+        for t in &self.custom_tools {
+            if let Some(server) = crate::mcp::server_of(&t.name)
+                && self.mcp_servers.iter().any(|s| s.name == server)
+            {
+                return Err(format!(
+                    "tool name '{}' looks like a tool of the '{server}' MCP server; pick another name",
+                    t.name
+                ));
+            }
+        }
         Ok(())
     }
 

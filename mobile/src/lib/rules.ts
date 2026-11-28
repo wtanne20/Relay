@@ -5,6 +5,7 @@ export const RULE_KINDS: { value: RuleKind; label: string; icon: IconName }[] = 
   { value: 'command', label: 'Command', icon: 'console' },
   { value: 'files', label: 'Folder', icon: 'folder-edit-outline' },
   { value: 'web', label: 'Website', icon: 'web' },
+  { value: 'mcp', label: 'MCP tool', icon: 'puzzle-outline' },
 ];
 
 /** A rule in plain words, e.g. "Commands starting with git status". */
@@ -16,6 +17,10 @@ export function ruleText(r: { kind: RuleKind; pattern: string }): string {
       return r.pattern === '.' ? 'Changes to any file' : `Changes to files in ${r.pattern.replace(/\/$/, '')}/`;
     case 'web':
       return `Pages on ${r.pattern}`;
+    case 'mcp': {
+      const [server, tool] = r.pattern.split('__');
+      return tool === '*' ? `Any tool from the ${server} MCP server` : `Using ${tool ?? r.pattern} from ${server}`;
+    }
   }
 }
 
