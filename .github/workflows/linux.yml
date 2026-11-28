@@ -23,6 +23,7 @@ on:
       - "desktop/**"
       - "mobile/**"
       - "dev/proot-install.sh"
+      - "dev/linux-install.sh"
       - ".github/workflows/linux.yml"
   pull_request:
     paths:
@@ -123,6 +124,8 @@ jobs:
           v=${{ steps.version.outputs.version }}
           if [ "${{ matrix.arch }}" = amd64 ]; then
             cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-$v-x86_64.AppImage
+            # Moves the AppImage to ~/Applications and adds Relay to the app menu.
+            install -m 0755 dev/linux-install.sh dist/install-relay-linux.sh
           else
             # Proot: the app binary (web UI and brain built in) + icon + installer.
             PKG=Relay-$v-arm64-proot
