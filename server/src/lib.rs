@@ -17,6 +17,7 @@ pub mod link;
 pub mod migrate;
 pub mod mockup;
 pub mod model_manager;
+pub mod model_updates;
 pub mod process_guard;
 pub mod push;
 pub mod setup;
@@ -79,6 +80,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         images::dir(&data_dir),
     );
     let pusher = Pusher::new(db.clone(), shared.clone());
+    let model_updates = model_updates::ModelUpdates::new(shared.clone());
     let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
     let links = Arc::new(link::LinkHub::default());
     let knowledge = knowledge::KnowledgeBase::new(db.clone(), &data_dir, Arc::clone(&links))?;
@@ -110,6 +112,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         phone_seen: std::sync::Mutex::new(api::load_phone_seen(&data_dir)),
         downloads: Default::default(),
         updates: Default::default(),
+        model_updates,
         devices,
         links,
         knowledge,
@@ -240,6 +243,8 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
         Ok(_) => {}
         Err(e) => tracing::warn!("could not write pairing page: {e:#}"),
     }
+
+    state.model_updates.spawn(state.shutdown.clone());
 
     let external = opts.shutdown.clone();
     let internal = state.shutdown.clone();

@@ -11,6 +11,7 @@ import { m3, mono, radius, space, type } from '../components/theme';
 import { Banner, Button, Field, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
 import { formatBytes } from '../lib/format';
+import { ModelUpdatesCard, useModelUpdates } from '../components/ModelUpdates';
 import { useClient } from '../lib/connection';
 import {
   imagesApi,
@@ -43,6 +44,7 @@ export default function ImageModelsScreen() {
   const [addingFolder, setAddingFolder] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const updates = useModelUpdates(client);
 
   const loadCatalog = useCallback(
     async (refresh = false) => {
@@ -168,6 +170,9 @@ export default function ImageModelsScreen() {
       </Text>
 
       <SectionTitle title="Your image models" />
+      {client ? (
+        <ModelUpdatesCard client={client} kind="image" updates={updates} onUpdated={() => loadCatalog(true)} />
+      ) : null}
       {models.length === 0 ? (
         <Text style={[type.bodyMedium, styles.note]}>
           None yet. Download one below: it&apos;s set up for you once its files are in.

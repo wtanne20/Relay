@@ -21,6 +21,7 @@ import type {
   PairCode,
   Message,
   ModelFile,
+  ModelUpdates,
   ModelStatus,
   Project,
   ServerInfo,
@@ -222,6 +223,18 @@ export class RelayClient {
   /** Deletes a model's files from the PC (not the default model). */
   deleteModel(path: string) {
     return this.request<{ deleted: string[]; freed_bytes: number }>('POST', '/models/delete', { path }, 60000);
+  }
+  /** Newer versions of downloaded models; `refresh` checks Hugging Face now. */
+  modelUpdates(refresh = false) {
+    return this.request<ModelUpdates>('GET', `/models/updates${refresh ? '?refresh=1' : ''}`, undefined, 90000);
+  }
+  /** Downloads the new version (progress in hubDownloads) and swaps it in once the model is free. */
+  applyModelUpdate(path: string) {
+    return this.request<{ download: HubDownload }>('POST', '/models/updates/apply', { path }, 30000);
+  }
+  /** Stops offering this version (a later one is offered). */
+  skipModelUpdate(path: string) {
+    return this.request<ModelUpdates>('POST', '/models/updates/skip', { path });
   }
   hubCancel(id: string) {
     return this.request<{ ok: boolean }>('DELETE', `/hub/downloads/${encodeURIComponent(id)}`);

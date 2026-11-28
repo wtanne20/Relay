@@ -4,6 +4,7 @@ import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Tex
 
 import { m3, radius, space, type } from '../components/theme';
 import { confirmDeleteModel } from '../components/DeleteModel';
+import { ModelUpdatesCard, samePath, UpdateChip, useModelUpdates } from '../components/ModelUpdates';
 import { TagChips, TagsSheet } from '../components/ModelTags';
 import { Banner, Button, EmptyState, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
@@ -30,6 +31,7 @@ export default function ModelsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [tagging, setTagging] = useState<{ name: string; tags: string[]; custom: boolean } | null>(null);
+  const updates = useModelUpdates(client);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -89,7 +91,8 @@ export default function ModelsScreen() {
             <Text style={[type.bodyMedium, styles.intro]}>
               This is the model Relay loads by default. Chats and projects can pick their own from the model button in
               the chat. Tap the tag icon to note what a model is good at, or the bin to delete a model and free its disk
-              space. To get more models, use Download models in Settings.
+              space. To get more models, use Download models in Settings. Relay checks once a day for newer versions of
+              models you downloaded and shows them here.
             </Text>
             {data && outsideRelay(data.current, data.dirs[0]) ? (
               <Banner
@@ -107,6 +110,7 @@ export default function ModelsScreen() {
               />
             ) : null}
             {!data && !error ? <ActivityIndicator color={m3.primary} /> : null}
+            {data ? <ModelUpdatesCard client={client} kind="chat" updates={updates} onUpdated={load} /> : null}
           </>
         }
         ListEmptyComponent={
@@ -123,6 +127,7 @@ export default function ModelsScreen() {
           const last = index === (data?.models.length ?? 0) - 1;
           const current = item.path === data?.current;
           const tooBig = budget > 0 && item.size_bytes > budget;
+          const hasUpdate = !!updates.data?.updates.some((u) => u.kind === 'chat' && samePath(u.path, item.path));
           return (
             <View style={[styles.itemOuter, first && styles.first, last && styles.last, current && styles.itemCurrent]}>
               <Pressable
@@ -147,6 +152,7 @@ export default function ModelsScreen() {
                         <Text style={[type.labelMedium, { color: m3.onWarningContainer }]}>May not fit in VRAM</Text>
                       </View>
                     ) : null}
+                    {hasUpdate ? <UpdateChip /> : null}
                   </View>
                   <TagChips tags={item.tags ?? []} muted={!item.custom_tags} />
                   <Text style={type.bodySmall} numberOfLines={1} ellipsizeMode="middle">
