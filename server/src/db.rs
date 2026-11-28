@@ -552,6 +552,20 @@ pub fn replace_model_path(c: &Connection, old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
+/// Chats and projects that chose `path` go back to the default model
+/// (after the model is deleted).
+pub fn forget_model_path(c: &Connection, path: &str) -> Result<()> {
+    c.execute(
+        "UPDATE sessions SET model = NULL WHERE model = ?1",
+        params![path],
+    )?;
+    c.execute(
+        "UPDATE projects SET model = NULL WHERE model = ?1",
+        params![path],
+    )?;
+    Ok(())
+}
+
 pub fn set_session_model(c: &Connection, id: &str, model: Option<&str>) -> Result<Option<Session>> {
     c.execute(
         "UPDATE sessions SET model = ?1 WHERE id = ?2",

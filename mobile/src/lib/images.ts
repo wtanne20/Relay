@@ -232,7 +232,14 @@ export const imagesApi = (c: RelayClient) => ({
     c.request<ImageModel>('POST', '/image-models', { name, recipe, files }, LONG),
   updateModel: (id: string, p: { name?: string; files?: Record<string, string> }) =>
     c.request<ImageModel>('PATCH', `/image-models/${encodeURIComponent(id)}`, p, LONG),
-  deleteModel: (id: string) => c.request<unknown>('DELETE', `/image-models/${encodeURIComponent(id)}`),
+  /** Removes a setup; with `files`, also deletes its files that no other image model uses. */
+  deleteModel: (id: string, files = false) =>
+    c.request<{ deleted_files: string[]; kept_files: string[]; freed_bytes: number }>(
+      'DELETE',
+      `/image-models/${encodeURIComponent(id)}${files ? '?files=1' : ''}`,
+      undefined,
+      LONG,
+    ),
 
   projects: async () => (await c.request<{ projects: ImageProject[] }>('GET', '/image-projects')).projects,
   project: (id: string) => c.request<ImageProject>('GET', `/image-projects/${encodeURIComponent(id)}`),

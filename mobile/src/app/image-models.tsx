@@ -10,6 +10,7 @@ import { Sheet } from '../components/Sheet';
 import { m3, mono, radius, space, type } from '../components/theme';
 import { Banner, Button, Field, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
+import { formatBytes } from '../lib/format';
 import { useClient } from '../lib/connection';
 import {
   imagesApi,
@@ -41,6 +42,7 @@ export default function ImageModelsScreen() {
   const [setup, setSetup] = useState<{ model?: ImageModel; recipe?: string } | null>(null);
   const [addingFolder, setAddingFolder] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   const loadCatalog = useCallback(
     async (refresh = false) => {
@@ -82,6 +84,26 @@ export default function ImageModelsScreen() {
       if (p.model_dirs) setTimeout(() => loadCatalog(true), 800);
     } catch (e) {
       alert("Couldn't save", describeError(e));
+    }
+  };
+
+  const remove = async (id: string, files: boolean) => {
+    setRemoving(id);
+    try {
+      const r = await api.deleteModel(id, files);
+      await load();
+      if (files) {
+        loadCatalog(true);
+        const n = r.kept_files.length;
+        const kept = n
+          ? ` ${n === 1 ? 'One file was' : `${n} files were`} kept because another image model uses ${n === 1 ? 'it' : 'them'}.`
+          : '';
+        alert('Model deleted', `Freed ${formatBytes(r.freed_bytes)}.${kept}`);
+      }
+    } catch (e) {
+      alert("Couldn't remove", describeError(e));
+    } finally {
+      setRemoving(null);
     }
   };
 
@@ -170,20 +192,26 @@ export default function ImageModelsScreen() {
                   </Text>
                 </View>
               </Pressable>
-              <IconButton
-                icon="trash-can-outline"
-                label={`Remove ${m.name}`}
-                onPress={() =>
-                  alert(`Remove ${m.name}?`, 'Only the setup is removed; the model files stay on your PC.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Remove',
-                      style: 'destructive',
-                      onPress: () => api.deleteModel(m.id).then(load, (e) => alert("Couldn't remove", describeError(e))),
-                    },
-                  ])
-                }
-              />
+              {removing === m.id ? (
+                <ActivityIndicator color={m3.primary} style={{ marginHorizontal: space.md }} />
+              ) : (
+                <IconButton
+                  icon="trash-can-outline"
+                  label={`Remove ${m.name}`}
+                  disabled={removing !== null}
+                  onPress={() =>
+                    alert(
+                      `Remove ${m.name}?`,
+                      'Keep the files to set it up again later, or delete them from your PC to free the disk space. Files another image model uses are kept.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Keep files', onPress: () => remove(m.id, false) },
+                        { text: 'Delete files', style: 'destructive', onPress: () => remove(m.id, true) },
+                      ],
+                    )
+                  }
+                />
+              )}
             </View>
           ))}
         </Group>

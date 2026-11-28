@@ -223,6 +223,10 @@ export class RelayClient {
   moveModel(path: string, library: string) {
     return this.request<{ download: HubDownload }>('POST', '/models/move', { path, library }, 30000);
   }
+  /** Deletes a model's files from the PC (not the default model). */
+  deleteModel(path: string) {
+    return this.request<{ deleted: string[]; freed_bytes: number }>('POST', '/models/delete', { path }, 60000);
+  }
   hubCancel(id: string) {
     return this.request<{ ok: boolean }>('DELETE', `/hub/downloads/${encodeURIComponent(id)}`);
   }
