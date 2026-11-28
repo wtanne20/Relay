@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 
 import { m3, radius, space, type } from '../components/theme';
+import { confirmDeleteModel } from '../components/DeleteModel';
 import { TagChips, TagsSheet } from '../components/ModelTags';
 import { Banner, Button, EmptyState, Icon, IconButton } from '../components/ui';
 import { describeError } from '../lib/api';
@@ -87,8 +88,8 @@ export default function ModelsScreen() {
             {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
             <Text style={[type.bodyMedium, styles.intro]}>
               This is the model Relay loads by default. Chats and projects can pick their own from the model button in
-              the chat. Tap the tag icon to note what a model is good at. To get more models, use Download models in
-              Settings.
+              the chat. Tap the tag icon to note what a model is good at, or the bin to delete a model and free its disk
+              space. To get more models, use Download models in Settings.
             </Text>
             {data && outsideRelay(data.current, data.dirs[0]) ? (
               <Banner
@@ -163,6 +164,14 @@ export default function ModelsScreen() {
                 label={`Edit tags for ${item.name}`}
                 onPress={() => setTagging({ name: item.name, tags: item.tags ?? [], custom: !!item.custom_tags })}
               />
+              {!current ? (
+                <IconButton
+                  icon="trash-can-outline"
+                  label={`Delete ${item.name}`}
+                  disabled={busy !== null}
+                  onPress={() => confirmDeleteModel(client, item, load, setBusy)}
+                />
+              ) : null}
             </View>
           );
         }}

@@ -150,6 +150,61 @@ impl ImageGen {
         self.gpu.release_images().await;
     }
 
+    /// Whether a picture is being made (or waiting its turn) now.
+    pub fn busy(&self) -> bool {
+        !self.live.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
+    /// Deletes model files (ids as the catalog lists them, relative to an
+    /// image model folder) from the disk. The image engine is stopped first
+    /// so the files aren't locked, and the folders are rescanned when it
+    /// next starts. Returns the bytes freed.
+    pub async fn delete_files(&self, ids: &[String]) -> Result<u64> {
+        let roots = self.shared.read(|l| l.image_model_dirs());
+        let mut paths = Vec::new();
+        for id in ids {
+            let rel = std::path::Path::new(id);
+            let safe = !id.is_empty()
+                && rel
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)));
+            if !safe {
+                bail!("{id} isn't a model file");
+            }
+            if let Some(p) = roots.iter().map(|r| r.join(rel)).find(|p| p.is_file()) {
+                paths.push(p);
+            }
+        }
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        self.unload().await;
+        let mut freed = 0;
+        for p in &paths {
+            let size = p.metadata().map(|m| m.len()).unwrap_or(0);
+            let mut attempt = 0;
+            loop {
+                match tokio::fs::remove_file(p).await {
+                    Ok(()) => {
+                        freed += size;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(e) if attempt == 9 => {
+                        bail!("could not delete {}: {e}", p.display())
+                    }
+                    Err(_) => {
+                        attempt += 1;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+        // The cached list still names the deleted files.
+        *self.catalog.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(freed)
+    }
+
     /// Frees the GPU for images ahead of time and starts the engine, so the
     /// first picture is quicker. Returns right away.
     pub fn prepare(self: &Arc<Self>) {

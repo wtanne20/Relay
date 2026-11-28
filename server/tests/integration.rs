@@ -1332,6 +1332,73 @@ async fn model_libraries_add_move_and_remove() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+#[tokio::test]
+async fn deleting_a_model_frees_its_files() {
+    let h = Harness::start().await;
+    let dir = h.dir.join("data/models/pub/big");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let first = dir.join("big-00001-of-00002.gguf");
+    std::fs::write(&first, vec![1u8; 1000]).expect("part 1");
+    std::fs::write(dir.join("big-00002-of-00002.gguf"), vec![2u8; 500]).expect("part 2");
+    std::fs::write(dir.join("mmproj-big-f16.gguf"), vec![3u8; 100]).expect("projector");
+    let keep = h.dir.join("data/models/pub/small/small.gguf");
+    std::fs::create_dir_all(keep.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&keep, vec![4u8; 10]).expect("other model");
+    let first_s = first.to_string_lossy().into_owned();
+
+    // A chat that chose the model goes back to the default one.
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            &format!("/sessions/{sid}"),
+            Some(json!({"model": first_s})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["session"]["model"], json!(first_s), "{v}");
+
+    // Refused: the default model, and files outside the model folders.
+    let current = h.get("/models").await["current"]
+        .as_str()
+        .expect("current")
+        .to_string();
+    if !current.is_empty() && std::path::Path::new(&current).is_file() {
+        let (st, v) = h.post("/models/delete", json!({"path": current})).await;
+        assert!(st == 409 || st == 400, "{st} {v}");
+        assert!(std::path::Path::new(&current).is_file(), "default model kept");
+    }
+    let outside = h.dir.join("elsewhere.gguf");
+    std::fs::write(&outside, b"x").expect("write");
+    let (st, _) = h
+        .post("/models/delete", json!({"path": outside.to_string_lossy()}))
+        .await;
+    assert_eq!(st, 400);
+    assert!(outside.is_file());
+
+    let (st, v) = h.post("/models/delete", json!({"path": first_s})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["freed_bytes"], 1600, "{v}");
+    assert_eq!(v["deleted"].as_array().expect("list").len(), 3, "{v}");
+    assert!(!dir.exists(), "files and the empty folder are gone");
+    assert!(keep.is_file(), "other models stay");
+    let models = h.get("/models").await;
+    assert!(
+        !models["models"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .any(|m| m["path"] == json!(first_s)),
+        "{models}"
+    );
+    let v = h.get(&format!("/sessions/{sid}")).await;
+    assert!(v["session"]["model"].is_null(), "{v}");
+    let (st, _) = h.post("/models/delete", json!({"path": first_s})).await;
+    assert_eq!(st, 400, "already gone");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// Sends `n` long prompts to a new plain chat; returns the session id and
 /// whether every task finished cleanly.
 async fn long_chat(h: &Harness, n: usize) -> (String, Vec<Value>) {

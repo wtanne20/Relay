@@ -317,20 +317,67 @@ async fn update_model(
     Ok(Json(json!(m)))
 }
 
+#[derive(Deserialize)]
+struct DeleteModelQuery {
+    /// Also delete the model's files from the disk (files another image
+    /// model still uses stay).
+    files: Option<String>,
+}
+
 async fn delete_model(
     State(s): State<AppState>,
     UrlPath(id): UrlPath<String>,
-) -> ApiResult<StatusCode> {
-    let found = s
+    Query(q): Query<DeleteModelQuery>,
+) -> ApiResult<Json<Value>> {
+    let with_files = q.files.is_some_and(|f| f != "0" && f != "false");
+    let mid = id.clone();
+    let model = s
         .images
         .db()
-        .call(move |c| store::delete_model(c, &id))
-        .await?;
-    if found {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(ApiError::NotFound("image model"))
+        .call(move |c| store::get_model(c, &mid))
+        .await?
+        .ok_or(ApiError::NotFound("image model"))?;
+    let mut delete: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+    if with_files {
+        if s.images.busy() {
+            return Err(ApiError::Conflict(
+                "a picture is being made. Delete the files once it's done".into(),
+            ));
+        }
+        let others = s.images.db().call(|c| store::list_models(c)).await?;
+        for f in model.files.values() {
+            if delete.contains(f) || kept.contains(f) {
+                continue;
+            }
+            let shared = others
+                .iter()
+                .any(|m| m.id != model.id && m.files.values().any(|o| o == f));
+            if shared {
+                kept.push(f.clone());
+            } else {
+                delete.push(f.clone());
+            }
+        }
     }
+    let mid = id.clone();
+    s.images
+        .db()
+        .call(move |c| store::delete_model(c, &mid))
+        .await?;
+    let freed = if delete.is_empty() {
+        0
+    } else {
+        s.images
+            .delete_files(&delete)
+            .await
+            .map_err(|e| ApiError::Conflict(format!("{e:#}")))?
+    };
+    Ok(Json(json!({
+        "deleted_files": delete,
+        "kept_files": kept,
+        "freed_bytes": freed,
+    })))
 }
 
 // ---------- projects ----------
