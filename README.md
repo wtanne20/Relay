@@ -37,8 +37,10 @@ other GPUs work through Vulkan), a phone, and a free [Tailscale](https://tailsca
 2. **PC app.** Get it from the [latest release](../../releases/latest) (see [Downloads](#downloads)):
    - **Windows:** run `RelaySetup-<version>.exe`. Windows may say it protected your PC because the installer isn't
      code-signed: click **More info → Run anyway**. Keep the defaults and finish with **Open Relay now**.
-   - **Arch Linux:** install `fuse2` (`sudo pacman -S fuse2`), make `Relay-<version>-x86_64.AppImage` executable
-     (`chmod +x`) and run it. See [Linux](#linux) for what differs.
+   - **Arch Linux:** install `fuse2` (`sudo pacman -S fuse2`), download `install-relay-linux.sh` (and
+     `Relay-<version>-x86_64.AppImage`, or let the script fetch it) and run `bash install-relay-linux.sh`. It moves
+     the AppImage to `~/Applications/Relay.AppImage` and adds Relay to your app menu. See [Linux](#linux) for what
+     differs.
 3. **First start.** Relay asks whether this computer is the brain; pick **This computer is the brain**. It finds
    your GPU, downloads llama.cpp, picks the largest model that fits in your VRAM and loads it. The model status
    shows at the bottom left of the Relay window.
@@ -91,7 +93,12 @@ llama-server's output goes to `logs\llama-server.log`.
 
 The Linux app is the same Relay as on Windows (brain, desktop window, tray icon, pairing), with a few differences:
 
-- **Downloads.** `Relay-<version>-x86_64.AppImage` for Arch Linux (it needs `fuse2`), and
+- **Downloads.** `Relay-<version>-x86_64.AppImage` for Arch Linux (it needs `fuse2`) with
+  `install-relay-linux.sh`, which copies the newest AppImage it finds next to it, in the current folder or in
+  `~/Downloads` (or downloads the latest release and checks its SHA-256) to `~/Applications/Relay.AppImage`, adds
+  `relay-desktop.desktop` and Relay's icon to the app menu, and points a start-on-login entry at the installed copy.
+  Run it again to update, or with `--uninstall` to remove the app (your data stays). Without a download:
+  `curl -fsSL https://github.com/wtanne20/Relay/releases/latest/download/install-relay-linux.sh | bash`. And
   `Relay-<version>-arm64-proot.tar.gz` for Proot on an Android phone: unpack it and run `./install.sh`, which
   installs the libraries it needs with apt or pacman and adds `relay-desktop` to `~/.local/bin` and the app menu.
   In Proot it runs without a tray, and closing the window quits.
@@ -203,7 +210,7 @@ Both apps are built by GitHub Actions in this repository:
 - **Windows installer**: *Actions → Windows installer* → the latest run → artifact **RelaySetup-&lt;version&gt;**.
   The workflow runs the test suite on Windows, builds `relay.exe` (statically linked, no Visual C++ runtime needed),
   builds the installer with Inno Setup, and installs and uninstalls it once as a check.
-- **Linux app**: *Actions → Linux desktop* → artifacts **RelayLinux-amd64-&lt;version&gt;** (the `.AppImage`, for
+- **Linux app**: *Actions → Linux desktop* → artifacts **RelayLinux-amd64-&lt;version&gt;** (the `.AppImage` and `install-relay-linux.sh`, for
   Arch) and **RelayLinux-arm64-&lt;version&gt;** (the `.tar.gz` for Proot). The workflow runs
   the test suite on Linux and builds the desktop app with Tauri.
 - **Android app**: *Actions → Android app* → artifact **Relay-android** (`Relay.apk`). Open it on the phone and
