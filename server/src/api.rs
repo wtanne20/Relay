@@ -217,6 +217,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/skills", get(list_skills))
         .route("/tools", get(list_tools).post(add_tool))
+        .route("/tools/import", post(import_tools))
         .route(
             "/tools/{name}",
             axum::routing::put(update_tool).delete(delete_tool),
@@ -669,6 +670,49 @@ async fn update_tool(
         }
     })?;
     Ok(Json(tools_view(&updated)))
+}
+
+#[derive(Deserialize)]
+struct ImportTools {
+    tools: Vec<crate::tools::custom::CustomTool>,
+}
+
+/// Adds several tools at once, from a file the user picked. Each one comes
+/// in turned off, so it can't run until the user has read its command and
+/// turned it on. A tool with the name of an existing one replaces it (the
+/// app shows which before it sends them). All or nothing: one invalid tool
+/// and none are added.
+async fn import_tools(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ImportTools>,
+) -> ApiResult<Json<Value>> {
+    if body.tools.is_empty() {
+        return Err(ApiError::BadRequest("no tools to import".into()));
+    }
+    let mut tools: Vec<_> = body.tools.into_iter().map(clean_tool).collect();
+    for (i, t) in tools.iter().enumerate() {
+        if tools[..i].iter().any(|u| u.name == t.name) {
+            return Err(ApiError::BadRequest(format!(
+                "the file has two tools named '{}'",
+                t.name
+            )));
+        }
+    }
+    for t in &mut tools {
+        t.enabled = false;
+    }
+    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+    let updated = s.cfg.update(move |c| {
+        for t in tools {
+            match c.custom_tools.iter_mut().find(|u| u.name == t.name) {
+                Some(slot) => *slot = t,
+                None => c.custom_tools.push(t),
+            }
+        }
+    })?;
+    let mut view = tools_view(&updated);
+    view["imported"] = json!(names);
+    Ok(Json(view))
 }
 
 async fn delete_tool(
