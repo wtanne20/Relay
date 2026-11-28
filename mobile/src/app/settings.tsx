@@ -391,8 +391,14 @@ export default function SettingsScreen() {
         <NavRow
           icon="robot-outline"
           label="Agent settings"
-          value="Sampling, tools, approvals"
+          value="Sampling, thinking, approvals"
           onPress={() => router.push('/agent')}
+        />
+        <NavRow
+          icon="wrench-outline"
+          label="Tools"
+          value="See, turn off and add the tools the agent can use"
+          onPress={() => router.push('/tools')}
         />
         <NavRow
           icon="text-box-outline"

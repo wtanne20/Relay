@@ -219,6 +219,11 @@ pub fn router(state: AppState) -> Router {
             get(get_system_prompt).put(put_system_prompt),
         )
         .route("/skills", get(list_skills))
+        .route("/tools", get(list_tools).post(add_tool))
+        .route(
+            "/tools/{name}",
+            axum::routing::put(update_tool).delete(delete_tool),
+        )
         .route("/recent", get(recent))
         .route("/archived", get(archived))
         .route("/mockups", post(create_mockup))
@@ -583,6 +588,102 @@ async fn patch_settings(
         "settings": settings_view(&updated),
         "model_restarting": restart,
     })))
+}
+
+// ---------- tools ----------
+
+fn tools_view(c: &Config) -> Value {
+    let builtin: Vec<Value> = crate::tools::catalog()
+        .into_iter()
+        .map(|(name, summary)| {
+            json!({
+                "name": name,
+                "summary": summary,
+                "enabled": c.agent.tools.enabled(name),
+                "definitions": crate::tools::builtin_definitions(name),
+            })
+        })
+        .collect();
+    json!({
+        "builtin": builtin,
+        "custom": c.custom_tools,
+        "shell": c.shell,
+        "default_timeout": c.agent.command_timeout_seconds,
+    })
+}
+
+/// The built-in tools (with what the model is told about each) and the
+/// user's own.
+async fn list_tools(State(s): State<AppState>) -> Json<Value> {
+    Json(tools_view(&s.cfg.get()))
+}
+
+fn clean_tool(mut t: crate::tools::custom::CustomTool) -> crate::tools::custom::CustomTool {
+    t.name = t.name.trim().to_string();
+    t.description = t.description.trim().to_string();
+    t.command = t.command.trim().to_string();
+    for p in &mut t.parameters {
+        p.name = p.name.trim().to_string();
+        p.description = p.description.trim().to_string();
+    }
+    t
+}
+
+async fn add_tool(
+    State(s): State<AppState>,
+    JsonBody(tool): JsonBody<crate::tools::custom::CustomTool>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let tool = clean_tool(tool);
+    if s.cfg.read(|l| l.config.custom_tools.iter().any(|t| t.name == tool.name)) {
+        return Err(ApiError::Conflict(format!(
+            "there is already a tool named '{}'",
+            tool.name
+        )));
+    }
+    let updated = s.cfg.update(move |c| c.custom_tools.push(tool))?;
+    Ok((StatusCode::CREATED, Json(tools_view(&updated))))
+}
+
+/// Replaces one of the user's tools (it may be renamed).
+async fn update_tool(
+    State(s): State<AppState>,
+    UrlPath(name): UrlPath<String>,
+    JsonBody(tool): JsonBody<crate::tools::custom::CustomTool>,
+) -> ApiResult<Json<Value>> {
+    let tool = clean_tool(tool);
+    let (exists, taken) = s.cfg.read(|l| {
+        let list = &l.config.custom_tools;
+        (
+            list.iter().any(|t| t.name == name),
+            tool.name != name && list.iter().any(|t| t.name == tool.name),
+        )
+    });
+    if !exists {
+        return Err(ApiError::NotFound("tool"));
+    }
+    if taken {
+        return Err(ApiError::Conflict(format!(
+            "there is already a tool named '{}'",
+            tool.name
+        )));
+    }
+    let updated = s.cfg.update(move |c| {
+        if let Some(slot) = c.custom_tools.iter_mut().find(|t| t.name == name) {
+            *slot = tool;
+        }
+    })?;
+    Ok(Json(tools_view(&updated)))
+}
+
+async fn delete_tool(
+    State(s): State<AppState>,
+    UrlPath(name): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    if !s.cfg.read(|l| l.config.custom_tools.iter().any(|t| t.name == name)) {
+        return Err(ApiError::NotFound("tool"));
+    }
+    let updated = s.cfg.update(move |c| c.custom_tools.retain(|t| t.name != name))?;
+    Ok(Json(tools_view(&updated)))
 }
 
 async fn get_system_prompt(State(s): State<AppState>) -> ApiResult<Json<Value>> {

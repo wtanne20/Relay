@@ -1,5 +1,7 @@
 import type { Credentials } from './storage';
 import type {
+  CustomTool,
+  ToolsResponse,
   DocumentFolder,
   DocumentSearch,
   FolderListing,
@@ -168,6 +170,20 @@ export class RelayClient {
   }
   patchSettings(patch: DeepPartial<Settings>) {
     return this.request<{ settings: Settings; model_restarting: boolean }>('PATCH', '/settings', patch);
+  }
+  // ----- tools -----
+  tools() {
+    return this.request<ToolsResponse>('GET', '/tools');
+  }
+  addTool(tool: CustomTool) {
+    return this.request<ToolsResponse>('POST', '/tools', tool);
+  }
+  /** `name` is the tool's current name; `tool.name` may rename it. */
+  updateTool(name: string, tool: CustomTool) {
+    return this.request<ToolsResponse>('PUT', `/tools/${encodeURIComponent(name)}`, tool);
+  }
+  deleteTool(name: string) {
+    return this.request<ToolsResponse>('DELETE', `/tools/${encodeURIComponent(name)}`);
   }
   hubSearch(q: string) {
     return this.request<{ results: HubRepo[] }>('GET', `/hub/search?q=${encodeURIComponent(q)}`, undefined, 30000);
