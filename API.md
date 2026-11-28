@@ -19,6 +19,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 
 - [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
 - [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`, `GET/POST /tools`, `PUT/DELETE /tools/{name}`
+- [MCP servers](#mcp-servers): `GET/POST /mcp/servers`, `GET/PUT/DELETE /mcp/servers/{name}`, `POST /mcp/servers/{name}/restart`, `POST /mcp/test`, `POST /mcp/import`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/steer`, `POST /sessions/{id}/approval`
@@ -246,6 +247,91 @@ value is left out) and runs it in the project folder as a `run_command`, so appr
 the command guard all apply. The approval request then has `name: "run_command"`, the expanded command in `arguments`
 and `via_tool: "git_log"`. Custom tools aren't offered in plain chats. `400` for an invalid tool (bad name, a built-in
 name, no description or command, a parameter the command doesn't use), `409` if the name is taken.
+
+## MCP servers
+
+MCP (Model Context Protocol) servers give the agent tools other people publish (GitHub, databases, Home Assistant
+and so on). A server is either a program Relay starts on the PC and talks to over stdin/stdout (`command`), or a
+Streamable HTTP address (`url`). Relay connects to every enabled server when it starts and whenever the list
+changes, and offers their tools to the model in every chat (plain chats too) as `<server>__<tool>`. They run on the
+PC, even for a project on a linked computer.
+
+Approvals: with `agent.approval` set to `commands` or `all_changes`, each call is asked about, unless the server marks
+the tool read-only (`readOnlyHint`) or the server is `trusted`. The approval request then has `name` set to
+`<server>__<tool>`, the tool's JSON `arguments` and `mcp: {server, tool, title?, destructive}`. "Always allow"
+saves an `mcp` rule for that one tool. Calls show in the activity log with their arguments as `detail`.
+
+### Server body
+
+```json
+{
+  "name": "github",
+  "description": "My repositories",
+  "enabled": true,
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." },
+  "cwd": "",
+  "url": "",
+  "headers": {},
+  "timeout_seconds": 0,
+  "disabled_tools": ["delete_repository"],
+  "trusted": false
+}
+```
+
+`name`: a lowercase letter, then `a-z`, `0-9` and single `_`, at most 32 characters. `url` set means HTTP (then
+`command`, `args` and `env` are ignored); otherwise `command` is required. On Windows a bare `npx` or `uvx` is found on
+the PATH (`.cmd` launchers included). `cwd` empty = Relay's data folder. `timeout_seconds`: one tool call, 0 = 120.
+`disabled_tools` are the server's own tool names. Every field but `name` and `command`/`url` may be left out.
+
+Answers add `transport` (`stdio` or `http`) and `status`:
+
+```json
+{
+  "state": "ready",
+  "error": null,
+  "tools": [
+    { "name": "create_issue", "exposed_name": "github__create_issue", "title": "Create issue",
+      "description": "...", "input_schema": {"type": "object", "properties": {}}, "read_only": false,
+      "destructive": true, "enabled": true }
+  ],
+  "server_info": { "name": "github-mcp", "version": "1.2.0" },
+  "connected_at": "2026-11-28T06:30:00Z"
+}
+```
+
+`state` is `off` (disabled), `starting`, `ready` or `error` (with `error`, including the last lines the program
+printed). A server that stops is restarted when a chat next needs it; one that failed to start is tried again after a
+minute.
+
+### `GET /mcp/servers`, `GET /mcp/servers/{name}`
+
+`{ "servers": [Server] }`, or one server.
+
+### `POST /mcp/servers` → `201`, `PUT /mcp/servers/{name}`, `DELETE /mcp/servers/{name}`
+
+Add, replace (and possibly rename) or delete a server. Adding answers at once with `state: "starting"`; poll until
+it's `ready` or `error`. Replacing reconnects only if how it's started changed (not for `description`, `trusted`,
+`disabled_tools` or `timeout_seconds`). Delete answers with the list. `400` for an invalid server, `409` if the name
+is taken.
+
+### `POST /mcp/servers/{name}/restart`
+
+Stops and starts the server; answers when it's connected or failed. `409` if it's turned off.
+
+### `POST /mcp/test`
+
+Same body as `POST /mcp/servers`; nothing is saved. Starts the server, lists its tools and stops it:
+`{ "ok": true, "tools": [...], "server_info": {...} }` or `{ "ok": false, "tools": [], "error": "..." }`. The first
+start of an `npx`/`uvx` server can take a minute while it downloads.
+
+### `POST /mcp/import`
+
+`{ "config": <JSON text or object>, "replace": false }`: adds the servers from a config in the form most MCP
+servers document (`{"mcpServers": {"name": {"command", "args", "env"}}}`, also `{"servers": ...}`, `url` and
+`headers` for HTTP). Names are made to fit (`Home Assistant` → `home_assistant`). Servers whose name exists are
+skipped unless `replace`. Answers `{ "servers": [...], "added": [...], "skipped": [...] }`.
 
 ## Projects
 
@@ -500,6 +586,7 @@ when `agent.approval` asks about something.
 | `command` | `run_command` | Words the command starts with: `git status` covers `git status -s`, not `git statusx` or `git push`. A command with `; & \| $ \` < > ( ) { }` or a line break is never covered. |
 | `files` | `write_file`, `edit_file` | A folder in the project (`src`, or `.` for all of it). Always tied to one project. Paths with `..` are never covered. |
 | `web` | `fetch_url` | A site: `docs.rs` covers `docs.rs` and its subdomains. |
+| `mcp` | MCP server tools | A tool as the model calls it, `github__create_issue`, or `github__*` for every tool of that server. |
 
 `project_id` is the project the rule applies to, or `null` for every project.
 

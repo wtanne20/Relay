@@ -29,6 +29,11 @@ const KIND_HINT: Record<RuleKind, { label: string; placeholder: string; hint: st
     placeholder: 'docs.rs',
     hint: 'Reading pages on this site and its subdomains.',
   },
+  mcp: {
+    label: 'MCP tool',
+    placeholder: 'github__create_issue',
+    hint: 'One tool of an MCP server, as server__tool, or server__* for all of its tools.',
+  },
 };
 
 /**

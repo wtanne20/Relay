@@ -57,6 +57,8 @@ pub struct AppInner {
     pub links: Arc<crate::link::LinkHub>,
     /// Folders the agent can search, on any of the user's computers.
     pub knowledge: Arc<crate::knowledge::KnowledgeBase>,
+    /// Connections to the user's MCP servers.
+    pub mcp: Arc<crate::mcp::McpHub>,
     /// The current 6-digit code a new device can pair with.
     pub pair_code: std::sync::Mutex<Option<PairCode>>,
     /// The built web UI bundle to serve at `/` (None if not bundled).
@@ -222,6 +224,14 @@ pub fn router(state: AppState) -> Router {
             "/tools/{name}",
             axum::routing::put(update_tool).delete(delete_tool),
         )
+        .route("/mcp/servers", get(list_mcp).post(add_mcp))
+        .route(
+            "/mcp/servers/{name}",
+            get(get_mcp).put(update_mcp).delete(delete_mcp),
+        )
+        .route("/mcp/servers/{name}/restart", post(restart_mcp))
+        .route("/mcp/test", post(test_mcp))
+        .route("/mcp/import", post(import_mcp))
         .route("/recent", get(recent))
         .route("/archived", get(archived))
         .route("/mockups", post(create_mockup))
@@ -681,6 +691,206 @@ async fn delete_tool(
     }
     let updated = s.cfg.update(move |c| c.custom_tools.retain(|t| t.name != name))?;
     Ok(Json(tools_view(&updated)))
+}
+
+// ---------- MCP servers ----------
+
+/// One server as the app sees it: its settings plus how it's doing.
+fn mcp_view(s: &AppState, cfg: &crate::mcp::McpServerConfig) -> Value {
+    let mut v = serde_json::to_value(cfg).unwrap_or_else(|_| json!({}));
+    // A server that's off has no connection, so it shows Off and no tools.
+    let mut status = s.mcp.status(&cfg.name);
+    status.tools.sort_by(|a, b| a.name.cmp(&b.name));
+    let tools: Vec<Value> = status
+        .tools
+        .iter()
+        .map(|t| {
+            let mut tv = serde_json::to_value(t).unwrap_or_else(|_| json!({}));
+            tv["enabled"] = json!(cfg.tool_allowed(&t.name));
+            tv
+        })
+        .collect();
+    let mut st = serde_json::to_value(&status).unwrap_or_else(|_| json!({}));
+    st["tools"] = Value::Array(tools);
+    v["transport"] = json!(cfg.transport());
+    v["status"] = st;
+    v
+}
+
+fn mcp_list_view(s: &AppState) -> Value {
+    let servers: Vec<Value> = s
+        .cfg
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|c| mcp_view(s, c))
+        .collect();
+    json!({ "servers": servers })
+}
+
+fn sync_mcp(s: &AppState, c: &Config) {
+    s.mcp.sync(&c.mcp_servers);
+}
+
+/// Every MCP server, with its state and tools.
+async fn list_mcp(State(s): State<AppState>) -> Json<Value> {
+    Json(mcp_list_view(&s))
+}
+
+async fn get_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    let c = s.cfg.get();
+    let cfg = c
+        .mcp_servers
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or(ApiError::NotFound("MCP server"))?;
+    Ok(Json(mcp_view(&s, cfg)))
+}
+
+/// Adds a server and starts connecting to it (in the background).
+async fn add_mcp(
+    State(s): State<AppState>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let server = server.cleaned();
+    if s.cfg.read(|l| l.config.mcp_servers.iter().any(|m| m.name == server.name)) {
+        return Err(ApiError::Conflict(format!(
+            "there is already an MCP server named '{}'",
+            server.name
+        )));
+    }
+    let added = server.clone();
+    let updated = s.cfg.update(move |c| c.mcp_servers.push(server))?;
+    sync_mcp(&s, &updated);
+    Ok((StatusCode::CREATED, Json(mcp_view(&s, &added))))
+}
+
+/// Replaces a server's settings (it may be renamed). Changing how it's
+/// started reconnects it; notes, trust and tool switches don't.
+async fn update_mcp(
+    State(s): State<AppState>,
+    UrlPath(name): UrlPath<String>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<Json<Value>> {
+    let server = server.cleaned();
+    let (exists, taken) = s.cfg.read(|l| {
+        let list = &l.config.mcp_servers;
+        (
+            list.iter().any(|m| m.name == name),
+            server.name != name && list.iter().any(|m| m.name == server.name),
+        )
+    });
+    if !exists {
+        return Err(ApiError::NotFound("MCP server"));
+    }
+    if taken {
+        return Err(ApiError::Conflict(format!(
+            "there is already an MCP server named '{}'",
+            server.name
+        )));
+    }
+    let saved = server.clone();
+    let updated = s.cfg.update(move |c| {
+        if let Some(slot) = c.mcp_servers.iter_mut().find(|m| m.name == name) {
+            *slot = server;
+        }
+    })?;
+    sync_mcp(&s, &updated);
+    Ok(Json(mcp_view(&s, &saved)))
+}
+
+async fn delete_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    if !s.cfg.read(|l| l.config.mcp_servers.iter().any(|m| m.name == name)) {
+        return Err(ApiError::NotFound("MCP server"));
+    }
+    let updated = s.cfg.update(move |c| c.mcp_servers.retain(|m| m.name != name))?;
+    sync_mcp(&s, &updated);
+    Ok(Json(mcp_list_view(&s)))
+}
+
+/// Stops the server and starts it again; answers once it's connected (or
+/// failed).
+async fn restart_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    let c = s.cfg.get();
+    let cfg = c
+        .mcp_servers
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or(ApiError::NotFound("MCP server"))?;
+    if !cfg.enabled {
+        return Err(ApiError::Conflict("the server is turned off".into()));
+    }
+    sync_mcp(&s, &c);
+    s.mcp.restart(&name).await;
+    Ok(Json(mcp_view(&s, cfg)))
+}
+
+/// Tries a server without saving it: connects, lists its tools, stops.
+async fn test_mcp(
+    State(s): State<AppState>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<Json<Value>> {
+    let mut server = server.cleaned();
+    if server.name.is_empty() {
+        server.name = "test".into();
+    }
+    server
+        .validate()
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(match s.mcp.test(&server).await {
+        Ok((tools, info)) => json!({ "ok": true, "tools": tools, "server_info": info }),
+        Err(e) => json!({ "ok": false, "tools": [], "error": e }),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ImportMcp {
+    /// A config as MCP READMEs give it: `{"mcpServers": {...}}`, as JSON
+    /// text or an object.
+    config: Value,
+    /// Replace servers with the same name (otherwise they're skipped).
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Adds servers from a pasted Claude Desktop / Cursor / VS Code config.
+async fn import_mcp(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ImportMcp>,
+) -> ApiResult<Json<Value>> {
+    let config = match body.config {
+        Value::String(t) => serde_json::from_str::<Value>(t.trim())
+            .map_err(|e| ApiError::BadRequest(format!("that isn't valid JSON: {e}")))?,
+        v => v,
+    };
+    let found = crate::mcp::parse_import(&config).map_err(ApiError::BadRequest)?;
+    for f in &found {
+        f.validate().map_err(ApiError::BadRequest)?;
+    }
+    let existing: Vec<String> = s.cfg.read(|l| l.config.mcp_servers.iter().map(|m| m.name.clone()).collect());
+    let (mut added, mut skipped) = (Vec::new(), Vec::new());
+    for f in &found {
+        if existing.contains(&f.name) && !body.replace {
+            skipped.push(f.name.clone());
+        } else {
+            added.push(f.name.clone());
+        }
+    }
+    let replace = body.replace;
+    let updated = s.cfg.update(move |c| {
+        for f in found {
+            match c.mcp_servers.iter_mut().find(|m| m.name == f.name) {
+                Some(slot) if replace => *slot = f,
+                Some(_) => {}
+                None => c.mcp_servers.push(f),
+            }
+        }
+    })?;
+    sync_mcp(&s, &updated);
+    let mut view = mcp_list_view(&s);
+    view["added"] = json!(added);
+    view["skipped"] = json!(skipped);
+    Ok(Json(view))
 }
 
 async fn get_system_prompt(State(s): State<AppState>) -> ApiResult<Json<Value>> {

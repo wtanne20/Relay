@@ -1,6 +1,9 @@
 import type { Credentials } from './storage';
 import type {
   CustomTool,
+  McpServer,
+  McpServerView,
+  McpTestResult,
   ToolsResponse,
   DocumentFolder,
   DocumentSearch,
@@ -183,6 +186,34 @@ export class RelayClient {
   }
   deleteTool(name: string) {
     return this.request<ToolsResponse>('DELETE', `/tools/${encodeURIComponent(name)}`);
+  }
+  // ----- MCP servers -----
+  mcpServers() {
+    return this.request<{ servers: McpServerView[] }>('GET', '/mcp/servers');
+  }
+  addMcpServer(server: McpServer) {
+    return this.request<McpServerView>('POST', '/mcp/servers', server);
+  }
+  /** `name` is the server's current name; `server.name` may rename it. */
+  updateMcpServer(name: string, server: McpServer) {
+    return this.request<McpServerView>('PUT', `/mcp/servers/${encodeURIComponent(name)}`, server);
+  }
+  deleteMcpServer(name: string) {
+    return this.request<{ servers: McpServerView[] }>('DELETE', `/mcp/servers/${encodeURIComponent(name)}`);
+  }
+  restartMcpServer(name: string) {
+    return this.request<McpServerView>('POST', `/mcp/servers/${encodeURIComponent(name)}/restart`, {}, 120000);
+  }
+  /** Connects once without saving and lists the tools. */
+  testMcpServer(server: McpServer) {
+    return this.request<McpTestResult>('POST', '/mcp/test', server, 120000);
+  }
+  /** Adds servers from a pasted `{"mcpServers": {...}}` config. */
+  importMcpServers(config: string, replace = false) {
+    return this.request<{ servers: McpServerView[]; added: string[]; skipped: string[] }>('POST', '/mcp/import', {
+      config,
+      replace,
+    });
   }
   hubSearch(q: string) {
     return this.request<{ results: HubRepo[] }>('GET', `/hub/search?q=${encodeURIComponent(q)}`, undefined, 30000);

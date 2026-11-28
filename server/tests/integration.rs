@@ -2440,3 +2440,238 @@ async fn custom_tools_are_added_edited_and_run_as_quoted_commands() {
     assert_eq!(v["custom"], json!([]));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+/// Not a real test: the stdio MCP server the next test starts, by running
+/// this test binary again with RELAY_MOCK_MCP=1.
+#[test]
+#[ignore]
+fn mock_mcp_stdio_server() {
+    if std::env::var("RELAY_MOCK_MCP").is_ok() {
+        common::mock_mcp::serve_stdio();
+    }
+}
+
+async fn wait_mcp_ready(h: &Harness, name: &str) -> Value {
+    for _ in 0..200 {
+        let v = h.get(&format!("/mcp/servers/{name}")).await;
+        match v["status"]["state"].as_str() {
+            Some("ready") => return v,
+            Some("error") => panic!("{name} failed: {v}"),
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    panic!("{name} never got ready");
+}
+
+#[tokio::test]
+async fn mcp_servers_connect_and_their_tools_go_through_approvals() {
+    let h = Harness::start().await;
+    assert_eq!(h.get("/mcp/servers").await["servers"], json!([]));
+
+    // A stdio server: this test binary in mock-server mode.
+    let exe = std::env::current_exe().expect("exe");
+    let stdio = json!({
+        "name": "mock",
+        "command": exe.to_string_lossy(),
+        "args": ["mock_mcp_stdio_server", "--exact", "--ignored", "--quiet", "--test-threads=1"],
+        "env": {"RELAY_MOCK_MCP": "1"},
+    });
+    for bad in [
+        json!({"name": "Mock", "command": "x"}),
+        json!({"name": "a__b", "command": "x"}),
+        json!({"name": "nothing"}),
+        json!({"name": "web", "url": "ftp://example.com"}),
+    ] {
+        let (st, v) = h.post("/mcp/servers", bad.clone()).await;
+        assert_eq!(st, 400, "{bad} -> {v}");
+    }
+    let (st, v) = h.post("/mcp/test", stdio.clone()).await;
+    assert_eq!(st, 200);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["tools"].as_array().map(Vec::len), Some(3), "both pages: {v}");
+    let (st, v) = h.post("/mcp/servers", stdio.clone()).await;
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["transport"], "stdio");
+    let (st, _) = h.post("/mcp/servers", stdio.clone()).await;
+    assert_eq!(st, 409);
+    let v = wait_mcp_ready(&h, "mock").await;
+    let tools = v["status"]["tools"].as_array().expect("tools");
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[1]["exposed_name"], "mock__echo");
+    assert_eq!(tools[1]["read_only"], true);
+    assert_eq!(v["status"]["server_info"]["name"], "mock-mcp");
+    let saved = std::fs::read_to_string(h.dir.join("data/config.toml")).expect("config");
+    assert!(saved.contains("[[mcp_servers]]"), "{saved}");
+
+    // A custom tool can't pretend to be one of its tools.
+    let (st, _) = h
+        .post(
+            "/tools",
+            json!({"name": "mock__x", "description": "x", "command": "echo"}),
+        )
+        .await;
+    assert_eq!(st, 400);
+
+    // A plain chat, asking before acting.
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"agent": {"approval": "commands"}})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    let (_, v) = h.post("/projects/chats/sessions", json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    assert_eq!(ws.next().await["type"], "hello");
+
+    // A read-only tool runs without asking.
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:mock__echo {"text": "hello"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["content"], "echo: hello", "{result}");
+    assert_eq!(result["is_error"], false);
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // One that changes things is asked about, with an always-allow rule.
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:mock__add_note {"note": "milk"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    assert_eq!(req["approval"]["name"], "mock__add_note");
+    assert_eq!(req["approval"]["mcp"]["server"], "mock");
+    assert_eq!(req["approval"]["mcp"]["tool"], "add_note");
+    assert_eq!(req["approval"]["mcp"]["destructive"], true);
+    let rule = req["approval"]["suggested_rule"].clone();
+    assert_eq!(rule["kind"], "mcp");
+    assert_eq!(rule["pattern"], "mock__add_note");
+    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "always_allow", "rule": rule}),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["content"], "saved note: milk");
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // Now the rule covers it.
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:mock__add_note {"note": "eggs"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let events = ws.until_status(&["done", "error", "stopped"]).await;
+    assert!(
+        !events.iter().any(|e| e["type"] == "approval_request"),
+        "the rule should cover it"
+    );
+    assert!(events.iter().any(|e| e["type"] == "tool_result" && e["content"] == "saved note: eggs"));
+
+    // An error from the server reaches the model as an error.
+    let (st, v) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"agent": {"approval": "never"}})),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let (st, _) = h
+        .post(&format!("/sessions/{sid}/prompt"), json!({"content": "tool:mock__fail {}"}))
+        .await;
+    assert_eq!(st, 202);
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["is_error"], true);
+    assert_eq!(result["content"], "it broke");
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // A tool turned off can't be used.
+    let mut off = stdio.clone();
+    off["disabled_tools"] = json!(["echo"]);
+    let (st, v) = h
+        .req(reqwest::Method::PUT, "/mcp/servers/mock", Some(off))
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["status"]["state"], "ready", "a tool switch doesn't reconnect");
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:mock__echo {"text": "x"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let result = ws.until_type("tool_result").await;
+    assert!(result["content"].as_str().unwrap_or("").contains("turned off"), "{result}");
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // The activity log shows the calls with their arguments.
+    let log = h.get("/activity?limit=10").await;
+    let entries = log["entries"].as_array().expect("entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["tool"] == "mock__add_note" && e["detail"].as_str().unwrap_or("").contains("milk")),
+        "{log}"
+    );
+
+    // Restart, then delete: the server is stopped.
+    let (st, v) = h.post("/mcp/servers/mock/restart", json!({})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["status"]["state"], "ready", "{v}");
+    let (st, v) = h.req(reqwest::Method::DELETE, "/mcp/servers/mock", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(v["servers"], json!([]));
+
+    // A Streamable HTTP server with a sign-in header, added by pasting a
+    // README-style config.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, common::mock_mcp::router()).await;
+    });
+    let pasted = format!(
+        r#"{{"mcpServers": {{"Remote Mock": {{"url": "http://127.0.0.1:{port}/mcp", "headers": {{"Authorization": "Bearer secret"}}}}}}}}"#
+    );
+    let (st, v) = h.post("/mcp/import", json!({"config": pasted})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["added"], json!(["remote_mock"]));
+    let v = wait_mcp_ready(&h, "remote_mock").await;
+    assert_eq!(v["transport"], "http");
+    assert_eq!(v["status"]["tools"].as_array().map(Vec::len), Some(3));
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:remote_mock__echo {"text": "over http"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["content"], "echo: over http", "{result}");
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // A wrong token is reported, not hidden.
+    let (_, v) = h
+        .post(
+            "/mcp/test",
+            json!({"name": "bad", "url": format!("http://127.0.0.1:{port}/mcp")}),
+        )
+        .await;
+    assert_eq!(v["ok"], false);
+    assert!(v["error"].as_str().unwrap_or("").contains("401"), "{v}");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

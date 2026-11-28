@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { alert } from '../components/Dialogs';
+import { McpSection } from '../components/McpServers';
 import { Group, SectionTitle } from '../components/SettingsControls';
 import { Sheet } from '../components/Sheet';
 import { m3, mono, radius, space, type } from '../components/theme';
@@ -486,6 +487,8 @@ export default function ToolsScreen() {
             Your tools work in projects (on this PC or a linked computer), not in plain chats.
           </Text>
         ) : null}
+
+        <McpSection client={client} />
 
         <SectionTitle title="Built-in tools" />
         <Group>
