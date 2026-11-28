@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod approvals;
+pub mod catalog;
 pub mod api;
 pub mod config;
 pub mod db;

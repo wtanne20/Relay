@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -479,6 +479,12 @@ export default function ToolsScreen() {
           {data ? (
             <View style={styles.addRow}>
               <Button title="Add a tool" icon="plus" variant="tonal" onPress={() => open(EMPTY_TOOL, null)} />
+              <Button
+                title="Browse ready-made"
+                icon="storefront-outline"
+                variant="text"
+                onPress={() => router.push({ pathname: '/browse', params: { tab: 'tools' } })}
+              />
             </View>
           ) : null}
         </Group>
@@ -548,7 +554,7 @@ const styles = StyleSheet.create({
   code: { fontFamily: mono, fontSize: 13, color: m3.onSurfaceVariant },
   codeTitle: { fontFamily: mono },
   commandLine: { marginTop: 2, color: m3.outline },
-  addRow: { flexDirection: 'row', paddingHorizontal: space.lg, paddingVertical: space.md },
+  addRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.md },
   details: { paddingLeft: 56, paddingRight: space.lg, paddingBottom: space.lg, gap: space.sm },
   def: {
     backgroundColor: m3.surfaceContainer,

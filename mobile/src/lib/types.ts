@@ -498,6 +498,101 @@ export interface McpTestResult {
   server_info?: { name?: string; version?: string };
 }
 
+// ----- browse and install -----
+
+export interface CatalogSource {
+  /** e.g. anthropics/skills, or owner/repo/folder@branch */
+  source: string;
+  /** Always listed; can't be removed. */
+  builtin: boolean;
+}
+
+export interface CatalogSkill {
+  /** Folder in the repository. */
+  path: string;
+  name: string;
+  description: string;
+  files: number;
+  bytes: number;
+  url: string;
+  installed: { folder: string; update_available: boolean; installed_at: string } | null;
+  /** The user already has a skill with this name from somewhere else. */
+  name_taken: boolean;
+}
+
+export interface InstalledSkill {
+  folder: string;
+  source: string;
+  repo: string;
+  path: string;
+  commit: string;
+  version: string;
+  installed_at: string;
+}
+
+export interface CatalogSkills {
+  source: string;
+  repo?: string;
+  commit?: string;
+  skills: CatalogSkill[];
+  /** Set when the collection couldn't be read. */
+  error?: string;
+  sources: CatalogSource[];
+  installed: InstalledSkill[];
+}
+
+export interface CatalogTool {
+  title: string;
+  category: string;
+  installed: boolean;
+  tool: CustomTool;
+}
+
+/** Something to fill in before an MCP server from the registry can start. */
+export interface McpInput {
+  target: 'env' | 'header' | 'arg';
+  /** The environment variable or header it sets. */
+  key?: string;
+  /** What to call it on screen. */
+  name: string;
+  description: string;
+  required: boolean;
+  secret: boolean;
+  default: string;
+  /** The value replaces `{name}` in this text, e.g. `Bearer {token}`. */
+  template?: string;
+  /** For arg: where in args the value goes. */
+  arg_index?: number;
+  /** For an optional arg left empty: also drop this index (its --flag). */
+  drop_index?: number;
+}
+
+export interface McpOption {
+  kind: string;
+  label: string;
+  /** The package (npm/PyPI name or image) without its version. */
+  package?: string;
+  supported: boolean;
+  reason?: string;
+  command: string;
+  args: string[];
+  url: string;
+  inputs: McpInput[];
+}
+
+export interface McpEntry {
+  /** The registry's name, e.g. io.github.owner/server. */
+  id: string;
+  /** Suggested name to save it under. */
+  name: string;
+  title: string;
+  description: string;
+  version: string;
+  repository: string;
+  website: string;
+  options: McpOption[];
+}
+
 export interface SettingsResponse {
   settings: Settings;
   defaults: Settings;

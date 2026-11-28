@@ -189,6 +189,7 @@ export default function RootLayout() {
               <Stack.Screen name="agent" options={{ title: 'Agent settings' }} />
               <Stack.Screen name="approvals" options={{ title: 'Always allowed' }} />
               <Stack.Screen name="tools" options={{ title: 'Tools' }} />
+              <Stack.Screen name="browse" options={{ title: 'Browse and install' }} />
               <Stack.Screen name="activity" options={{ title: 'Activity' }} />
               <Stack.Screen name="models" options={{ title: 'Choose model' }} />
               <Stack.Screen name="hub" options={{ title: 'Download models' }} />

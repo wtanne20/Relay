@@ -19,6 +19,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 
 - [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
 - [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`, `GET/POST /tools`, `PUT/DELETE /tools/{name}`
+- [Browse and install](#browse-and-install): `GET /catalog/skills`, `POST/DELETE /catalog/skills/sources`, `POST /catalog/skills/install`, `DELETE /catalog/skills/installed/{folder}`, `GET /catalog/tools`, `GET /catalog/mcp`
 - [MCP servers](#mcp-servers): `GET/POST /mcp/servers`, `GET/PUT/DELETE /mcp/servers/{name}`, `POST /mcp/servers/{name}/restart`, `POST /mcp/test`, `POST /mcp/import`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
@@ -247,6 +248,113 @@ value is left out) and runs it in the project folder as a `run_command`, so appr
 the command guard all apply. The approval request then has `name: "run_command"`, the expanded command in `arguments`
 and `via_tool: "git_log"`. Custom tools aren't offered in plain chats. `400` for an invalid tool (bad name, a built-in
 name, no description or command, a parameter the command doesn't use), `409` if the name is taken.
+
+## Browse and install
+
+Skills from public GitHub collections, ready-made tools, and MCP servers from the official MCP registry. Relay reads
+GitHub and the registry itself, so the phone needs no internet access of its own. `502` when GitHub or the registry
+can't be reached.
+
+### `GET /catalog/skills?source=owner/repo&refresh=true`
+
+The skill collections and the skills in one of them (the first when `source` is left out). `anthropics/skills` is
+always listed; the user's own are in `skill_sources` in config.toml. A collection is a GitHub repository, optionally
+a folder and a branch: `owner/repo/folder@branch`. Listings are kept for 15 minutes; `refresh=true` reads GitHub again.
+
+```json
+{
+  "source": "anthropics/skills",
+  "repo": "anthropics/skills",
+  "commit": "f1e2…",
+  "skills": [
+    {
+      "path": "skills/pdf",
+      "name": "pdf",
+      "description": "Use this skill whenever the user wants to do anything with PDF files…",
+      "files": 9,
+      "bytes": 61234,
+      "url": "https://github.com/anthropics/skills/tree/f1e2…/skills/pdf",
+      "installed": { "folder": "pdf", "update_available": false, "installed_at": "…" },
+      "name_taken": false
+    }
+  ],
+  "sources": [{ "source": "anthropics/skills", "builtin": true }],
+  "installed": [{ "folder": "pdf", "source": "anthropics/skills", "repo": "anthropics/skills", "path": "skills/pdf", "commit": "f1e2…", "version": "73bd…", "installed_at": "…" }]
+}
+```
+
+`name_taken` means a skill with that name is already there from somewhere else (bundled, or a folder the user made).
+`update_available` means a file in that skill folder changed on GitHub since it was installed. When a collection can't
+be read, the answer is still `200` with `skills: []` and an `error`.
+
+### `POST /catalog/skills/sources` → `201`, `DELETE /catalog/skills/sources?source=…`
+
+Add (`{"source": "https://github.com/owner/repo/tree/main/skills"}`, also `owner/repo`) or remove a collection. Relay
+reads it first: `400` if it isn't a repository or has no skills. The answer has the saved spelling in `source`.
+
+### `POST /catalog/skills/install`
+
+`{"source": "anthropics/skills", "path": "skills/pdf"}` downloads that folder (at most 400 files and 50 MB) into
+`skills/<folder>` in the data folder, with a `.relay-skill.json` saying where it came from. Installing again updates it.
+`409` if a folder with that name is there and Relay didn't install it from the same place. Answers
+`{"installed": {"folder": "pdf", …}, "name": "pdf"}`.
+
+### `DELETE /catalog/skills/installed/{folder}` → `204`
+
+Removes a skill Relay installed. `404` for folders without `.relay-skill.json` (the user's own are never deleted).
+
+### `GET /catalog/tools`
+
+Ready-made tools written for this PC's shell (PowerShell, sh, or only the shell-neutral ones for cmd), as bodies for
+`POST /tools`, with `installed` when the user has a tool of that name.
+
+```json
+{ "shell": "powershell.exe", "tools": [{ "title": "Search the code", "category": "Files", "installed": false, "tool": { "name": "search_text", "description": "…", "command": "…", "parameters": [ … ], "enabled": true, "timeout_seconds": 0 } }] }
+```
+
+### `GET /catalog/mcp?q=github&cursor=…`
+
+Searches the official MCP registry (latest versions, active servers) and turns each result into ways to run it. Best
+matches first: the service's own publisher (`io.github.github/…`, `com.notion/…`), then exact names.
+
+```json
+{
+  "servers": [
+    {
+      "id": "io.github.github/github-mcp-server",
+      "name": "github",
+      "title": "GitHub",
+      "description": "Connect AI assistants to GitHub…",
+      "version": "2.3.0",
+      "repository": "https://github.com/github/github-mcp-server",
+      "website": "",
+      "options": [
+        {
+          "kind": "oci",
+          "label": "Docker image",
+          "package": "ghcr.io/github/github-mcp-server",
+          "supported": true,
+          "command": "docker",
+          "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN={token}", "ghcr.io/github/github-mcp-server:2.3.0"],
+          "url": "",
+          "inputs": [
+            { "target": "arg", "name": "token", "description": "…", "required": false, "secret": true, "default": "", "template": "GITHUB_PERSONAL_ACCESS_TOKEN={token}", "arg_index": 4, "drop_index": 3 }
+          ]
+        },
+        { "kind": "remote", "label": "Hosted server", "supported": true, "command": "", "args": [], "url": "https://api.githubcopilot.com/mcp/",
+          "inputs": [{ "target": "header", "key": "Authorization", "name": "Authorization", "required": false, "secret": true, "default": "Bearer " }] }
+      ]
+    }
+  ],
+  "next_cursor": "…"
+}
+```
+
+`kind` is `npm` (`npx -y pkg@version`), `pypi` (`uvx pkg==version`), `oci` (`docker run -i --rm …`) or `remote`
+(Streamable HTTP). Others, and SSE-only remotes, have `supported: false` and a `reason`. To install, fill each input:
+`env` and `header` inputs set `env[key]` / `headers[key]`; `arg` inputs go into `args[arg_index]`. With a `template`,
+the value replaces `{name}` in it. An optional `arg` left empty removes `arg_index` and `drop_index` (its flag). Then
+`POST /mcp/servers` with `command`, `args`, `env` (or `url`, `headers`).
 
 ## MCP servers
 

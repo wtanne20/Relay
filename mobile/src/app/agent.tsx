@@ -424,10 +424,16 @@ export default function AgentSettingsScreen() {
         <SectionTitle title="Prompt and skills" />
         <Group>
           <NavRow label="System prompt" icon="text-box-outline" onPress={() => router.push('/system-prompt')} />
+          <NavRow
+            label="Browse skills"
+            value="Install skills from GitHub collections"
+            icon="storefront-outline"
+            onPress={() => router.push({ pathname: '/browse', params: { tab: 'skills' } })}
+          />
           {skills && skills.length === 0 ? (
             <View style={styles.note}>
               <Text style={[type.bodyMedium, styles.grow]}>
-                No skills found. Add SKILL.md folders to the skills folder next to config.toml, or to LM Studio's skills
+                No skills found. Browse skills to install some, or add SKILL.md folders to the skills folder next to config.toml or to LM Studio's skills
                 folder.
               </Text>
             </View>

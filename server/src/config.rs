@@ -22,6 +22,9 @@ pub struct Config {
     pub skills_paths: Vec<String>,
     /// Skill names turned off in the app.
     pub disabled_skills: Vec<String>,
+    /// GitHub collections the user added to Browse skills (`owner/repo`,
+    /// optionally `/folder` and `@branch`). anthropics/skills is always there.
+    pub skill_sources: Vec<String>,
     /// Folder new projects are created in. When set, adding a project with
     /// just a name creates `<projects_folder>/<name>`. Empty = not set.
     pub projects_folder: String,
@@ -280,6 +283,7 @@ impl Default for Config {
             system_prompt_path: "system_prompt.md".into(),
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
+            skill_sources: Vec::new(),
             projects_folder: String::new(),
             models_folder: String::new(),
             model_tags: Default::default(),
@@ -473,6 +477,7 @@ impl Config {
                 ));
             }
         }
+        crate::catalog::validate_sources(&self.skill_sources)?;
         Ok(())
     }
 

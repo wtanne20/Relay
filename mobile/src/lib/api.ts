@@ -1,5 +1,8 @@
 import type { Credentials } from './storage';
 import type {
+  CatalogSkills,
+  CatalogTool,
+  McpEntry,
   CustomTool,
   McpServer,
   McpServerView,
@@ -214,6 +217,43 @@ export class RelayClient {
       config,
       replace,
     });
+  }
+  // ----- browse and install -----
+  catalogSkills(source?: string, refresh = false) {
+    const q = new URLSearchParams();
+    if (source) q.set('source', source);
+    if (refresh) q.set('refresh', 'true');
+    return this.request<CatalogSkills>('GET', `/catalog/skills?${q}`, undefined, 60000);
+  }
+  addSkillSource(source: string) {
+    return this.request<{ source: string; skills?: number }>('POST', '/catalog/skills/sources', { source }, 60000);
+  }
+  removeSkillSource(source: string) {
+    return this.request<void>('DELETE', `/catalog/skills/sources?source=${encodeURIComponent(source)}`);
+  }
+  installSkill(source: string, path: string) {
+    return this.request<{ name: string; installed: { folder: string } }>(
+      'POST',
+      '/catalog/skills/install',
+      { source, path },
+      180000,
+    );
+  }
+  uninstallSkill(folder: string) {
+    return this.request<void>('DELETE', `/catalog/skills/installed/${encodeURIComponent(folder)}`);
+  }
+  catalogTools() {
+    return this.request<{ tools: CatalogTool[]; shell: string }>('GET', '/catalog/tools');
+  }
+  catalogMcp(q: string, cursor?: string) {
+    const p = new URLSearchParams({ q });
+    if (cursor) p.set('cursor', cursor);
+    return this.request<{ servers: McpEntry[]; next_cursor: string | null }>(
+      'GET',
+      `/catalog/mcp?${p}`,
+      undefined,
+      30000,
+    );
   }
   hubSearch(q: string) {
     return this.request<{ results: HubRepo[] }>('GET', `/hub/search?q=${encodeURIComponent(q)}`, undefined, 30000);

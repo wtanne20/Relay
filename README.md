@@ -163,6 +163,18 @@ the `"mcpServers"` config most servers show in their instructions. Their tools w
 approvals on, the agent asks before each tool call unless the server marks the tool read-only or you set the server
 to run without asking; "Always allow" works per tool. You can turn single tools off.
 
+### Browse and install
+
+Settings > Browse and install finds things to add without copying folders by hand:
+
+- **Skills** from GitHub collections. [anthropics/skills](https://github.com/anthropics/skills) is listed by default;
+  add any public repository (or a folder in one) that has skill folders. Install downloads the skill into the skills
+  folder, **Update** appears when it changed on GitHub, and **Remove** deletes only skills installed this way.
+- **Tools**: ready-made tools such as searching the code, git status and diffs, running npm, cargo or pytest, folder
+  sizes and listening ports, written for the PC's shell. They're added to your own tools, where you can change them.
+- **MCP servers** from the [official MCP registry](https://registry.modelcontextprotocol.io). Search for a service,
+  pick how to run it (npx, uvx, Docker or a hosted address), fill in any keys it needs, and Relay saves and starts it.
+
 ### Share to Relay (Android)
 
 Relay shows up in Android's share sheet. Share a link, some text, screenshots or photos, a voice note or any

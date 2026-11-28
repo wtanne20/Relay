@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
@@ -659,6 +660,12 @@ export function McpSection({ client }: { client: RelayClient }) {
               onPress={() => setEditor({ server: EMPTY, editing: null, key: Date.now() })}
             />
             <Button title="Paste a config" icon="content-paste" variant="text" onPress={() => setImporting(true)} />
+            <Button
+              title="Browse the registry"
+              icon="storefront-outline"
+              variant="text"
+              onPress={() => router.push({ pathname: '/browse', params: { tab: 'mcp' } })}
+            />
           </View>
         ) : null}
       </Group>

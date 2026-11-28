@@ -119,6 +119,9 @@ pub enum ApiError {
     NotFound(&'static str),
     #[error("{0}")]
     Conflict(String),
+    /// Another service (GitHub, a registry) failed or couldn't be reached.
+    #[error("{0}")]
+    BadGateway(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -164,6 +167,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::BadGateway(_) => StatusCode::BAD_GATEWAY,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -219,6 +223,18 @@ pub fn router(state: AppState) -> Router {
             get(get_system_prompt).put(put_system_prompt),
         )
         .route("/skills", get(list_skills))
+        .route("/catalog/skills", get(catalog_skills))
+        .route(
+            "/catalog/skills/sources",
+            post(add_skill_source).delete(remove_skill_source),
+        )
+        .route("/catalog/skills/install", post(install_skill))
+        .route(
+            "/catalog/skills/installed/{folder}",
+            axum::routing::delete(uninstall_skill),
+        )
+        .route("/catalog/tools", get(catalog_tools))
+        .route("/catalog/mcp", get(catalog_mcp))
         .route("/tools", get(list_tools).post(add_tool))
         .route(
             "/tools/{name}",
@@ -891,6 +907,190 @@ async fn import_mcp(
     view["added"] = json!(added);
     view["skipped"] = json!(skipped);
     Ok(Json(view))
+}
+
+// ---------- browse and install ----------
+
+fn catalog_error(e: crate::catalog::InstallError) -> ApiError {
+    use crate::catalog::InstallError as E;
+    match e {
+        E::Invalid(m) => ApiError::BadRequest(m),
+        E::Conflict(m) => ApiError::Conflict(m),
+        E::NotFound => ApiError::NotFound("installed skill"),
+        E::Remote(e) => ApiError::BadGateway(format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// The skill collections, and the skills in one of them (the first when
+/// `source` is left out), each marked installed or not.
+async fn catalog_skills(
+    State(s): State<AppState>,
+    Query(q): Query<CatalogQuery>,
+) -> ApiResult<Json<Value>> {
+    let (user_sources, skills_dir, roots) = s.cfg.read(|l| {
+        (
+            l.config.skill_sources.clone(),
+            l.data_dir.join("skills"),
+            l.skill_roots(),
+        )
+    });
+    let sources = crate::catalog::all_sources(&user_sources);
+    let chosen = if q.source.trim().is_empty() {
+        sources[0].0.clone()
+    } else {
+        q.source.trim().to_string()
+    };
+    let source = crate::catalog::Source::parse(&chosen).map_err(ApiError::BadRequest)?;
+    let sources_out: Vec<Value> = sources
+        .iter()
+        .map(|(id, builtin)| json!({ "source": id, "builtin": builtin }))
+        .collect();
+    let (have, local) = tokio::task::spawn_blocking(move || {
+        let names: Vec<String> = crate::skills::discover(&roots)
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+        (crate::catalog::installed(&skills_dir), names)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("skill scan failed: {e}"))?;
+    let mut view = match crate::catalog::list(&source, q.refresh).await {
+        Ok(listing) => crate::catalog::skills_view(&source.id(), &listing, &have, &local),
+        Err(e) => json!({ "source": source.id(), "skills": [], "error": format!("{e:#}") }),
+    };
+    view["sources"] = json!(sources_out);
+    view["installed"] = json!(have);
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+struct SourceBody {
+    source: String,
+}
+
+/// Adds a GitHub collection after checking it holds skills.
+async fn add_skill_source(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<SourceBody>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let source = crate::catalog::Source::parse(&body.source).map_err(ApiError::BadRequest)?;
+    let id = source.id();
+    let known = s.cfg.read(|l| {
+        crate::catalog::all_sources(&l.config.skill_sources)
+            .iter()
+            .any(|(x, _)| *x == id)
+    });
+    if !known {
+        let listing = crate::catalog::list(&source, true)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+        let n = listing.skills.len();
+        let id2 = id.clone();
+        s.cfg.update(move |c| c.skill_sources.push(id2))?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(json!({ "source": id, "skills": n })),
+        ));
+    }
+    Ok((StatusCode::OK, Json(json!({ "source": id }))))
+}
+
+async fn remove_skill_source(
+    State(s): State<AppState>,
+    Query(q): Query<CatalogQuery>,
+) -> ApiResult<StatusCode> {
+    let id = q.source.trim().to_string();
+    if !s.cfg.read(|l| l.config.skill_sources.contains(&id)) {
+        return Err(ApiError::NotFound("skill collection"));
+    }
+    s.cfg
+        .update(move |c| c.skill_sources.retain(|x| *x != id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct InstallSkillBody {
+    source: String,
+    path: String,
+}
+
+/// Downloads a skill into the skills folder (or updates one installed from
+/// the same place).
+async fn install_skill(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<InstallSkillBody>,
+) -> ApiResult<Json<Value>> {
+    let source = crate::catalog::Source::parse(&body.source).map_err(ApiError::BadRequest)?;
+    let skills_dir = s.cfg.read(|l| l.data_dir.join("skills"));
+    let done = crate::catalog::install(&source, body.path.trim(), &skills_dir)
+        .await
+        .map_err(catalog_error)?;
+    let name = crate::skills::discover(&[skills_dir.join(&done.folder)])
+        .into_iter()
+        .next()
+        .map(|k| k.name)
+        .unwrap_or_else(|| done.folder.clone());
+    Ok(Json(json!({ "installed": done, "name": name })))
+}
+
+async fn uninstall_skill(
+    State(s): State<AppState>,
+    UrlPath(folder): UrlPath<String>,
+) -> ApiResult<StatusCode> {
+    let skills_dir = s.cfg.read(|l| l.data_dir.join("skills"));
+    crate::catalog::uninstall(&skills_dir, &folder).map_err(catalog_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ready-made tools for this computer's shell, marked when the user already
+/// has a tool with that name.
+async fn catalog_tools(State(s): State<AppState>) -> Json<Value> {
+    let (shell, mine) = s.cfg.read(|l| {
+        (
+            l.config.shell.clone(),
+            l.config
+                .custom_tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>(),
+        )
+    });
+    let tools: Vec<Value> = crate::catalog::tool_templates(&shell)
+        .into_iter()
+        .map(|(title, category, tool)| {
+            json!({
+                "title": title,
+                "category": category,
+                "installed": mine.contains(&tool.name),
+                "tool": tool,
+            })
+        })
+        .collect();
+    Json(json!({ "tools": tools, "shell": shell }))
+}
+
+#[derive(Deserialize)]
+struct McpQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    cursor: String,
+}
+
+/// Searches the official MCP registry.
+async fn catalog_mcp(Query(q): Query<McpQuery>) -> ApiResult<Json<Value>> {
+    let (servers, next) = crate::catalog::mcp_search(&q.q, Some(&q.cursor))
+        .await
+        .map_err(|e| ApiError::BadGateway(format!("{e:#}")))?;
+    Ok(Json(json!({ "servers": servers, "next_cursor": next })))
 }
 
 async fn get_system_prompt(State(s): State<AppState>) -> ApiResult<Json<Value>> {
