@@ -43,9 +43,16 @@ export function ApprovalCard({
         </View>
         <View style={styles.grow}>
           <Text style={[type.titleMedium, { color: m3.onWarningContainer }]}>
-            {QUESTION[approval.name] ?? `Allow ${approval.name}?`}
+            {approval.mcp
+              ? `Use ${approval.mcp.title || approval.mcp.tool}?`
+              : (QUESTION[approval.name] ?? `Allow ${approval.name}?`)}
           </Text>
-          {approval.via_tool ? (
+          {approval.mcp ? (
+            <Text style={[type.bodyMedium, styles.path]} numberOfLines={2}>
+              From the {approval.mcp.server} MCP server
+              {approval.mcp.destructive ? '. It may change or delete things there.' : ''}
+            </Text>
+          ) : approval.via_tool ? (
             <Text style={[type.bodyMedium, styles.path]} numberOfLines={1}>
               From your tool {approval.via_tool}
             </Text>
@@ -60,7 +67,7 @@ export function ApprovalCard({
       </View>
       <ScrollView style={styles.details} nestedScrollEnabled>
         <Text selectable style={styles.code}>
-          {approval.name === 'run_command' ? details : details.split('\n').slice(1).join('\n')}
+          {approval.name === 'run_command' || approval.mcp ? details : details.split('\n').slice(1).join('\n')}
         </Text>
       </ScrollView>
       <View style={styles.row}>

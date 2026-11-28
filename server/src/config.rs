@@ -22,6 +22,9 @@ pub struct Config {
     pub skills_paths: Vec<String>,
     /// Skill names turned off in the app.
     pub disabled_skills: Vec<String>,
+    /// GitHub collections the user added to Browse skills (`owner/repo`,
+    /// optionally `/folder` and `@branch`). anthropics/skills is always there.
+    pub skill_sources: Vec<String>,
     /// Folder new projects are created in. When set, adding a project with
     /// just a name creates `<projects_folder>/<name>`. Empty = not set.
     pub projects_folder: String,
@@ -43,6 +46,8 @@ pub struct Config {
     /// Tools added in the app: named commands with parameters the model
     /// fills in. Kept last so they're written after the other settings.
     pub custom_tools: Vec<crate::tools::custom::CustomTool>,
+    /// MCP servers whose tools the agent can use.
+    pub mcp_servers: Vec<crate::mcp::McpServerConfig>,
 }
 
 /// Image generation with stable-diffusion.cpp's sd-server.
@@ -278,6 +283,7 @@ impl Default for Config {
             system_prompt_path: "system_prompt.md".into(),
             skills_paths: Vec::new(),
             disabled_skills: Vec::new(),
+            skill_sources: Vec::new(),
             projects_folder: String::new(),
             models_folder: String::new(),
             model_tags: Default::default(),
@@ -293,6 +299,7 @@ impl Default for Config {
             routing: RoutingConfig::default(),
             images: ImagesConfig::default(),
             custom_tools: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -459,6 +466,18 @@ impl Config {
             return Err("extra_args may not set --host, --port or the model".into());
         }
         crate::tools::custom::validate_all(&self.custom_tools)?;
+        crate::mcp::validate_all(&self.mcp_servers)?;
+        for t in &self.custom_tools {
+            if let Some(server) = crate::mcp::server_of(&t.name)
+                && self.mcp_servers.iter().any(|s| s.name == server)
+            {
+                return Err(format!(
+                    "tool name '{}' looks like a tool of the '{server}' MCP server; pick another name",
+                    t.name
+                ));
+            }
+        }
+        crate::catalog::validate_sources(&self.skill_sources)?;
         Ok(())
     }
 

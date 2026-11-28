@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { alert } from '../components/Dialogs';
+import { McpSection } from '../components/McpServers';
 import { Group, SectionTitle } from '../components/SettingsControls';
 import { Sheet } from '../components/Sheet';
 import { m3, mono, radius, space, type } from '../components/theme';
@@ -478,6 +479,12 @@ export default function ToolsScreen() {
           {data ? (
             <View style={styles.addRow}>
               <Button title="Add a tool" icon="plus" variant="tonal" onPress={() => open(EMPTY_TOOL, null)} />
+              <Button
+                title="Browse ready-made"
+                icon="storefront-outline"
+                variant="text"
+                onPress={() => router.push({ pathname: '/browse', params: { tab: 'tools' } })}
+              />
             </View>
           ) : null}
         </Group>
@@ -486,6 +493,8 @@ export default function ToolsScreen() {
             Your tools work in projects (on this PC or a linked computer), not in plain chats.
           </Text>
         ) : null}
+
+        <McpSection client={client} />
 
         <SectionTitle title="Built-in tools" />
         <Group>
@@ -545,7 +554,7 @@ const styles = StyleSheet.create({
   code: { fontFamily: mono, fontSize: 13, color: m3.onSurfaceVariant },
   codeTitle: { fontFamily: mono },
   commandLine: { marginTop: 2, color: m3.outline },
-  addRow: { flexDirection: 'row', paddingHorizontal: space.lg, paddingVertical: space.md },
+  addRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.md },
   details: { paddingLeft: 56, paddingRight: space.lg, paddingBottom: space.lg, gap: space.sm },
   def: {
     backgroundColor: m3.surfaceContainer,

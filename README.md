@@ -154,6 +154,27 @@ shows the exact command (or the file and the change) with **Allow**, **Deny** an
 task**, and you get a push notification ("… needs your approval"). Denied calls are reported to the model, which
 then tries another approach or asks you. Stopping the task while it waits cancels it.
 
+### MCP servers
+
+Settings > Tools > MCP servers connects the agent to [MCP](https://modelcontextprotocol.io) servers, the
+ready-made tools other people publish for GitHub, databases, Home Assistant and more. Add one as a program on the PC
+(usually `npx` or `uvx` plus the package, with any API keys as environment variables) or as a web address, or paste
+the `"mcpServers"` config most servers show in their instructions. Their tools work in every chat, on the PC. With
+approvals on, the agent asks before each tool call unless the server marks the tool read-only or you set the server
+to run without asking; "Always allow" works per tool. You can turn single tools off.
+
+### Browse and install
+
+Settings > Browse and install finds things to add without copying folders by hand:
+
+- **Skills** from GitHub collections. [anthropics/skills](https://github.com/anthropics/skills) is listed by default;
+  add any public repository (or a folder in one) that has skill folders. Install downloads the skill into the skills
+  folder, **Update** appears when it changed on GitHub, and **Remove** deletes only skills installed this way.
+- **Tools**: ready-made tools such as searching the code, git status and diffs, running npm, cargo or pytest, folder
+  sizes and listening ports, written for the PC's shell. They're added to your own tools, where you can change them.
+- **MCP servers** from the [official MCP registry](https://registry.modelcontextprotocol.io). Search for a service,
+  pick how to run it (npx, uvx, Docker or a hosted address), fill in any keys it needs, and Relay saves and starts it.
+
 ### Share to Relay (Android)
 
 Relay shows up in Android's share sheet. Share a link, some text, screenshots or photos, a voice note or any
@@ -337,7 +358,8 @@ cargo run -- serve                                 # terminal 2: finds the "mode
 
 Prompts mentioning `hello.txt` make it call `write_file`, `run: <command>` calls `run_command`, and anything else
 is echoed. `server/examples/mock_sd.rs` does the same for sd-server (gradient pictures; `dev.ps1 -Mock` uses
-both). `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
+both). `server/examples/mock_mcp.rs` is a small MCP server (stdio, or `--http 8790` with the header
+`Authorization: Bearer secret`) for trying MCP support. `cargo run --example relay_cli -- --project <folder> "<prompt>"` is a small command-line client.
 
 ## Security notes
 

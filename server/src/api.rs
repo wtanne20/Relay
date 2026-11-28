@@ -57,6 +57,8 @@ pub struct AppInner {
     pub links: Arc<crate::link::LinkHub>,
     /// Folders the agent can search, on any of the user's computers.
     pub knowledge: Arc<crate::knowledge::KnowledgeBase>,
+    /// Connections to the user's MCP servers.
+    pub mcp: Arc<crate::mcp::McpHub>,
     /// The current 6-digit code a new device can pair with.
     pub pair_code: std::sync::Mutex<Option<PairCode>>,
     /// The built web UI bundle to serve at `/` (None if not bundled).
@@ -117,6 +119,9 @@ pub enum ApiError {
     NotFound(&'static str),
     #[error("{0}")]
     Conflict(String),
+    /// Another service (GitHub, a registry) failed or couldn't be reached.
+    #[error("{0}")]
+    BadGateway(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -162,6 +167,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::BadGateway(_) => StatusCode::BAD_GATEWAY,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -217,11 +223,31 @@ pub fn router(state: AppState) -> Router {
             get(get_system_prompt).put(put_system_prompt),
         )
         .route("/skills", get(list_skills))
+        .route("/catalog/skills", get(catalog_skills))
+        .route(
+            "/catalog/skills/sources",
+            post(add_skill_source).delete(remove_skill_source),
+        )
+        .route("/catalog/skills/install", post(install_skill))
+        .route(
+            "/catalog/skills/installed/{folder}",
+            axum::routing::delete(uninstall_skill),
+        )
+        .route("/catalog/tools", get(catalog_tools))
+        .route("/catalog/mcp", get(catalog_mcp))
         .route("/tools", get(list_tools).post(add_tool))
         .route(
             "/tools/{name}",
             axum::routing::put(update_tool).delete(delete_tool),
         )
+        .route("/mcp/servers", get(list_mcp).post(add_mcp))
+        .route(
+            "/mcp/servers/{name}",
+            get(get_mcp).put(update_mcp).delete(delete_mcp),
+        )
+        .route("/mcp/servers/{name}/restart", post(restart_mcp))
+        .route("/mcp/test", post(test_mcp))
+        .route("/mcp/import", post(import_mcp))
         .route("/recent", get(recent))
         .route("/archived", get(archived))
         .route("/mockups", post(create_mockup))
@@ -681,6 +707,390 @@ async fn delete_tool(
     }
     let updated = s.cfg.update(move |c| c.custom_tools.retain(|t| t.name != name))?;
     Ok(Json(tools_view(&updated)))
+}
+
+// ---------- MCP servers ----------
+
+/// One server as the app sees it: its settings plus how it's doing.
+fn mcp_view(s: &AppState, cfg: &crate::mcp::McpServerConfig) -> Value {
+    let mut v = serde_json::to_value(cfg).unwrap_or_else(|_| json!({}));
+    // A server that's off has no connection, so it shows Off and no tools.
+    let mut status = s.mcp.status(&cfg.name);
+    status.tools.sort_by(|a, b| a.name.cmp(&b.name));
+    let tools: Vec<Value> = status
+        .tools
+        .iter()
+        .map(|t| {
+            let mut tv = serde_json::to_value(t).unwrap_or_else(|_| json!({}));
+            tv["enabled"] = json!(cfg.tool_allowed(&t.name));
+            tv
+        })
+        .collect();
+    let mut st = serde_json::to_value(&status).unwrap_or_else(|_| json!({}));
+    st["tools"] = Value::Array(tools);
+    v["transport"] = json!(cfg.transport());
+    v["status"] = st;
+    v
+}
+
+fn mcp_list_view(s: &AppState) -> Value {
+    let servers: Vec<Value> = s
+        .cfg
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|c| mcp_view(s, c))
+        .collect();
+    json!({ "servers": servers })
+}
+
+fn sync_mcp(s: &AppState, c: &Config) {
+    s.mcp.sync(&c.mcp_servers);
+}
+
+/// Every MCP server, with its state and tools.
+async fn list_mcp(State(s): State<AppState>) -> Json<Value> {
+    Json(mcp_list_view(&s))
+}
+
+async fn get_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    let c = s.cfg.get();
+    let cfg = c
+        .mcp_servers
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or(ApiError::NotFound("MCP server"))?;
+    Ok(Json(mcp_view(&s, cfg)))
+}
+
+/// Adds a server and starts connecting to it (in the background).
+async fn add_mcp(
+    State(s): State<AppState>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let server = server.cleaned();
+    if s.cfg.read(|l| l.config.mcp_servers.iter().any(|m| m.name == server.name)) {
+        return Err(ApiError::Conflict(format!(
+            "there is already an MCP server named '{}'",
+            server.name
+        )));
+    }
+    let added = server.clone();
+    let updated = s.cfg.update(move |c| c.mcp_servers.push(server))?;
+    sync_mcp(&s, &updated);
+    Ok((StatusCode::CREATED, Json(mcp_view(&s, &added))))
+}
+
+/// Replaces a server's settings (it may be renamed). Changing how it's
+/// started reconnects it; notes, trust and tool switches don't.
+async fn update_mcp(
+    State(s): State<AppState>,
+    UrlPath(name): UrlPath<String>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<Json<Value>> {
+    let server = server.cleaned();
+    let (exists, taken) = s.cfg.read(|l| {
+        let list = &l.config.mcp_servers;
+        (
+            list.iter().any(|m| m.name == name),
+            server.name != name && list.iter().any(|m| m.name == server.name),
+        )
+    });
+    if !exists {
+        return Err(ApiError::NotFound("MCP server"));
+    }
+    if taken {
+        return Err(ApiError::Conflict(format!(
+            "there is already an MCP server named '{}'",
+            server.name
+        )));
+    }
+    let saved = server.clone();
+    let updated = s.cfg.update(move |c| {
+        if let Some(slot) = c.mcp_servers.iter_mut().find(|m| m.name == name) {
+            *slot = server;
+        }
+    })?;
+    sync_mcp(&s, &updated);
+    Ok(Json(mcp_view(&s, &saved)))
+}
+
+async fn delete_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    if !s.cfg.read(|l| l.config.mcp_servers.iter().any(|m| m.name == name)) {
+        return Err(ApiError::NotFound("MCP server"));
+    }
+    let updated = s.cfg.update(move |c| c.mcp_servers.retain(|m| m.name != name))?;
+    sync_mcp(&s, &updated);
+    Ok(Json(mcp_list_view(&s)))
+}
+
+/// Stops the server and starts it again; answers once it's connected (or
+/// failed).
+async fn restart_mcp(State(s): State<AppState>, UrlPath(name): UrlPath<String>) -> ApiResult<Json<Value>> {
+    let c = s.cfg.get();
+    let cfg = c
+        .mcp_servers
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or(ApiError::NotFound("MCP server"))?;
+    if !cfg.enabled {
+        return Err(ApiError::Conflict("the server is turned off".into()));
+    }
+    sync_mcp(&s, &c);
+    s.mcp.restart(&name).await;
+    Ok(Json(mcp_view(&s, cfg)))
+}
+
+/// Tries a server without saving it: connects, lists its tools, stops.
+async fn test_mcp(
+    State(s): State<AppState>,
+    JsonBody(server): JsonBody<crate::mcp::McpServerConfig>,
+) -> ApiResult<Json<Value>> {
+    let mut server = server.cleaned();
+    if server.name.is_empty() {
+        server.name = "test".into();
+    }
+    server
+        .validate()
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(match s.mcp.test(&server).await {
+        Ok((tools, info)) => json!({ "ok": true, "tools": tools, "server_info": info }),
+        Err(e) => json!({ "ok": false, "tools": [], "error": e }),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ImportMcp {
+    /// A config as MCP READMEs give it: `{"mcpServers": {...}}`, as JSON
+    /// text or an object.
+    config: Value,
+    /// Replace servers with the same name (otherwise they're skipped).
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Adds servers from a pasted Claude Desktop / Cursor / VS Code config.
+async fn import_mcp(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<ImportMcp>,
+) -> ApiResult<Json<Value>> {
+    let config = match body.config {
+        Value::String(t) => serde_json::from_str::<Value>(t.trim())
+            .map_err(|e| ApiError::BadRequest(format!("that isn't valid JSON: {e}")))?,
+        v => v,
+    };
+    let found = crate::mcp::parse_import(&config).map_err(ApiError::BadRequest)?;
+    for f in &found {
+        f.validate().map_err(ApiError::BadRequest)?;
+    }
+    let existing: Vec<String> = s.cfg.read(|l| l.config.mcp_servers.iter().map(|m| m.name.clone()).collect());
+    let (mut added, mut skipped) = (Vec::new(), Vec::new());
+    for f in &found {
+        if existing.contains(&f.name) && !body.replace {
+            skipped.push(f.name.clone());
+        } else {
+            added.push(f.name.clone());
+        }
+    }
+    let replace = body.replace;
+    let updated = s.cfg.update(move |c| {
+        for f in found {
+            match c.mcp_servers.iter_mut().find(|m| m.name == f.name) {
+                Some(slot) if replace => *slot = f,
+                Some(_) => {}
+                None => c.mcp_servers.push(f),
+            }
+        }
+    })?;
+    sync_mcp(&s, &updated);
+    let mut view = mcp_list_view(&s);
+    view["added"] = json!(added);
+    view["skipped"] = json!(skipped);
+    Ok(Json(view))
+}
+
+// ---------- browse and install ----------
+
+fn catalog_error(e: crate::catalog::InstallError) -> ApiError {
+    use crate::catalog::InstallError as E;
+    match e {
+        E::Invalid(m) => ApiError::BadRequest(m),
+        E::Conflict(m) => ApiError::Conflict(m),
+        E::NotFound => ApiError::NotFound("installed skill"),
+        E::Remote(e) => ApiError::BadGateway(format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// The skill collections, and the skills in one of them (the first when
+/// `source` is left out), each marked installed or not.
+async fn catalog_skills(
+    State(s): State<AppState>,
+    Query(q): Query<CatalogQuery>,
+) -> ApiResult<Json<Value>> {
+    let (user_sources, skills_dir, roots) = s.cfg.read(|l| {
+        (
+            l.config.skill_sources.clone(),
+            l.data_dir.join("skills"),
+            l.skill_roots(),
+        )
+    });
+    let sources = crate::catalog::all_sources(&user_sources);
+    let chosen = if q.source.trim().is_empty() {
+        sources[0].0.clone()
+    } else {
+        q.source.trim().to_string()
+    };
+    let source = crate::catalog::Source::parse(&chosen).map_err(ApiError::BadRequest)?;
+    let sources_out: Vec<Value> = sources
+        .iter()
+        .map(|(id, builtin)| json!({ "source": id, "builtin": builtin }))
+        .collect();
+    let (have, local) = tokio::task::spawn_blocking(move || {
+        let names: Vec<String> = crate::skills::discover(&roots)
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+        (crate::catalog::installed(&skills_dir), names)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("skill scan failed: {e}"))?;
+    let mut view = match crate::catalog::list(&source, q.refresh).await {
+        Ok(listing) => crate::catalog::skills_view(&source.id(), &listing, &have, &local),
+        Err(e) => json!({ "source": source.id(), "skills": [], "error": format!("{e:#}") }),
+    };
+    view["sources"] = json!(sources_out);
+    view["installed"] = json!(have);
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+struct SourceBody {
+    source: String,
+}
+
+/// Adds a GitHub collection after checking it holds skills.
+async fn add_skill_source(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<SourceBody>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let source = crate::catalog::Source::parse(&body.source).map_err(ApiError::BadRequest)?;
+    let id = source.id();
+    let known = s.cfg.read(|l| {
+        crate::catalog::all_sources(&l.config.skill_sources)
+            .iter()
+            .any(|(x, _)| *x == id)
+    });
+    if !known {
+        let listing = crate::catalog::list(&source, true)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+        let n = listing.skills.len();
+        let id2 = id.clone();
+        s.cfg.update(move |c| c.skill_sources.push(id2))?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(json!({ "source": id, "skills": n })),
+        ));
+    }
+    Ok((StatusCode::OK, Json(json!({ "source": id }))))
+}
+
+async fn remove_skill_source(
+    State(s): State<AppState>,
+    Query(q): Query<CatalogQuery>,
+) -> ApiResult<StatusCode> {
+    let id = q.source.trim().to_string();
+    if !s.cfg.read(|l| l.config.skill_sources.contains(&id)) {
+        return Err(ApiError::NotFound("skill collection"));
+    }
+    s.cfg
+        .update(move |c| c.skill_sources.retain(|x| *x != id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct InstallSkillBody {
+    source: String,
+    path: String,
+}
+
+/// Downloads a skill into the skills folder (or updates one installed from
+/// the same place).
+async fn install_skill(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<InstallSkillBody>,
+) -> ApiResult<Json<Value>> {
+    let source = crate::catalog::Source::parse(&body.source).map_err(ApiError::BadRequest)?;
+    let skills_dir = s.cfg.read(|l| l.data_dir.join("skills"));
+    let done = crate::catalog::install(&source, body.path.trim(), &skills_dir)
+        .await
+        .map_err(catalog_error)?;
+    let name = crate::skills::discover(&[skills_dir.join(&done.folder)])
+        .into_iter()
+        .next()
+        .map(|k| k.name)
+        .unwrap_or_else(|| done.folder.clone());
+    Ok(Json(json!({ "installed": done, "name": name })))
+}
+
+async fn uninstall_skill(
+    State(s): State<AppState>,
+    UrlPath(folder): UrlPath<String>,
+) -> ApiResult<StatusCode> {
+    let skills_dir = s.cfg.read(|l| l.data_dir.join("skills"));
+    crate::catalog::uninstall(&skills_dir, &folder).map_err(catalog_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ready-made tools for this computer's shell, marked when the user already
+/// has a tool with that name.
+async fn catalog_tools(State(s): State<AppState>) -> Json<Value> {
+    let (shell, mine) = s.cfg.read(|l| {
+        (
+            l.config.shell.clone(),
+            l.config
+                .custom_tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>(),
+        )
+    });
+    let tools: Vec<Value> = crate::catalog::tool_templates(&shell)
+        .into_iter()
+        .map(|(title, category, tool)| {
+            json!({
+                "title": title,
+                "category": category,
+                "installed": mine.contains(&tool.name),
+                "tool": tool,
+            })
+        })
+        .collect();
+    Json(json!({ "tools": tools, "shell": shell }))
+}
+
+#[derive(Deserialize)]
+struct McpQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    cursor: String,
+}
+
+/// Searches the official MCP registry.
+async fn catalog_mcp(Query(q): Query<McpQuery>) -> ApiResult<Json<Value>> {
+    let (servers, next) = crate::catalog::mcp_search(&q.q, Some(&q.cursor))
+        .await
+        .map_err(|e| ApiError::BadGateway(format!("{e:#}")))?;
+    Ok(Json(json!({ "servers": servers, "next_cursor": next })))
 }
 
 async fn get_system_prompt(State(s): State<AppState>) -> ApiResult<Json<Value>> {

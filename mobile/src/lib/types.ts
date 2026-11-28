@@ -268,6 +268,8 @@ export interface PendingApproval {
   arguments: string;
   /** The user's own tool this command comes from (name and arguments are then the command it runs). */
   via_tool?: string;
+  /** The MCP server tool this call is for (name is then `server__tool`). */
+  mcp?: { server: string; tool: string; title?: string; destructive: boolean };
   requested_at: string;
   /** What "Always allow" saves for this call, when it can be covered by a rule. */
   suggested_rule?: RuleDraft | null;
@@ -278,7 +280,8 @@ export type ApprovalDecision = 'approve' | 'approve_all' | 'always_allow' | 'den
 // ----- always-allow rules and activity -----
 
 /** command: commands starting with these words; files: changes inside this folder; web: pages on this site. */
-export type RuleKind = 'command' | 'files' | 'web';
+/** `mcp`: an MCP server's tool (`server__tool`, or `server__*` for all of them). */
+export type RuleKind = 'command' | 'files' | 'web' | 'mcp';
 
 export interface RuleDraft {
   kind: RuleKind;
@@ -438,6 +441,156 @@ export interface ToolsResponse {
   /** The shell commands run in, e.g. powershell.exe. */
   shell: string;
   default_timeout: number;
+}
+
+// ----- MCP servers -----
+
+/** An MCP server: a local program (command) or a web address (url). */
+export interface McpServer {
+  /** Lowercase letter first, then a-z, 0-9 and single _. Its tools are `name__tool`. */
+  name: string;
+  description: string;
+  enabled: boolean;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  cwd: string;
+  /** Set for a web (Streamable HTTP) server; then command is ignored. */
+  url: string;
+  headers: Record<string, string>;
+  /** 0 = 120 seconds. */
+  timeout_seconds: number;
+  /** Tools (the server's names) the agent may not use. */
+  disabled_tools: string[];
+  /** Run its tools without asking, even with approvals on. */
+  trusted: boolean;
+}
+
+export type McpState = 'off' | 'starting' | 'ready' | 'error';
+
+export interface McpTool {
+  name: string;
+  exposed_name: string;
+  title?: string;
+  description: string;
+  input_schema: ToolDefinition['function']['parameters'];
+  read_only: boolean;
+  destructive: boolean;
+  enabled?: boolean;
+}
+
+export interface McpServerView extends McpServer {
+  transport: 'stdio' | 'http';
+  status: {
+    state: McpState;
+    error?: string;
+    tools: McpTool[];
+    server_info?: { name?: string; version?: string };
+    instructions?: string;
+    connected_at?: string;
+  };
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  tools: McpTool[];
+  error?: string;
+  server_info?: { name?: string; version?: string };
+}
+
+// ----- browse and install -----
+
+export interface CatalogSource {
+  /** e.g. anthropics/skills, or owner/repo/folder@branch */
+  source: string;
+  /** Always listed; can't be removed. */
+  builtin: boolean;
+}
+
+export interface CatalogSkill {
+  /** Folder in the repository. */
+  path: string;
+  name: string;
+  description: string;
+  files: number;
+  bytes: number;
+  url: string;
+  installed: { folder: string; update_available: boolean; installed_at: string } | null;
+  /** The user already has a skill with this name from somewhere else. */
+  name_taken: boolean;
+}
+
+export interface InstalledSkill {
+  folder: string;
+  source: string;
+  repo: string;
+  path: string;
+  commit: string;
+  version: string;
+  installed_at: string;
+}
+
+export interface CatalogSkills {
+  source: string;
+  repo?: string;
+  commit?: string;
+  skills: CatalogSkill[];
+  /** Set when the collection couldn't be read. */
+  error?: string;
+  sources: CatalogSource[];
+  installed: InstalledSkill[];
+}
+
+export interface CatalogTool {
+  title: string;
+  category: string;
+  installed: boolean;
+  tool: CustomTool;
+}
+
+/** Something to fill in before an MCP server from the registry can start. */
+export interface McpInput {
+  target: 'env' | 'header' | 'arg';
+  /** The environment variable or header it sets. */
+  key?: string;
+  /** What to call it on screen. */
+  name: string;
+  description: string;
+  required: boolean;
+  secret: boolean;
+  default: string;
+  /** The value replaces `{name}` in this text, e.g. `Bearer {token}`. */
+  template?: string;
+  /** For arg: where in args the value goes. */
+  arg_index?: number;
+  /** For an optional arg left empty: also drop this index (its --flag). */
+  drop_index?: number;
+}
+
+export interface McpOption {
+  kind: string;
+  label: string;
+  /** The package (npm/PyPI name or image) without its version. */
+  package?: string;
+  supported: boolean;
+  reason?: string;
+  command: string;
+  args: string[];
+  url: string;
+  inputs: McpInput[];
+}
+
+export interface McpEntry {
+  /** The registry's name, e.g. io.github.owner/server. */
+  id: string;
+  /** Suggested name to save it under. */
+  name: string;
+  title: string;
+  description: string;
+  version: string;
+  repository: string;
+  website: string;
+  options: McpOption[];
 }
 
 export interface SettingsResponse {

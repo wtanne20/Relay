@@ -394,6 +394,12 @@ export default function SettingsScreen() {
           onPress={() => router.push('/tools')}
         />
         <NavRow
+          icon="storefront-outline"
+          label="Browse and install"
+          value="Skills, ready-made tools and MCP servers"
+          onPress={() => router.push('/browse')}
+        />
+        <NavRow
           icon="text-box-outline"
           label="System prompt"
           value="Instructions the agent always follows"

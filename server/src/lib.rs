@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod approvals;
+pub mod catalog;
 pub mod api;
 pub mod config;
 pub mod db;
@@ -14,6 +15,7 @@ pub mod images;
 pub mod knowledge;
 pub mod libraries;
 pub mod link;
+pub mod mcp;
 pub mod migrate;
 pub mod mockup;
 pub mod model_manager;
@@ -82,6 +84,8 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
     let devices = Arc::new(device::DeviceRegistry::new(db.clone()));
     let links = Arc::new(link::LinkHub::default());
     let knowledge = knowledge::KnowledgeBase::new(db.clone(), &data_dir, Arc::clone(&links))?;
+    let mcp = mcp::McpHub::new(data_dir.clone());
+    mcp.sync(&shared.get().mcp_servers);
     let agent = agent::AgentManager::new(
         db.clone(),
         model.clone(),
@@ -91,6 +95,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         device::DeviceRegistry::new(db.clone()),
         Arc::clone(&links),
         Arc::clone(&knowledge),
+        Arc::clone(&mcp),
     );
     let shutdown = CancellationToken::new();
     let tasks = tasks::Tasks::new(db.clone(), agent.clone(), pusher.clone());
@@ -113,6 +118,7 @@ pub async fn build_app(cfg: LoadedConfig) -> Result<(axum::Router, AppState)> {
         devices,
         links,
         knowledge,
+        mcp,
         pair_code: std::sync::Mutex::new(None),
         data_dir,
         web_root: ui::web_root(),
@@ -265,6 +271,8 @@ pub async fn run_server(cfg: LoadedConfig, opts: ServeOptions) -> Result<ServeOu
 
     tracing::info!("stopping running tasks");
     state.agent.stop_all().await;
+    tracing::info!("stopping MCP servers");
+    state.mcp.shutdown().await;
     tracing::info!("stopping llama-server");
     state.model.shutdown().await;
     state.images.engine.stop().await;

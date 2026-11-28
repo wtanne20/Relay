@@ -1,6 +1,12 @@
 import type { Credentials } from './storage';
 import type {
+  CatalogSkills,
+  CatalogTool,
+  McpEntry,
   CustomTool,
+  McpServer,
+  McpServerView,
+  McpTestResult,
   ToolsResponse,
   DocumentFolder,
   DocumentSearch,
@@ -183,6 +189,71 @@ export class RelayClient {
   }
   deleteTool(name: string) {
     return this.request<ToolsResponse>('DELETE', `/tools/${encodeURIComponent(name)}`);
+  }
+  // ----- MCP servers -----
+  mcpServers() {
+    return this.request<{ servers: McpServerView[] }>('GET', '/mcp/servers');
+  }
+  addMcpServer(server: McpServer) {
+    return this.request<McpServerView>('POST', '/mcp/servers', server);
+  }
+  /** `name` is the server's current name; `server.name` may rename it. */
+  updateMcpServer(name: string, server: McpServer) {
+    return this.request<McpServerView>('PUT', `/mcp/servers/${encodeURIComponent(name)}`, server);
+  }
+  deleteMcpServer(name: string) {
+    return this.request<{ servers: McpServerView[] }>('DELETE', `/mcp/servers/${encodeURIComponent(name)}`);
+  }
+  restartMcpServer(name: string) {
+    return this.request<McpServerView>('POST', `/mcp/servers/${encodeURIComponent(name)}/restart`, {}, 120000);
+  }
+  /** Connects once without saving and lists the tools. */
+  testMcpServer(server: McpServer) {
+    return this.request<McpTestResult>('POST', '/mcp/test', server, 120000);
+  }
+  /** Adds servers from a pasted `{"mcpServers": {...}}` config. */
+  importMcpServers(config: string, replace = false) {
+    return this.request<{ servers: McpServerView[]; added: string[]; skipped: string[] }>('POST', '/mcp/import', {
+      config,
+      replace,
+    });
+  }
+  // ----- browse and install -----
+  catalogSkills(source?: string, refresh = false) {
+    const q = new URLSearchParams();
+    if (source) q.set('source', source);
+    if (refresh) q.set('refresh', 'true');
+    return this.request<CatalogSkills>('GET', `/catalog/skills?${q}`, undefined, 60000);
+  }
+  addSkillSource(source: string) {
+    return this.request<{ source: string; skills?: number }>('POST', '/catalog/skills/sources', { source }, 60000);
+  }
+  removeSkillSource(source: string) {
+    return this.request<void>('DELETE', `/catalog/skills/sources?source=${encodeURIComponent(source)}`);
+  }
+  installSkill(source: string, path: string) {
+    return this.request<{ name: string; installed: { folder: string } }>(
+      'POST',
+      '/catalog/skills/install',
+      { source, path },
+      180000,
+    );
+  }
+  uninstallSkill(folder: string) {
+    return this.request<void>('DELETE', `/catalog/skills/installed/${encodeURIComponent(folder)}`);
+  }
+  catalogTools() {
+    return this.request<{ tools: CatalogTool[]; shell: string }>('GET', '/catalog/tools');
+  }
+  catalogMcp(q: string, cursor?: string) {
+    const p = new URLSearchParams({ q });
+    if (cursor) p.set('cursor', cursor);
+    return this.request<{ servers: McpEntry[]; next_cursor: string | null }>(
+      'GET',
+      `/catalog/mcp?${p}`,
+      undefined,
+      30000,
+    );
   }
   hubSearch(q: string) {
     return this.request<{ results: HubRepo[] }>('GET', `/hub/search?q=${encodeURIComponent(q)}`, undefined, 30000);
