@@ -1,6 +1,7 @@
 //! The agent's tools. All file paths are confined to the project folder by
 //! [`sandbox::Sandbox`]; skill folders are additionally readable.
 
+pub mod custom;
 pub mod guard;
 pub mod sandbox;
 
@@ -81,6 +82,21 @@ pub fn catalog() -> Vec<(&'static str, &'static str)> {
         ("fetch_url", "Read web pages"),
         ("search_documents", "Search your documents (folders you made searchable)"),
     ]
+}
+
+/// What the model is told about a built-in tool from [`catalog`]: one
+/// definition, or two for the documents tools (search and read).
+pub fn builtin_definitions(name: &str) -> Vec<Value> {
+    if name == "search_documents" {
+        return crate::knowledge::tool_definitions();
+    }
+    all_definitions()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|d| d.pointer("/function/name").and_then(Value::as_str) == Some(name))
+        .cloned()
+        .collect()
 }
 
 /// The tools that need no project folder (used by plain chats).

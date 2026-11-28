@@ -45,7 +45,11 @@ export function ApprovalCard({
           <Text style={[type.titleMedium, { color: m3.onWarningContainer }]}>
             {QUESTION[approval.name] ?? `Allow ${approval.name}?`}
           </Text>
-          {typeof path === 'string' && approval.name !== 'run_command' ? (
+          {approval.via_tool ? (
+            <Text style={[type.bodyMedium, styles.path]} numberOfLines={1}>
+              From your tool {approval.via_tool}
+            </Text>
+          ) : typeof path === 'string' && approval.name !== 'run_command' ? (
             <Text style={[type.bodyMedium, styles.path]} numberOfLines={1} ellipsizeMode="middle">
               {path}
             </Text>

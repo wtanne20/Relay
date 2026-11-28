@@ -18,7 +18,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 ## Contents
 
 - [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
-- [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`
+- [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`, `GET/POST /tools`, `PUT/DELETE /tools/{name}`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/steer`, `POST /sessions/{id}/approval`
@@ -219,6 +219,33 @@ default. Returns `{"content": "…"}`.
 Turn skills off with `PATCH /settings` `{"disabled_skills": ["pdf"]}`.
 
 ---
+
+### `GET /tools`
+
+Every tool the agent can use: `builtin` (each with `name`, `summary`, `enabled` and `definitions`, what the model is
+told), `custom` (the user's own tools), `shell` and `default_timeout`. Built-in tools are turned on and off with
+`PATCH /settings` (`agent.tools`).
+
+### `POST /tools` → `201`, `PUT /tools/{name}`, `DELETE /tools/{name}`
+
+Add, replace (and possibly rename) or delete a tool of the user's own. Each answers with the same body as `GET /tools`.
+
+```json
+{
+  "name": "git_log",
+  "description": "Show the latest commits. Use it when asked what changed recently.",
+  "command": "git log --oneline -n {count}",
+  "parameters": [{ "name": "count", "description": "How many commits", "required": true }],
+  "enabled": true,
+  "timeout_seconds": 0
+}
+```
+
+The model calls it like any tool. Relay puts each value into the command quoted for the shell (a missing optional
+value is left out) and runs it in the project folder as a `run_command`, so approvals, always-allow command rules and
+the command guard all apply. The approval request then has `name: "run_command"`, the expanded command in `arguments`
+and `via_tool: "git_log"`. Custom tools aren't offered in plain chats. `400` for an invalid tool (bad name, a built-in
+name, no description or command, a parameter the command doesn't use), `409` if the name is taken.
 
 ## Projects
 

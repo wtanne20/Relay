@@ -40,6 +40,9 @@ pub struct Config {
     pub push: PushConfig,
     pub routing: RoutingConfig,
     pub images: ImagesConfig,
+    /// Tools added in the app: named commands with parameters the model
+    /// fills in. Kept last so they're written after the other settings.
+    pub custom_tools: Vec<crate::tools::custom::CustomTool>,
 }
 
 /// Image generation with stable-diffusion.cpp's sd-server.
@@ -289,6 +292,7 @@ impl Default for Config {
             push: PushConfig::default(),
             routing: RoutingConfig::default(),
             images: ImagesConfig::default(),
+            custom_tools: Vec::new(),
         }
     }
 }
@@ -454,7 +458,21 @@ impl Config {
         {
             return Err("extra_args may not set --host, --port or the model".into());
         }
+        crate::tools::custom::validate_all(&self.custom_tools)?;
         Ok(())
+    }
+
+    /// The custom tool called `name`, if it exists and is turned on.
+    pub fn custom_tool(&self, name: &str) -> Option<&crate::tools::custom::CustomTool> {
+        self.custom_tools
+            .iter()
+            .find(|t| t.enabled && t.name == name)
+    }
+
+    /// Whether the agent may use `name`: a built-in that's on, or a custom
+    /// tool that's on.
+    pub fn tool_enabled(&self, name: &str) -> bool {
+        self.agent.tools.enabled(name) || self.custom_tool(name).is_some()
     }
 }
 

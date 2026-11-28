@@ -105,6 +105,10 @@ pub struct PendingApproval {
     pub tool_call_id: String,
     pub name: String,
     pub arguments: String,
+    /// The user's own tool this command comes from, if any (`name` and
+    /// `arguments` are then the command it runs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_tool: Option<String>,
     pub requested_at: String,
     /// What "Always allow" would save for this call, if it can be covered
     /// by a rule.
@@ -1031,6 +1035,8 @@ impl AgentManager {
                 default_timeout: conf.agent.command_timeout_seconds,
             })
         };
+        // The shell custom tools are quoted for: this PC's, or the device's.
+        let mut tool_shell = conf.shell.clone();
         let (system, tool_defs) = match (&ctx, &device) {
             (Some(ctx), _) => (
                 build_system_prompt(&prompt_path, project, &ctx.sandbox.root, &found_skills).await,
@@ -1056,6 +1062,7 @@ impl AgentManager {
                     Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
                     Err(_) => None,
                 };
+                tool_shell = shell.clone();
                 let env = PromptEnv {
                     os,
                     shell,
@@ -1072,10 +1079,21 @@ impl AgentManager {
                 tools::web_definitions(&conf.agent.tools),
             ),
         };
+        let mut tool_defs = tool_defs;
+        // The user's own tools run commands, so they need a folder too.
+        if (ctx.is_some() || device.is_some())
+            && let Some(a) = tool_defs.as_array_mut()
+        {
+            a.extend(
+                conf.custom_tools
+                    .iter()
+                    .filter(|t| t.enabled)
+                    .map(|t| t.definition()),
+            );
+        }
         let device = device.map(|(_, dc)| dc);
         let mut system = system;
         // The user's searchable folders work in every chat, on any computer.
-        let mut tool_defs = tool_defs;
         if conf.agent.tools.enabled("search_documents")
             && let Some(folders) = self.knowledge.describe().await
         {
@@ -1384,10 +1402,34 @@ impl AgentManager {
                             arguments: call.arguments.clone(),
                         },
                     );
-                    if needs_approval(approval_mode, &call.name) {
-                        rule_id = self.matching_rule(call, project).await;
+                    // A tool of the user's own becomes the command it stands
+                    // for: approvals, rules and the guard all see that.
+                    let custom = conf.custom_tool(&call.name).map(|t| {
+                        t.expand(&call.arguments, &tool_shell).map(|command| {
+                            let mut args = json!({ "command": command });
+                            if t.timeout_seconds > 0 {
+                                args["timeout_seconds"] = json!(t.timeout_seconds);
+                            }
+                            db::ToolCall {
+                                id: call.id.clone(),
+                                name: "run_command".into(),
+                                arguments: args.to_string(),
+                            }
+                        })
+                    });
+                    let run_call = match &custom {
+                        Some(Ok(c)) => c,
+                        _ => call,
+                    };
+                    if needs_approval(approval_mode, &run_call.name) {
+                        rule_id = self.matching_rule(run_call, project).await;
                     }
-                    if !conf.agent.tools.enabled(&call.name) {
+                    if let Some(Err(e)) = &custom {
+                        tools::ToolOutput {
+                            content: format!("error: {e}"),
+                            is_error: true,
+                        }
+                    } else if !conf.tool_enabled(&call.name) {
                         decision = AuditDecision::Off;
                         tools::ToolOutput {
                             content: format!(
@@ -1398,9 +1440,10 @@ impl AgentManager {
                         }
                     } else if rule_id.is_some() {
                         decision = AuditDecision::Rule;
-                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
-                    } else if needs_approval(approval_mode, &call.name) {
-                        match self.ask_approval(session, project, call, approval, cancel).await {
+                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, run_call, cancel, &conf.agent.search_api_key).await
+                    } else if needs_approval(approval_mode, &run_call.name) {
+                        let via = custom.is_some().then(|| call.name.clone());
+                        match self.ask_approval(session, project, run_call, via, approval, cancel).await {
                             Some((Decision::Deny, note)) => {
                                 decision = AuditDecision::Denied;
                                 tools::ToolOutput {
@@ -1417,7 +1460,7 @@ impl AgentManager {
                                     decision = AuditDecision::AllowedAll;
                                     approval_mode = ApprovalMode::Never;
                                 }
-                                run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
+                                run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, run_call, cancel, &conf.agent.search_api_key).await
                             }
                             None => {
                                 decision = AuditDecision::Stopped;
@@ -1428,7 +1471,7 @@ impl AgentManager {
                             }
                         }
                     } else {
-                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, call, cancel, &conf.agent.search_api_key).await
+                        run_tool(ctx.as_ref(), device.as_ref(), &self.knowledge, run_call, cancel, &conf.agent.search_api_key).await
                     }
                 };
                 self.audit(session, project, call, decision, rule_id, output.is_error).await;
@@ -1476,6 +1519,7 @@ impl AgentManager {
         session: &Session,
         project: &Project,
         call: &db::ToolCall,
+        via_tool: Option<String>,
         slot: &Arc<Mutex<Option<ApprovalSlot>>>,
         cancel: &CancellationToken,
     ) -> Option<(Decision, Option<String>)> {
@@ -1483,6 +1527,7 @@ impl AgentManager {
             tool_call_id: call.id.clone(),
             name: call.name.clone(),
             arguments: call.arguments.clone(),
+            via_tool,
             requested_at: db::now(),
             suggested_rule: approvals::suggest(call, project),
         };
