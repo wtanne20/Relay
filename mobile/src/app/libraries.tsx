@@ -2,6 +2,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { confirmDeleteModel } from '../components/DeleteModel';
 import { alert } from '../components/Dialogs';
 import { ToggleRow } from '../components/SettingsControls';
 import { Sheet } from '../components/Sheet';
@@ -132,7 +133,7 @@ export default function LibrariesScreen() {
     <ScrollView contentContainerStyle={[styles.content, page]}>
       <Text style={[type.bodyMedium, styles.muted]}>
         Libraries are folders Relay keeps models in. Add one on any drive, pick which one new downloads go to, and move
-        models between them to free up space.
+        models between them or delete ones you no longer need to free up space.
       </Text>
       {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
       {!libs && !error ? <ActivityIndicator color={m3.primary} style={{ margin: space.xl }} /> : null}
@@ -198,16 +199,30 @@ export default function LibrariesScreen() {
                     </View>
                     {mv ? (
                       <Text style={[type.labelMedium, styles.muted]}>Moving…</Text>
-                    ) : (libs?.length ?? 0) > 1 ? (
-                      <Button
-                        title="Move"
-                        variant="text"
-                        icon="folder-move-outline"
-                        onPress={() =>
-                          setMoving({ path: model.path, name: model.name, size: model.size_bytes, from: lib.path })
-                        }
-                      />
-                    ) : null}
+                    ) : busy === model.path ? (
+                      <ActivityIndicator color={m3.primary} />
+                    ) : (
+                      <>
+                        {(libs?.length ?? 0) > 1 ? (
+                          <Button
+                            title="Move"
+                            variant="text"
+                            icon="folder-move-outline"
+                            onPress={() =>
+                              setMoving({ path: model.path, name: model.name, size: model.size_bytes, from: lib.path })
+                            }
+                          />
+                        ) : null}
+                        {!(current && samePath(current, model.path)) ? (
+                          <IconButton
+                            icon="trash-can-outline"
+                            label={`Delete ${model.name}`}
+                            disabled={busy !== null}
+                            onPress={() => confirmDeleteModel(client, model, load, setBusy)}
+                          />
+                        ) : null}
+                      </>
+                    )}
                   </View>
                 );
               })}

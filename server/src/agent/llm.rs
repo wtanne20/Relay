@@ -34,6 +34,11 @@ pub struct Turn {
     pub finish_reason: Option<String>,
     /// Tokens in the prompt, as llama-server counted them.
     pub prompt_tokens: Option<u64>,
+    /// Tokens the model wrote, and how fast (llama-server's own timings).
+    pub gen_tokens: Option<u64>,
+    pub gen_per_sec: Option<f64>,
+    /// How fast the prompt was read (tokens per second).
+    pub prompt_per_sec: Option<f64>,
 }
 
 pub enum StreamResult {
@@ -101,6 +106,27 @@ impl TurnBuilder {
         }
         if let Some(n) = prompt_tokens(chunk) {
             self.turn.prompt_tokens = Some(n);
+        }
+        if let Some(n) = chunk
+            .pointer("/usage/completion_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.turn.gen_tokens = Some(n);
+        }
+        if let Some(t) = chunk.get("timings") {
+            let num = |k: &str| t.get(k).and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0);
+            if let Some(n) = t.get("predicted_n").and_then(Value::as_u64) {
+                self.turn.gen_tokens = Some(n);
+            }
+            if let Some(v) = num("predicted_per_second") {
+                self.turn.gen_per_sec = Some(v);
+            }
+            // A fully cached prompt reads 0 tokens; its speed means nothing.
+            if t.get("prompt_n").and_then(Value::as_u64).unwrap_or(0) > 0
+                && let Some(v) = num("prompt_per_second")
+            {
+                self.turn.prompt_per_sec = Some(v);
+            }
         }
         let mut deltas = Vec::new();
         let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
@@ -274,6 +300,9 @@ pub async fn stream_chat(
 
     let mut parser = SseParser::default();
     let mut builder = TurnBuilder::default();
+    // For servers that send no timings: time from the first token to the end.
+    let mut first_token: Option<std::time::Instant> = None;
+    let mut deltas_seen: u64 = 0;
     loop {
         let chunk = tokio::select! {
             c = tokio::time::timeout(IDLE_TIMEOUT, resp.chunk()) => match c {
@@ -299,6 +328,8 @@ pub async fn stream_chat(
             let v: Value = serde_json::from_str(&p)
                 .map_err(|e| anyhow!("bad chunk from llama-server ({e}): {p}"))?;
             for d in builder.apply(&v)? {
+                first_token.get_or_insert_with(std::time::Instant::now);
+                deltas_seen += 1;
                 on_delta(d);
             }
         }
@@ -306,7 +337,19 @@ pub async fn stream_chat(
             break;
         }
     }
-    Ok(StreamResult::Complete(builder.finish()))
+    let mut turn = builder.finish();
+    if turn.gen_per_sec.is_none()
+        && let Some(start) = first_token
+    {
+        // Each streamed delta is about one token.
+        let n = turn.gen_tokens.unwrap_or(deltas_seen);
+        let secs = start.elapsed().as_secs_f64();
+        if n > 1 && secs > 0.05 {
+            turn.gen_per_sec = Some((n - 1) as f64 / secs);
+            turn.gen_tokens.get_or_insert(n);
+        }
+    }
+    Ok(StreamResult::Complete(turn))
 }
 
 #[cfg(test)]
@@ -384,6 +427,22 @@ mod tests {
         b.apply(&json!({"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"prompt_n":200,"cache_n":1000}}))
             .unwrap();
         assert_eq!(b.finish().prompt_tokens, Some(1200));
+    }
+
+    #[test]
+    fn reads_speed() {
+        let mut b = TurnBuilder::default();
+        b.apply(&json!({"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"prompt_n":200,"cache_n":0,"prompt_per_second":900.5,"predicted_n":120,"predicted_per_second":42.25}}))
+            .unwrap();
+        let t = b.finish();
+        assert_eq!(t.gen_tokens, Some(120));
+        assert_eq!(t.gen_per_sec, Some(42.25));
+        assert_eq!(t.prompt_per_sec, Some(900.5));
+        // A fully cached prompt has no reading speed.
+        let mut b = TurnBuilder::default();
+        b.apply(&json!({"choices":[],"timings":{"prompt_n":0,"prompt_per_second":1e9,"predicted_n":3,"predicted_per_second":30.0}}))
+            .unwrap();
+        assert_eq!(b.finish().prompt_per_sec, None);
     }
 
     #[test]

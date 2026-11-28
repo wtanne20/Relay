@@ -23,11 +23,16 @@ const RENDER_TIMEOUT: Duration = Duration::from_secs(45);
 pub const CSP: &str =
     "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
 
+/// Put before the model's own styles (which can override it): no stray body
+/// margin, and padding and borders inside widths, so a design sized to the
+/// window fits the window instead of spilling off the right edge.
+pub const RESET: &str = "<style>html,body{margin:0}*,*::before,*::after{box-sizing:border-box}</style>";
+
 /// The page Relay renders: the model's HTML (or SVG) with the content policy
 /// first in <head>, so it applies before anything else loads.
 pub fn prepare(source: &str, svg: bool) -> String {
     let meta = format!(
-        r#"<meta http-equiv="Content-Security-Policy" content="{CSP}"><meta charset="utf-8">"#
+        r#"<meta http-equiv="Content-Security-Policy" content="{CSP}"><meta charset="utf-8">{RESET}"#
     );
     if svg {
         return format!(

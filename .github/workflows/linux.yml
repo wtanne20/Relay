@@ -1,0 +1,151 @@
+name: Linux desktop
+
+# Builds the full Relay desktop app (brain + native window) for Linux, on
+# native runners for each architecture (Tauri can't cross-compile):
+#
+# - x64: an .AppImage, for Arch Linux (and other x64 desktops).
+# - arm64: a .tar.gz with the app and an install script, for Proot on an
+#   Android phone (shown through Termux:X11 or VNC). Built on Ubuntu 22.04 so
+#   its glibc (2.35) is old enough for Debian 12 and Ubuntu 22.04+ Proot
+#   images. No AppImage: Proot has no FUSE to mount one.
+#
+# One app for every Linux desktop: on first launch it asks whether this
+# computer is the brain (model, agent, history run here, like on Windows) or
+# a computer linked to a brain elsewhere on the tailnet (it shares its files;
+# the brain does the thinking).
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+    paths:
+      - "server/**"
+      - "desktop/**"
+      - "mobile/**"
+      - "dev/proot-install.sh"
+      - ".github/workflows/linux.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "desktop/**"
+      - "mobile/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            tauri_args: --bundles appimage
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            tauri_args: --no-bundle
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+            desktop/src-tauri/target
+          key: linux-${{ matrix.arch }}-cargo-${{ hashFiles('server/Cargo.lock', 'desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            linux-${{ matrix.arch }}-cargo-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libfuse2 \
+            patchelf \
+            file \
+            zip \
+            pkg-config
+
+      - name: Test
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && matrix.arch == 'amd64' }}
+        working-directory: server
+        run: cargo test --locked
+
+      - name: Install mobile deps (for the web UI bundle)
+        working-directory: mobile
+        run: npm ci
+
+      - name: Build relay-desktop (Tauri)
+        working-directory: desktop
+        run: |
+          npm ci
+          # The target cache keeps old versions' bundles; start clean so the
+          # copy below finds exactly this version's files.
+          rm -rf src-tauri/target/release/bundle
+          npx tauri build ${{ matrix.tauri_args }}
+          ls -la src-tauri/target/release/
+
+      - name: Read version
+        id: version
+        run: |
+          v=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' server/Cargo.toml | head -n1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          v=${{ steps.version.outputs.version }}
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/Relay-$v-x86_64.AppImage
+          else
+            # Proot: the app binary (web UI and brain built in) + icon + installer.
+            PKG=Relay-$v-arm64-proot
+            mkdir -p "dist/$PKG"
+            cp desktop/src-tauri/target/release/relay-desktop "dist/$PKG/relay-desktop"
+            # Skills that ship with Relay; read from `skills` next to the executable.
+            cp -r server/skills "dist/$PKG/skills"
+            cp desktop/src-tauri/icons/128x128.png "dist/$PKG/relay.png"
+            cp dev/proot-install.sh "dist/$PKG/install.sh"
+            chmod +x "dist/$PKG/relay-desktop" "dist/$PKG/install.sh"
+            tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+            rm -rf "dist/$PKG"
+          fi
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RelayLinux-${{ matrix.arch }}-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

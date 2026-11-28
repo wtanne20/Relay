@@ -14,9 +14,9 @@ done
 if [ "$mock" = 1 ]; then
   data="$root/dev/data"; mkdir -p "$data"
   if [ ! -f "$data/config.toml" ]; then
-    (cd "$root/server" && cargo build --example mock_llama)
+    (cd "$root/server" && cargo build --example mock_llama --example mock_sd)
     printf GGUF > "$data/model.gguf"
-    sed "s#@MOCK_LLAMA@#$root/server/target/debug/examples/mock_llama#; s#@MODEL@#$data/model.gguf#" \
+    sed "s#@MOCK_LLAMA@#$root/server/target/debug/examples/mock_llama#; s#@MOCK_SD@#$root/server/target/debug/examples/mock_sd#; s#@MODEL@#$data/model.gguf#" \
       "$root/dev/mock-config.toml" > "$data/config.toml"
   fi
   export RELAY_CONFIG="$data/config.toml"

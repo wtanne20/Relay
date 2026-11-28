@@ -38,6 +38,70 @@ pub struct Config {
     pub sampling: SamplingConfig,
     pub llama: LlamaConfig,
     pub push: PushConfig,
+    pub routing: RoutingConfig,
+    pub images: ImagesConfig,
+    /// Tools added in the app: named commands with parameters the model
+    /// fills in. Kept last so they're written after the other settings.
+    pub custom_tools: Vec<crate::tools::custom::CustomTool>,
+}
+
+/// Image generation with stable-diffusion.cpp's sd-server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ImagesConfig {
+    /// Path to sd-server.exe. Empty = download it automatically.
+    pub sd_server_path: String,
+    /// Port sd-server listens on (always bound to 127.0.0.1).
+    pub port: u16,
+    /// Extra model folders laid out like ComfyUI's or SD WebUI's `models`
+    /// folder (checkpoints/, diffusion_models/, text_encoders/, vae/,
+    /// loras/ ...). `<data>/image-models` is always used.
+    pub model_dirs: Vec<String>,
+    /// Keep weights in RAM where possible, using less VRAM (slower).
+    pub offload_to_cpu: bool,
+    /// Stop the image model after this many minutes without a picture. 0
+    /// keeps it until a chat needs the GPU.
+    pub idle_unload_minutes: u32,
+    /// Any other sd-server arguments.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for ImagesConfig {
+    fn default() -> Self {
+        Self {
+            sd_server_path: String::new(),
+            port: 8771,
+            model_dirs: Vec::new(),
+            offload_to_cpu: false,
+            idle_unload_minutes: 10,
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+/// Sends quick questions to a small model and everything else to a big one.
+/// Only chats and projects that don't pick their own model are routed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoutingConfig {
+    pub enabled: bool,
+    /// The small, fast model for quick questions.
+    pub quick_model: String,
+    /// The model for heavy work. Empty = the default model.
+    pub heavy_model: String,
+    /// A prompt longer than this many words counts as heavy.
+    pub quick_max_words: u32,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            quick_model: String::new(),
+            heavy_model: String::new(),
+            quick_max_words: 60,
+        }
+    }
 }
 
 /// When the agent must ask before using a tool.
@@ -63,6 +127,8 @@ pub struct ToolToggles {
     pub run_command: bool,
     pub web_search: bool,
     pub fetch_url: bool,
+    /// search_documents and read_document (the user's searchable folders).
+    pub search_documents: bool,
 }
 
 impl Default for ToolToggles {
@@ -75,6 +141,7 @@ impl Default for ToolToggles {
             run_command: true,
             web_search: true,
             fetch_url: true,
+            search_documents: true,
         }
     }
 }
@@ -89,6 +156,7 @@ impl ToolToggles {
             "run_command" => self.run_command,
             "web_search" => self.web_search,
             "fetch_url" => self.fetch_url,
+            "search_documents" | "read_document" => self.search_documents,
             _ => false,
         }
     }
@@ -114,7 +182,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_steps: 50,
+            max_steps: 100,
             command_timeout_seconds: 120,
             approval: ApprovalMode::Never,
             thinking: true,
@@ -222,6 +290,9 @@ impl Default for Config {
             sampling: SamplingConfig::default(),
             llama: LlamaConfig::default(),
             push: PushConfig::default(),
+            routing: RoutingConfig::default(),
+            images: ImagesConfig::default(),
+            custom_tools: Vec::new(),
         }
     }
 }
@@ -320,7 +391,11 @@ impl Config {
         let s = &self.sampling;
         let a = &self.agent;
         let l = &self.llama;
-        let checks: [(bool, &str); 12] = [
+        let checks: [(bool, &str); 13] = [
+            (
+                (1..=2000).contains(&self.routing.quick_max_words),
+                "quick question length must be between 1 and 2000 words",
+            ),
             (
                 (0.0..=2.0).contains(&s.temperature),
                 "temperature must be between 0 and 2",
@@ -371,13 +446,33 @@ impl Config {
                 return Err(msg.to_string());
             }
         }
+        if self.images.port == 0 || self.images.port == l.port {
+            return Err("the image model needs its own port".into());
+        }
+        if self.images.idle_unload_minutes > 24 * 60 {
+            return Err("image unload time must be at most a day".into());
+        }
         if l.extra_args
             .iter()
             .any(|a| matches!(a.as_str(), "--host" | "--port" | "-m" | "--model"))
         {
             return Err("extra_args may not set --host, --port or the model".into());
         }
+        crate::tools::custom::validate_all(&self.custom_tools)?;
         Ok(())
+    }
+
+    /// The custom tool called `name`, if it exists and is turned on.
+    pub fn custom_tool(&self, name: &str) -> Option<&crate::tools::custom::CustomTool> {
+        self.custom_tools
+            .iter()
+            .find(|t| t.enabled && t.name == name)
+    }
+
+    /// Whether the agent may use `name`: a built-in that's on, or a custom
+    /// tool that's on.
+    pub fn tool_enabled(&self, name: &str) -> bool {
+        self.agent.tools.enabled(name) || self.custom_tool(name).is_some()
     }
 }
 
@@ -496,10 +591,13 @@ impl LoadedConfig {
         self.resolve(&self.config.system_prompt_path)
     }
 
-    /// All skill roots: `skills/` in the data folder, then configured extra
-    /// paths.
+    /// All skill roots: `skills/` in the data folder, the skills that ship
+    /// with Relay, then configured extra paths.
     pub fn skill_roots(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.data_dir.join("skills")];
+        if let Some(bundled) = bundled_skills_dir() {
+            roots.push(bundled);
+        }
         for p in &self.config.skills_paths {
             let r = self.resolve(p);
             let key = dunce::canonicalize(&r).unwrap_or_else(|_| r.clone());
@@ -539,7 +637,30 @@ impl LoadedConfig {
         );
         dirs
     }
+
+    /// Relay's own image model folder.
+    pub fn image_models_dir(&self) -> PathBuf {
+        self.data_dir.join("image-models")
+    }
+
+    /// Folders sd-server looks for image models in, Relay's own first.
+    pub fn image_model_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.image_models_dir()];
+        for p in &self.config.images.model_dirs {
+            let d = self.resolve(p);
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        dirs
+    }
 }
+
+pub const SD_SERVER_EXE: &str = if cfg!(windows) {
+    "sd-server.exe"
+} else {
+    "sd-server"
+};
 
 /// Runtime-editable configuration shared by the API, agent and model
 /// manager. Changes are validated and written back to config.toml.
@@ -616,6 +737,15 @@ Guidelines:
 - When you are done, reply with a concise summary of what you changed and anything the user should check.
 - If a request is ambiguous, make a reasonable choice and say what you assumed.
 "#;
+
+/// Skills that ship with Relay: the `skills` folder the installer puts next
+/// to relay.exe and relay-desktop.exe. `None` when there isn't one (tests,
+/// `cargo run`).
+pub fn bundled_skills_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.join("skills");
+    dir.is_dir().then_some(dir)
+}
 
 #[cfg(test)]
 mod tests {

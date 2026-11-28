@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Group, NavRow, NumberRow, SectionTitle, Segmented, TextRow, ToggleRow } from '../components/SettingsControls';
 import { m3, radius, space, type } from '../components/theme';
-import { Banner, Button, Icon, type IconName } from '../components/ui';
+import { Banner, Button, Icon } from '../components/ui';
 import { alert } from '../components/Dialogs';
 import { describeError } from '../lib/api';
 import { usePageStyle } from '../lib/layout';
@@ -42,16 +42,6 @@ const thinkingMode = (a: AgentSettings): ThinkingMode =>
 /** Choices for unloading an unused model; 0 keeps it loaded. */
 const UNLOAD_MINUTES = [0, 5, 15, 30, 60];
 const COMMON_CACHE = ['f16', 'q8_0', 'q4_0'];
-
-const TOOL_ICONS: Record<string, IconName> = {
-  list_dir: 'folder-outline',
-  read_file: 'file-document-outline',
-  write_file: 'file-plus-outline',
-  edit_file: 'file-edit-outline',
-  run_command: 'console',
-  web_search: 'magnify',
-  fetch_url: 'web',
-};
 
 function same(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -125,6 +115,12 @@ export default function AgentSettingsScreen() {
     for (const k of Object.keys(draft) as (keyof Settings)[]) {
       if (!same(draft[k], saved[k])) (patch as Record<string, unknown>)[k] = draft[k];
     }
+    // Tools are turned on and off on their own screen, which saves right
+    // away; don't send back the copy loaded here.
+    if (patch.agent) {
+      const { tools: _tools, ...agent } = patch.agent;
+      (patch as Record<string, unknown>).agent = agent;
+    }
     setSaving(true);
     try {
       const res = await client.patchSettings(patch);
@@ -197,6 +193,14 @@ export default function AgentSettingsScreen() {
             options={APPROVAL_OPTIONS}
             onChange={(v) => set('agent', { approval: v })}
           />
+          {a.approval !== 'never' ? (
+            <NavRow
+              icon="shield-check-outline"
+              label="Always allowed"
+              value="Commands, folders and sites it doesn't ask about"
+              onPress={() => router.push('/approvals')}
+            />
+          ) : null}
           <Segmented
             label="Thinking"
             icon="head-lightbulb-outline"
@@ -231,16 +235,12 @@ export default function AgentSettingsScreen() {
 
         <SectionTitle title="Tools" />
         <Group>
-          {meta.tools.map((t) => (
-            <ToggleRow
-              key={t.name}
-              label={t.description}
-              hint={t.name}
-              icon={TOOL_ICONS[t.name]}
-              value={a.tools[t.name]}
-              onChange={(v) => set('agent', { tools: { ...a.tools, [t.name]: v } })}
-            />
-          ))}
+          <NavRow
+            icon="wrench-outline"
+            label="Tools"
+            value="See, turn off and add the tools the agent can use"
+            onPress={() => router.push('/tools')}
+          />
           <TextRow
             label="Brave Search API key"
             icon="key-outline"

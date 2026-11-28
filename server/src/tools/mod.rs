@@ -1,6 +1,7 @@
 //! The agent's tools. All file paths are confined to the project folder by
 //! [`sandbox::Sandbox`]; skill folders are additionally readable.
 
+pub mod custom;
 pub mod guard;
 pub mod sandbox;
 
@@ -79,7 +80,23 @@ pub fn catalog() -> Vec<(&'static str, &'static str)> {
         ("run_command", "Run PowerShell commands"),
         ("web_search", "Search the web"),
         ("fetch_url", "Read web pages"),
+        ("search_documents", "Search your documents (folders you made searchable)"),
     ]
+}
+
+/// What the model is told about a built-in tool from [`catalog`]: one
+/// definition, or two for the documents tools (search and read).
+pub fn builtin_definitions(name: &str) -> Vec<Value> {
+    if name == "search_documents" {
+        return crate::knowledge::tool_definitions();
+    }
+    all_definitions()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|d| d.pointer("/function/name").and_then(Value::as_str) == Some(name))
+        .cloned()
+        .collect()
 }
 
 /// The tools that need no project folder (used by plain chats).
@@ -436,7 +453,7 @@ async fn run_command(ctx: &ToolContext, args: &Value, cancel: &CancellationToken
             let mut out = String::new();
             match (r.exit_code, r.timed_out, r.cancelled) {
                 (_, true, _) => {
-                    out.push_str(&format!("timed out after {timeout}s; process killed\n"))
+                    out.push_str(&format!("timed out after {timeout}s; process killed. If it needs longer, run it again with a larger timeout_seconds (up to {MAX}).\n", MAX = MAX_COMMAND_TIMEOUT))
                 }
                 (_, _, true) => out.push_str("cancelled by user; process killed\n"),
                 (Some(c), _, _) => out.push_str(&format!("exit_code: {c}\n")),
@@ -558,7 +575,7 @@ pub async fn run_shell(
 }
 
 /// Reads to EOF but keeps at most ~4 MB in memory.
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+pub(crate) async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<()> {
@@ -575,7 +592,7 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
     if let Some(pid) = pid {
         #[cfg(windows)]
         {

@@ -8,12 +8,14 @@
 //! - tool result  -> a short final answer
 //! - user text mentioning "hello.txt" -> write_file(hello.txt, "hi")
 //! - user text starting with "run:"   -> run_command(<rest>)
+//! - user text "tool:<name> <json>"   -> calls <name> with <json> as arguments
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
+//! - user text containing "steer me"  -> a reply that takes about a second
 //! - user text containing "write code" -> slowly writes a longer app.py
 //! - user text containing "edit code"  -> slowly edits app.py
 //! - anything else                    -> echoes the prompt
 //! - a non-streaming request          -> a chat title, or a summary when
-//!   Relay asks for one
+//!   Relay asks for one, or a task's notification line
 //!
 //! Streams end with a usage chunk counting a token per 3 bytes of messages,
 //! and with `ctx_tokens` set, longer requests are refused the way
@@ -141,8 +143,14 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
         }))
         .into_response();
     }
+    if system.starts_with("You write the text of a phone notification") {
+        return axum::Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "\"Mock task summary: all done.\""}}]
+        }))
+        .into_response();
+    }
     if body.get("stream").and_then(Value::as_bool) != Some(true) {
-        // Relay's only non-streaming request is the chat title.
+        // Otherwise Relay's only non-streaming request is the chat title.
         return axum::Json(json!({
             "choices": [{"message": {"role": "assistant", "content": "\"Mock chat title.\""}}]
         }))
@@ -216,6 +224,16 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "write_file",
                 &json!({"path": "hello.txt", "content": "hi"}),
             ));
+        } else if let Some(q) = content.strip_prefix("docs:") {
+            chunks.extend(tool_call_chunks(
+                &format!("call_{n}"),
+                "search_documents",
+                &json!({"query": q.trim()}),
+            ));
+        } else if let Some(rest) = content.strip_prefix("tool:") {
+            let (name, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "{}"));
+            let args: Value = serde_json::from_str(args).unwrap_or_else(|_| json!({}));
+            chunks.extend(tool_call_chunks(&format!("call_{n}"), name, &args));
         } else if let Some(cmd) = content.strip_prefix("run:") {
             chunks.extend(tool_call_chunks(
                 &format!("call_{n}"),
@@ -258,6 +276,35 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 ));
             }
             chunks.push(chunk(json!({}), Some("tool_calls")));
+        } else if lower.contains("which reply style") {
+            // Says which formatting instructions it was given.
+            let style = if system.contains("# Voice conversation")
+                && !system.contains("# How to format answers")
+            {
+                "spoken"
+            } else {
+                "written"
+            };
+            chunks.extend(text_chunks(&format!("Style: {style}")));
+        } else if lower.contains("steer me") {
+            // Long enough to send a message while it's being written.
+            delay = Duration::from_millis(100);
+            chunks.extend(text_chunks("Working on it, one careful step at a time."));
+        } else if lower.contains("formatted answer") {
+            // A Markdown reply, for trying out how answers stream in.
+            delay = Duration::from_millis(35);
+            chunks.push(chunk(json!({"reasoning_content": "Lay it out with a list and some code."}), None));
+            chunks.extend(text_chunks(concat!(
+                "Here's how **streaming** works in Relay.\n\n",
+                "## The steps\n\n",
+                "1. The model sends a few tokens at a time.\n",
+                "2. Relay forwards them over the WebSocket.\n",
+                "3. The app shows them at an even pace, already formatted.\n\n",
+                "A quick example:\n\n",
+                "```python\ndef greet(name):\n    return f\"Hello, {name}!\"\n```\n\n",
+                "That's all: see [the API notes](https://example.com/api) for the event names, ",
+                "and use `text_delta` for the text itself."
+            )));
         } else if lower.contains("slow") {
             delay = Duration::from_millis(200);
             chunks.extend(text_chunks(&"word ".repeat(200)));
@@ -268,7 +315,11 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
     }
     chunks.push(format!(
         "data: {}\n\n",
-        json!({"choices": [], "usage": {"prompt_tokens": tokens, "completion_tokens": 10}})
+        json!({
+            "choices": [],
+            "usage": {"prompt_tokens": tokens, "completion_tokens": 10},
+            "timings": {"prompt_n": tokens, "prompt_per_second": 500.0, "predicted_n": 10, "predicted_per_second": 40.0}
+        })
     ));
     chunks.push("data: [DONE]\n\n".to_string());
 

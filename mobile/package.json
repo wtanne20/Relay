@@ -1,8 +1,10 @@
 {
   "name": "relay-mobile",
-  "version": "1.0.4",
+  "version": "1.0.16",
   "main": "expo-router/entry",
   "dependencies": {
+    "@expo/dom-webview": "~58.0.2",
+    "@expo/metro-runtime": "~58.0.16",
     "@expo/vector-icons": "^15.0.2",
     "expo": "~58.0.22",
     "expo-application": "~58.1.2",
@@ -16,20 +18,25 @@
     "expo-font": "~58.0.11",
     "expo-image-picker": "~58.0.10",
     "expo-intent-launcher": "~58.0.3",
+    "expo-keep-awake": "~58.0.3",
     "expo-linking": "~58.0.15",
     "expo-notifications": "~58.1.7",
     "expo-router": "~58.0.29",
     "expo-secure-store": "~58.0.2",
+    "expo-speech": "~58.0.3",
+    "expo-speech-recognition": "^58.0.1",
     "expo-status-bar": "~58.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.10.1",
     "react-native-screens": "~4.30.1",
-    "react-native-web": "~0.21.4"
+    "react-native-web": "~0.21.4",
+    "three": "~0.187.0"
   },
   "devDependencies": {
     "@types/react": "~19.3.0",
+    "@types/three": "~0.187.0",
     "typescript": "~6.0.3"
   },
   "scripts": {

@@ -3,10 +3,11 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 
 import { toolDetails, toolSummary } from '../lib/format';
 import { fileChange, partialArgs, readArgs, type FileChange } from '../lib/liveCode';
-import type { Draft, Message, ToolCall } from '../lib/types';
+import type { Draft, Message, ReplyStats, ToolCall } from '../lib/types';
 import { MessageFiles, MessagePicture } from './Attachments';
 import { ChangesLine, CodeChange } from './CodeChange';
 import { Markdown } from './Markdown';
+import { trimPartialMarkdown, useSmoothText } from '../lib/useSmoothText';
 import { m3, mono as monoFont, radius, space, type } from './theme';
 import { Icon, type IconName } from './ui';
 
@@ -20,6 +21,8 @@ const TOOL_ICON: Record<string, IconName> = {
   list_dir: 'folder-outline',
   web_search: 'magnify',
   fetch_url: 'web',
+  search_documents: 'file-search-outline',
+  read_document: 'file-document-outline',
 };
 
 export function UserBubble({ message }: { message: Message }) {
@@ -72,6 +75,42 @@ export function SummaryDivider({ message }: { message: Message }) {
             Everything is still saved here.
           </Text>
           <Markdown text={message.content} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Relay carried on a reply that was cut off when the model's context filled
+ * up. Tap to see what it told the model.
+ */
+export function ContinueDivider({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const looped = /loop/i.test(message.content.split('\n')[0] ?? '');
+  return (
+    <View style={styles.summary}>
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        style={styles.summaryRow}
+      >
+        <View style={styles.summaryLine} />
+        <Icon name={looped ? 'sync-alert' : 'play-circle-outline'} size={16} color={m3.onSurfaceVariant} />
+        <Text style={styles.summaryLabel}>
+          {looped ? 'Reply was going in circles, restarted it' : 'Reply was cut off, continued it'}
+        </Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color={m3.onSurfaceVariant} />
+        <View style={styles.summaryLine} />
+      </Pressable>
+      {open ? (
+        <View style={styles.summaryBody}>
+          <Text style={styles.summaryNote}>
+            The model ran out of context in the middle of its reply, so Relay told it to carry on. This is what it
+            was sent.
+          </Text>
+          <Markdown text={message.content.replace(/^\(Relay\) /, '')} />
         </View>
       ) : null}
     </View>
@@ -250,11 +289,6 @@ export const AssistantBlock = memo(function AssistantBlock({
   );
 });
 
-type Step =
-  | { kind: 'text'; key: string; text: string }
-  | { kind: 'thought'; key: string; text: string; seconds?: number }
-  | { kind: 'tool'; key: string; call: ToolCall };
-
 /** When the model started on each reply: the time of the message before it. */
 const startedAt = new WeakMap<Message, string>();
 export function noteStart(m: Message, previous: Message | undefined) {
@@ -272,9 +306,22 @@ function stepsSummary(calls: ToolCall[]): string {
   const n = (...names: string[]) => calls.filter((c) => names.includes(c.name)).length;
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
   const parts: string[] = [];
-  const known = n('run_command', 'read_file', 'edit_file', 'write_file', 'list_dir', 'web_search', 'fetch_url');
+  const known = n(
+    'run_command',
+    'read_file',
+    'edit_file',
+    'write_file',
+    'list_dir',
+    'web_search',
+    'fetch_url',
+    'search_documents',
+    'read_document',
+  );
   if (n('web_search')) parts.push(`searched the web ${n('web_search') === 1 ? 'once' : `${n('web_search')} times`}`);
   if (n('fetch_url')) parts.push(`read ${plural(n('fetch_url'), 'page')}`);
+  if (n('search_documents'))
+    parts.push(`searched your documents ${n('search_documents') === 1 ? 'once' : `${n('search_documents')} times`}`);
+  if (n('read_document')) parts.push(`read ${plural(n('read_document'), 'document')}`);
   if (n('run_command')) parts.push(`ran ${plural(n('run_command'), 'command')}`);
   if (n('read_file')) parts.push(`read ${plural(n('read_file'), 'file')}`);
   // Files, not attempts: several edits to one file count once.
@@ -288,10 +335,128 @@ function stepsSummary(calls: ToolCall[]): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+type WorkPart =
+  | { kind: 'thought'; key: string; text: string; seconds?: number }
+  | { kind: 'tool'; key: string; call: ToolCall };
+
 /**
- * One agent reply, Claude-style: the work it did (thinking, tool calls and
- * in-between notes) folded into one quiet "steps" line that expands, and the
- * final answer as plain full-width text below it.
+ * A reply in the order it was written: text the model wrote, and runs of
+ * work between (thinking and tool calls) that fold into one line.
+ */
+type Segment =
+  | { kind: 'text'; key: string; text: string; live: boolean }
+  | { kind: 'work'; key: string; parts: WorkPart[] };
+
+function segmentsOf(messages: Message[], draft: Draft | null | undefined): Segment[] {
+  const out: Segment[] = [];
+  const work = (part: WorkPart) => {
+    const tail = out[out.length - 1];
+    if (tail?.kind === 'work') tail.parts.push(part);
+    else out.push({ kind: 'work', key: `s${out.length}`, parts: [part] });
+  };
+  const text = (t: string, live: boolean) => {
+    if (t.trim()) out.push({ kind: 'text', key: `s${out.length}`, text: t, live });
+  };
+  for (const m of messages) {
+    if (m.reasoning?.trim()) work({ kind: 'thought', key: `r${m.id}`, text: m.reasoning, seconds: secondsBefore(m) });
+    text(m.content, false);
+    for (const c of m.tool_calls ?? []) work({ kind: 'tool', key: c.id, call: c });
+  }
+  if (draft) {
+    if (draft.reasoning.trim()) work({ kind: 'thought', key: 'draft-r', text: draft.reasoning });
+    text(draft.content, true);
+    // A step the model is still writing: its line shows what it is (and a
+    // file being written shows live below it) until the step is saved.
+    if (draft.tool_calls?.some((c) => c.name) && out[out.length - 1]?.kind !== 'work')
+      out.push({ kind: 'work', key: `s${out.length}`, parts: [] });
+  }
+  return out;
+}
+
+/**
+ * Text as the model writes it: in the full reading style from the first
+ * word, flowing in at an even pace instead of in bursts, with half-written
+ * Markdown held back until it's complete.
+ */
+const ReplyText = memo(function ReplyText({ text, live, writing }: { text: string; live: boolean; writing: boolean }) {
+  const shown = useSmoothText(text, live);
+  const flowing = writing || shown.length < text.length;
+  return <Markdown text={flowing ? trimPartialMarkdown(shown) : text} />;
+});
+
+/** One run of work between pieces of text, folded into a line you can open. */
+function WorkGroup({
+  parts,
+  results,
+  running,
+  active,
+  status,
+  live,
+  liveWriting,
+}: {
+  parts: WorkPart[];
+  results: Map<string, Message>;
+  running: boolean;
+  /** The step the agent is on right now. */
+  active: boolean;
+  status: string;
+  live: FileChange | null;
+  liveWriting: boolean;
+}) {
+  // Follows the work (open while it's going on, folded after) until tapped.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? active;
+  const calls = parts.flatMap((p) => (p.kind === 'tool' ? [p.call] : []));
+  const thoughts = parts.filter((p) => p.kind === 'thought');
+  if (!active && !calls.length) {
+    // Only thinking: the usual "Thought for 12s" row.
+    const seconds = thoughts.reduce<number | undefined>(
+      (sum, p) => (p.kind === 'thought' && p.seconds !== undefined ? (sum ?? 0) + p.seconds : sum),
+      undefined,
+    );
+    return <Reasoning text={thoughts.map((p) => (p.kind === 'thought' ? p.text.trim() : '')).join('\n\n')} seconds={seconds} />;
+  }
+  return (
+    <View>
+      <Pressable
+        onPress={() => setUserOpen(!open)}
+        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+          styles.stepsHeader,
+          (pressed || hovered) && { backgroundColor: m3.hover },
+        ]}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
+        {active ? (
+          <ActivityIndicator size="small" color={m3.primary} />
+        ) : (
+          <Icon name="check-circle-outline" size={16} color={m3.outline} />
+        )}
+        <Text style={[type.bodyMedium, styles.stepsText]} numberOfLines={1}>
+          {active ? status : stepsSummary(calls)}
+        </Text>
+        {parts.length ? <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} /> : null}
+      </Pressable>
+      {open && parts.length ? (
+        <View style={styles.stepsList}>
+          {parts.map((p) =>
+            p.kind === 'tool' ? (
+              <ToolActivityRow key={p.key} call={p.call} result={results.get(p.call.id)} running={running} />
+            ) : (
+              <Reasoning key={p.key} text={p.text} seconds={p.seconds} />
+            ),
+          )}
+        </View>
+      ) : null}
+      {active && live ? <CodeChange change={live} live={liveWriting} /> : null}
+    </View>
+  );
+}
+
+/**
+ * One agent reply, Claude-style: text in the full reading style as it's
+ * written, with the work between it (thinking, tool calls) folded into quiet
+ * lines that expand. Nothing moves or changes size when the reply finishes.
  */
 export const AssistantTurn = memo(function AssistantTurn({
   messages,
@@ -304,23 +469,8 @@ export const AssistantTurn = memo(function AssistantTurn({
   running: boolean;
   draft?: Draft | null;
 }) {
-  // Follows the run (open while working, folded once done) until tapped.
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? running;
-  const last = messages[messages.length - 1];
-  const lastIsAnswer = !!last && !running && !last.tool_calls?.length && !!last.content.trim();
-  const work = lastIsAnswer ? messages.slice(0, -1) : messages;
-  const steps: Step[] = [];
-  const calls: ToolCall[] = [];
-  for (const m of work) {
-    if (m.reasoning?.trim())
-      steps.push({ kind: 'thought', key: `r${m.id}`, text: m.reasoning, seconds: secondsBefore(m) });
-    if (m.content.trim()) steps.push({ kind: 'text', key: `t${m.id}`, text: m.content });
-    for (const c of m.tool_calls ?? []) {
-      steps.push({ kind: 'tool', key: c.id, call: c });
-      calls.push(c);
-    }
-  }
+  const segments = segmentsOf(messages, running ? draft : null);
+  const calls = messages.flatMap((m) => m.tool_calls ?? []);
   const pendingCall = running ? calls.find((c) => !results.get(c.id)) : undefined;
   // The file the model is writing right now, or the one waiting to be saved.
   let live: FileChange | null = null;
@@ -331,87 +481,72 @@ export const AssistantTurn = memo(function AssistantTurn({
     else if (pendingCall) live = fileChange(pendingCall.name, readArgs(pendingCall.arguments));
   }
   const liveWriting = !!live && !pendingCall;
+  const draftCall = (draft?.tool_calls ?? []).filter((c) => c.name).pop();
+  const status =
+    liveWriting && live
+      ? `${live.tool === 'write_file' ? 'Writing' : 'Editing'} ${live.path ? live.path.split(/[\\/]/).pop() : 'a file'}…`
+      : pendingCall
+        ? toolSummary(pendingCall, undefined, true)
+        : draftCall
+          ? toolSummary({ id: 'draft', ...draftCall }, undefined, true)
+          : draft?.reasoning && !draft.content
+            ? thinkingStatus(draft.reasoning)
+            : 'Working…';
+  const tail = segments[segments.length - 1];
   const changes = running
     ? []
     : calls
         .filter((c) => results.get(c.id) && !results.get(c.id)?.is_error)
         .map((c) => fileChange(c.name, readArgs(c.arguments)))
         .filter((c): c is FileChange => !!c);
-  // While a file is being written, the words before it are a note, not the answer.
-  const liveNote = running && live && draft?.content?.trim() ? draft.content.trim() : '';
-  const answer = lastIsAnswer ? last.content : running && draft?.content && !liveNote ? draft.content : '';
-  const answerReasoning = lastIsAnswer ? last.reasoning : running && draft?.content ? draft.reasoning : '';
-  const liveStatus = liveWriting && live
-    ? `${live.tool === 'write_file' ? 'Writing' : 'Editing'} ${live.path ? live.path.split(/[\\/]/).pop() : 'a file'}…`
-    : pendingCall
-    ? toolSummary(pendingCall, undefined, true)
-    : running && !draft?.content
-      ? draft?.reasoning
-        ? thinkingStatus(draft.reasoning)
-        : 'Working…'
-      : null;
-  const answerSeconds = lastIsAnswer ? secondsBefore(last) : undefined;
-  const showSteps = calls.length > 0 || !!live || (steps.length > 0 && !answer);
-  // One fold-out for all the work, including the thinking behind the answer.
-  if (showSteps && answerReasoning?.trim())
-    steps.push({ kind: 'thought', key: 'answer-r', text: answerReasoning, seconds: answerSeconds });
+  const last = messages[messages.length - 1];
 
   return (
     <View style={styles.turn}>
-      {showSteps ? (
-        <View>
-          <Pressable
-            onPress={() => setUserOpen(!open)}
-            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-              styles.stepsHeader,
-              (pressed || hovered) && { backgroundColor: m3.hover },
-            ]}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: open }}
-          >
-            {running ? (
-              <ActivityIndicator size="small" color={m3.primary} />
-            ) : (
-              <Icon name="check-circle-outline" size={16} color={m3.outline} />
-            )}
-            <Text style={[type.bodyMedium, styles.stepsText]} numberOfLines={1}>
-              {liveStatus ?? stepsSummary(calls)}
-            </Text>
-            <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={m3.outline} />
-          </Pressable>
-          {open ? (
-            <View style={styles.stepsList}>
-              {steps.map((st) =>
-                st.kind === 'tool' ? (
-                  <ToolActivityRow key={st.key} call={st.call} result={results.get(st.call.id)} running={running} />
-                ) : st.kind === 'thought' ? (
-                  <Reasoning key={st.key} text={st.text} seconds={st.seconds} />
-                ) : (
-                  <Text key={st.key} selectable style={[type.bodyMedium, styles.stepNote]}>
-                    {st.text.trim()}
-                  </Text>
-                ),
-              )}
-            </View>
-          ) : null}
-          {liveNote ? <Text style={[type.bodyMedium, styles.stepNote]}>{liveNote}</Text> : null}
-          {live ? <CodeChange change={live} live={liveWriting} /> : null}
-        </View>
-      ) : null}
-      {!showSteps && answerReasoning ? <Reasoning text={answerReasoning} seconds={answerSeconds} /> : null}
-      {answer ? <Markdown text={answer} /> : null}
-      {changes.length ? <ChangesLine changes={changes} /> : null}
-      {!showSteps && !answer && running ? (
+      {segments.map((seg) =>
+        seg.kind === 'text' ? (
+          <ReplyText key={seg.key} text={seg.text} live={seg.live} writing={running && seg === tail} />
+        ) : (
+          <WorkGroup
+            key={seg.key}
+            parts={seg.parts}
+            results={results}
+            running={running}
+            active={running && seg === tail}
+            status={status}
+            live={live}
+            liveWriting={liveWriting}
+          />
+        ),
+      )}
+      {running && !tail ? (
         <View style={styles.typing}>
           <ActivityIndicator size="small" color={m3.primary} />
           <Text style={[type.bodyMedium, styles.stepsText]} numberOfLines={1}>
-            {draft?.reasoning ? thinkingStatus(draft.reasoning) : 'Working…'}
+            Working…
           </Text>
         </View>
       ) : null}
+      {changes.length ? <ChangesLine changes={changes} /> : null}
+      {!running && last && !last.tool_calls?.length && last.stats ? <ReplyMeta stats={last.stats} /> : null}
     </View>
   );
 });
+
+/** "Qwen3-4B · 52 tok/s · quick": which model answered, and how fast. */
+function ReplyMeta({ stats }: { stats: ReplyStats }) {
+  const parts = [stats.model.replace(/\.gguf$/i, '')];
+  if (stats.tokens_per_sec) parts.push(`${Math.round(stats.tokens_per_sec)} tok/s`);
+  if (stats.route) parts.push(stats.route === 'quick' ? 'quick question' : 'big model');
+  return (
+    <View style={styles.replyMeta} accessibilityLabel={`Answered by ${parts.join(', ')}`}>
+      <Icon name={stats.route === 'quick' ? 'lightning-bolt-outline' : 'chip'} size={13} color={m3.outline} />
+      <Text style={[type.bodySmall, styles.replyMetaText]} numberOfLines={1}>
+        {parts.join(' · ')}
+      </Text>
+    </View>
+  );
+}
 
 export function DraftBlock({ content, reasoning }: { content: string; reasoning: string }) {
   return (
@@ -432,6 +567,8 @@ export function DraftBlock({ content, reasoning }: { content: string; reasoning:
 }
 
 const styles = StyleSheet.create({
+  replyMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.xs },
+  replyMetaText: { color: m3.outline, flexShrink: 1 },
   summary: { marginVertical: space.lg },
   summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, minHeight: 36 },
   summaryLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: m3.outlineVariant },

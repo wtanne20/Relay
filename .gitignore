@@ -20,6 +20,11 @@ server/models/
 server/llama.cpp/
 server/skills/*
 !server/skills/README.md
+# Skills that ship with Relay
+!server/skills/pcb-design/
+server/skills/**/__pycache__/
+server/skills/**/build/
+server/skills/**/fab/
 # Installer output
 installer/Output/
 mobile/Relay.apk
