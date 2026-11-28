@@ -441,4 +441,44 @@ async fn downloads_a_starter_model_and_sets_it_up() {
         )
         .await;
     assert_eq!(s, 400);
+
+    // Deleting the model with its files frees the disk; a file another
+    // model still uses stays.
+    let mid = m["id"].as_str().unwrap().to_string();
+    let (s, other) = h
+        .post(
+            "/image-models",
+            json!({"name": "Shares the VAE", "recipe": "z-image-turbo", "files": {
+                "diffusion_model": "diffusion_models/flux1-kontext-dev-Q4_0.gguf",
+                "llm": "text_encoders/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                "vae": "vae/ae.safetensors"}}),
+        )
+        .await;
+    assert_eq!(s, 201, "{other}");
+    let (s, v) = h
+        .req(reqwest::Method::DELETE, &format!("/image-models/{mid}?files=1"), None)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["deleted_files"], json!(["diffusion_models/z_image_turbo-Q4_K.gguf"]), "{v}");
+    assert_eq!(v["freed_bytes"], 9, "{v}");
+    assert!(!own.join("diffusion_models/z_image_turbo-Q4_K.gguf").exists());
+    assert!(own.join("vae/ae.safetensors").is_file(), "still used");
+    assert!(own.join("text_encoders/Qwen3-4B-Instruct-2507-Q4_K_M.gguf").is_file());
+    let models = h.get("/image-models").await;
+    assert_eq!(models["models"].as_array().unwrap().len(), 1, "{models}");
+
+    // Without ?files the files stay.
+    let (s, v) = h
+        .req(
+            reqwest::Method::DELETE,
+            &format!("/image-models/{}", other["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(own.join("vae/ae.safetensors").is_file());
+    let (s, _) = h
+        .req(reqwest::Method::DELETE, &format!("/image-models/{mid}"), None)
+        .await;
+    assert_eq!(s, 404);
 }

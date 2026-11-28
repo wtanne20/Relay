@@ -203,6 +203,7 @@ pub fn router(state: AppState) -> Router {
         .route("/models/tags", axum::routing::put(set_model_tags))
         .route("/models/import", post(import_model))
         .route("/models/move", post(move_model))
+        .route("/models/delete", post(delete_model))
         .route("/libraries", get(list_libraries).post(add_library))
         .route("/libraries/default", post(set_default_library))
         .route("/libraries/remove", post(remove_library))
@@ -1154,6 +1155,174 @@ async fn move_model(
         tracing::info!("moved {old} to {new}");
     });
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
+}
+
+#[derive(Deserialize)]
+struct DeleteModel {
+    /// The model file (the first part of a split model).
+    path: String,
+}
+
+/// Deletes a model from the disk: every part of a split model, and its
+/// vision projector when no other model in its folder is left to use it.
+/// Only models in Relay's model folders can be deleted, and never the
+/// default model (pick another default first). Chats and projects that
+/// chose it go back to the default model.
+async fn delete_model(
+    State(s): State<AppState>,
+    JsonBody(body): JsonBody<DeleteModel>,
+) -> ApiResult<Json<Value>> {
+    let src = PathBuf::from(body.path.trim().trim_matches('"'));
+    let is_gguf = src
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !is_gguf || !src.is_file() {
+        return Err(ApiError::BadRequest(format!(
+            "not a model file: {}",
+            src.display()
+        )));
+    }
+    let (dirs, default) = s
+        .cfg
+        .read(|l| (l.model_dirs(), l.config.llama.model_path.clone()));
+    let Some(root) = dirs
+        .iter()
+        .find(|d| crate::libraries::contains(d, &src))
+        .cloned()
+    else {
+        return Err(ApiError::BadRequest(
+            "only models in Relay's model folders can be deleted".into(),
+        ));
+    };
+    if !default.is_empty() && crate::libraries::same_path(Path::new(&default), &src) {
+        return Err(ApiError::Conflict(
+            "this is the default model. Pick another default model first, then delete this one".into(),
+        ));
+    }
+    let moving = s.downloads.list().into_iter().any(|d| {
+        d.state == crate::hub::DownloadState::Downloading
+            && d.file.eq_ignore_ascii_case(
+                &src.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+    });
+    if moving {
+        return Err(ApiError::Conflict(
+            "the model is being moved or copied. Wait for that to finish first".into(),
+        ));
+    }
+    // A chat may have loaded this model: unload it so its file isn't locked.
+    let st = s.model.status();
+    if st.state != crate::model_manager::ModelState::Idle
+        && !st.model_path.is_empty()
+        && crate::libraries::same_path(Path::new(&st.model_path), &src)
+    {
+        if s.model.in_use() {
+            return Err(ApiError::Conflict(
+                "a chat is using this model. Delete it once the chat is done".into(),
+            ));
+        }
+        s.model.unload_and_wait().await;
+    }
+
+    let mut files = crate::libraries::model_parts(&src);
+    let dir = src.parent().map(Path::to_path_buf);
+    let freed = {
+        let files_now = files.clone();
+        let dir = dir.clone();
+        let (removed, extra) = tokio::task::spawn_blocking(move || {
+            // Projectors go too once no other model in the folder needs them.
+            let mut extra = Vec::new();
+            if let Some(d) = &dir
+                && let Ok(rd) = std::fs::read_dir(d)
+            {
+                let mut others = false;
+                let mut projectors = Vec::new();
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let name = e.file_name().to_string_lossy().to_lowercase();
+                    if !p.is_file() || !name.ends_with(".gguf") {
+                        continue;
+                    }
+                    if name.starts_with("mmproj") {
+                        projectors.push(p);
+                    } else if !files_now.iter().any(|f| f == &p) {
+                        others = true;
+                    }
+                }
+                if !others {
+                    extra = projectors;
+                }
+            }
+            let size: u64 = files_now
+                .iter()
+                .chain(&extra)
+                .map(|p| p.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum();
+            (size, extra)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("model scan failed: {e}"))?;
+        files.extend(extra);
+        removed
+    };
+    for f in &files {
+        // llama-server may hold the file for a moment after it exits.
+        let mut attempt = 0;
+        loop {
+            match tokio::fs::remove_file(f).await {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) if attempt == 9 => {
+                    return Err(ApiError::Conflict(format!(
+                        "could not delete {}: {e}",
+                        f.display()
+                    )));
+                }
+                Err(_) => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+    // Tidy up the now-empty <publisher>\<model> folders.
+    if let Some(mut d) = dir {
+        while crate::libraries::contains(&root, &d) && std::fs::remove_dir(&d).is_ok() {
+            match d.parent() {
+                Some(p) => d = p.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    let old = src.to_string_lossy().into_owned();
+    if let Err(e) = s.db.call(move |c| db::forget_model_path(c, &old)).await {
+        tracing::warn!("could not move chats off the deleted model: {e:#}");
+    }
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let still_listed = {
+        let d = dirs.clone();
+        let n = name.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::setup::discover_models(&d).iter().any(|m| m.name == n)
+        })
+        .await
+        .unwrap_or(true)
+    };
+    if !still_listed {
+        let _ = s.cfg.update(|c| {
+            c.model_tags.remove(&name);
+        });
+    }
+    tracing::info!("deleted model {} ({freed} bytes)", src.display());
+    Ok(Json(json!({
+        "deleted": files.iter().map(|f| f.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+        "freed_bytes": freed,
+    })))
 }
 
 #[derive(Deserialize)]
