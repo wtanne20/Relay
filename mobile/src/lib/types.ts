@@ -266,6 +266,8 @@ export interface PendingApproval {
   tool_call_id: string;
   name: string;
   arguments: string;
+  /** The user's own tool this command comes from (name and arguments are then the command it runs). */
+  via_tool?: string;
   requested_at: string;
   /** What "Always allow" saves for this call, when it can be covered by a rule. */
   suggested_rule?: RuleDraft | null;
@@ -387,6 +389,55 @@ export interface Settings {
   /** Where Relay saves models; empty = its data folder. */
   models_folder?: string;
   routing: RoutingSettings;
+}
+
+// ----- tools -----
+
+export interface CustomToolParam {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
+/** A tool the user added: a command with parameters the model fills in. */
+export interface CustomTool {
+  name: string;
+  description: string;
+  /** `{param}` is replaced with that parameter's value, quoted for the shell. */
+  command: string;
+  parameters: CustomToolParam[];
+  enabled: boolean;
+  /** 0 = the agent's command timeout. */
+  timeout_seconds: number;
+}
+
+/** An OpenAI-style function definition, as the model sees it. */
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, { type?: string; description?: string }>;
+      required?: string[];
+    };
+  };
+}
+
+export interface BuiltinTool {
+  name: keyof ToolToggles;
+  summary: string;
+  enabled: boolean;
+  definitions: ToolDefinition[];
+}
+
+export interface ToolsResponse {
+  builtin: BuiltinTool[];
+  custom: CustomTool[];
+  /** The shell commands run in, e.g. powershell.exe. */
+  shell: string;
+  default_timeout: number;
 }
 
 export interface SettingsResponse {

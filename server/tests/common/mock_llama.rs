@@ -8,6 +8,7 @@
 //! - tool result  -> a short final answer
 //! - user text mentioning "hello.txt" -> write_file(hello.txt, "hi")
 //! - user text starting with "run:"   -> run_command(<rest>)
+//! - user text "tool:<name> <json>"   -> calls <name> with <json> as arguments
 //! - user text containing "slow"      -> streams text slowly (for stop tests)
 //! - user text containing "steer me"  -> a reply that takes about a second
 //! - user text containing "write code" -> slowly writes a longer app.py
@@ -229,6 +230,10 @@ async fn chat(State(s): State<Arc<MockState>>, axum::Json(body): axum::Json<Valu
                 "search_documents",
                 &json!({"query": q.trim()}),
             ));
+        } else if let Some(rest) = content.strip_prefix("tool:") {
+            let (name, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "{}"));
+            let args: Value = serde_json::from_str(args).unwrap_or_else(|_| json!({}));
+            chunks.extend(tool_call_chunks(&format!("call_{n}"), name, &args));
         } else if let Some(cmd) = content.strip_prefix("run:") {
             chunks.extend(tool_call_chunks(
                 &format!("call_{n}"),
