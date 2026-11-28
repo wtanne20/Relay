@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { ModelStatusBar } from '../components/ModelStatusBar';
+import { useModelUpdates } from '../components/ModelUpdates';
 import { Group, NavRow, SectionTitle, ToggleRow } from '../components/SettingsControls';
 import { ACCENTS, type AccentId, accent, m3, onAccentChange, setAccent, space, type } from '../components/theme';
 import { Sheet } from '../components/Sheet';
@@ -219,6 +220,9 @@ export default function SettingsScreen() {
   const [pushError, setPushError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const page = usePageStyle(760);
+  const updates = useModelUpdates(client);
+  const updateCount = (kind: 'chat' | 'image') => updates.data?.updates.filter((u) => u.kind === kind).length ?? 0;
+  const updateNote = (n: number) => (n === 1 ? '1 update available' : `${n} updates available`);
   // Push notifications and pairing settings belong to the phone app.
   const phone = Platform.OS !== 'web';
 
@@ -236,8 +240,9 @@ export default function SettingsScreen() {
     useCallback(() => {
       setFocused(true);
       load();
+      updates.reload();
       return () => setFocused(false);
-    }, [load]),
+    }, [load, updates.reload]),
   );
 
   useEffect(() => {
@@ -343,7 +348,7 @@ export default function SettingsScreen() {
         <NavRow
           icon="chip"
           label="Choose model"
-          value="The model Relay loads by default, and tags"
+          value={updateCount('chat') ? updateNote(updateCount('chat')) : 'The model Relay loads by default, and tags'}
           onPress={() => router.push('/models')}
         />
         <NavRow
@@ -374,7 +379,9 @@ export default function SettingsScreen() {
         <NavRow
           icon="palette-outline"
           label="Image models"
-          value="Picture models, their folders, and the image engine"
+          value={
+            updateCount('image') ? updateNote(updateCount('image')) : 'Picture models, their folders, and the image engine'
+          }
           onPress={() => router.push('/image-models')}
         />
       </Group>

@@ -398,7 +398,10 @@ async fn download_starter(
             size,
             Some(g.clone()),
         ) {
-            Ok(d) => started.push(d),
+            Ok(d) => {
+                s.model_updates.remember(f.repo, &[f.path.to_string()], &tree);
+                started.push(d)
+            }
             // Already on its way (a second tap).
             Err(e) => tracing::info!("{}: {e:#}", f.path),
         }
@@ -551,6 +554,9 @@ async fn download_file(
         .downloads
         .start_files(&b.repo, file_name(&path), vec![(path.clone(), to)], size, Some(FILE_GROUP.into()))
         .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    let id = format!("{}/{}", b.category, file_name(&path));
+    s.model_updates.remember_image_origin(&id, &b.repo, &path);
+    s.model_updates.remember(&b.repo, std::slice::from_ref(&path), &tree);
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
 }
 

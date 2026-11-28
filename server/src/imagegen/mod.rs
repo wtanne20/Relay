@@ -205,6 +205,11 @@ impl ImageGen {
         Ok(freed)
     }
 
+    /// Model files on the disk changed: list them again when next asked.
+    pub fn files_changed(&self) {
+        *self.catalog.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Frees the GPU for images ahead of time and starts the engine, so the
     /// first picture is quicker. Returns right away.
     pub fn prepare(self: &Arc<Self>) {

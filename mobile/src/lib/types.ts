@@ -447,6 +447,28 @@ export interface HubDownload {
   group?: string;
 }
 
+/** A downloaded model with a newer version on Hugging Face. */
+export interface ModelUpdate {
+  kind: 'chat' | 'image';
+  /** A chat model's file, or an image model file's id ("vae/ae.safetensors"). */
+  path: string;
+  name: string;
+  repo: string;
+  files: { remote: string; local: string; size_bytes: number; oid: string }[];
+  /** What the update downloads. */
+  size_bytes: number;
+  /** Downloading the new version now. */
+  updating: boolean;
+}
+
+export interface ModelUpdates {
+  updates: ModelUpdate[];
+  checked_at: string | null;
+  checking: boolean;
+  /** Repositories that couldn't be checked, and why. */
+  errors: string[];
+}
+
 export interface Disk {
   /** The drive, e.g. "W:\". */
   root: string;

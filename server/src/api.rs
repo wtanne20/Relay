@@ -51,6 +51,8 @@ pub struct AppInner {
     pub downloads: Arc<crate::hub::Downloads>,
     /// New versions from GitHub releases.
     pub updates: Arc<crate::updates::Updater>,
+    /// Newer versions of downloaded models on Hugging Face.
+    pub model_updates: Arc<crate::model_updates::ModelUpdates>,
     /// Paired device hosts (phone Proot Linux and friends).
     pub devices: Arc<crate::device::DeviceRegistry>,
     /// Devices connected to this brain right now (they dial in over Tailscale).
@@ -272,6 +274,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::tasks::routes())
         .merge(crate::imagegen::routes::routes())
         .merge(crate::imagegen::hub::routes())
+        .merge(crate::model_updates::routes())
         .fallback(|| async { ApiError::NotFound("route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // Outside auth so browser preflight requests (which carry no token) get an answer.
@@ -808,9 +811,10 @@ async fn hub_download(
         ));
     }
     // Look the file up so only real GGUF files from the repository are fetched.
-    let (files, projector) = crate::hub::files_and_projector(&body.repo)
+    let tree = crate::hub::tree(&body.repo)
         .await
         .map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    let (files, projector) = (crate::hub::group_files(&tree), crate::hub::pick_projector(&tree));
     let model = files
         .into_iter()
         .find(|f| f.file == body.file)
@@ -819,16 +823,27 @@ async fn hub_download(
         Some(l) if !l.is_empty() => find_library(&s, l)?.0,
         _ => relay_models_dir(&s),
     };
+    let folder = body
+        .repo
+        .split('/')
+        .fold(models_dir.clone(), |acc, part| acc.join(part));
+    // Note the version, so a newer one can be offered later. Files already
+    // on the PC aren't downloaded again, so they keep their own note.
+    let fresh = |parts: &[String]| -> Vec<String> {
+        parts
+            .iter()
+            .filter(|p| !p.split('/').fold(folder.clone(), |d, x| d.join(x)).exists())
+            .cloned()
+            .collect()
+    };
+    let new_parts = fresh(&model.parts);
     let d = s
         .downloads
         .start(&models_dir, &body.repo, model)
         .map_err(|e| ApiError::Conflict(format!("{e:#}")))?;
+    s.model_updates.remember(&body.repo, &new_parts, &tree);
     // The vision file comes along, so the model can read pictures.
     if let Some(p) = projector {
-        let folder = body
-            .repo
-            .split('/')
-            .fold(models_dir.clone(), |acc, part| acc.join(part));
         let have = std::fs::read_dir(&folder).is_ok_and(|rd| {
             rd.flatten().any(|e| {
                 e.file_name()
@@ -837,8 +852,12 @@ async fn hub_download(
                     .starts_with("mmproj")
             })
         });
-        if !have && let Err(e) = s.downloads.start(&models_dir, &body.repo, p) {
-            tracing::info!("vision file not downloaded: {e:#}");
+        if !have {
+            let parts = p.parts.clone();
+            match s.downloads.start(&models_dir, &body.repo, p) {
+                Ok(_) => s.model_updates.remember(&body.repo, &parts, &tree),
+                Err(e) => tracing::info!("vision file not downloaded: {e:#}"),
+            }
         }
     }
     Ok((StatusCode::ACCEPTED, Json(json!({ "download": d }))))
