@@ -18,7 +18,7 @@ Timestamps are RFC 3339 UTC strings. Ids are UUIDs, except message ids, which ar
 ## Contents
 
 - [Server](#server): `GET /info`, `GET /model`, `POST /model/restart`, `GET /stats`
-- [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`, `GET/POST /tools`, `PUT/DELETE /tools/{name}`
+- [Agent settings](#agent-settings): `GET/PATCH /settings`, `GET /models`, `GET/PUT /system-prompt`, `GET /skills`, `GET/POST /tools`, `PUT/DELETE /tools/{name}`, `POST /tools/import`
 - [Projects](#projects): `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`
 - [Sessions](#sessions): `GET/POST /projects/{id}/sessions`, `GET/PATCH/DELETE /sessions/{id}`
 - [Messages and tasks](#messages-and-tasks): `GET /sessions/{id}/messages`, `POST /sessions/{id}/prompt`, `POST /sessions/{id}/stop`, `POST /sessions/{id}/steer`, `POST /sessions/{id}/approval`
@@ -246,6 +246,22 @@ value is left out) and runs it in the project folder as a `run_command`, so appr
 the command guard all apply. The approval request then has `name: "run_command"`, the expanded command in `arguments`
 and `via_tool: "git_log"`. Custom tools aren't offered in plain chats. `400` for an invalid tool (bad name, a built-in
 name, no description or command, a parameter the command doesn't use), `409` if the name is taken.
+
+### `POST /tools/import`
+
+Adds several tools of the user's own at once, from a file shared by someone or exported on another computer.
+
+```json
+{ "tools": [{ "name": "git_log", "description": "…", "command": "git log --oneline -n {count}", "parameters": [] }] }
+```
+
+Every imported tool comes in turned off (`enabled` in the request is ignored), so nothing runs until the user has read
+its command and turned it on. A tool with the name of an existing one replaces it. All or nothing: `400` if any tool is
+invalid, if two have the same name or if the list is empty. Answers with the same body as `GET /tools`, plus
+`imported`, the names added.
+
+The app's export file is `{"kind": "relay-tools", "version": 1, "shell": "powershell.exe", "exported_at": "…",
+"tools": [...]}`, with each tool as above minus `enabled`. The app also reads a bare list of tools or a single tool.
 
 ## Projects
 

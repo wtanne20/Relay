@@ -181,6 +181,10 @@ export class RelayClient {
   updateTool(name: string, tool: CustomTool) {
     return this.request<ToolsResponse>('PUT', `/tools/${encodeURIComponent(name)}`, tool);
   }
+  /** Adds the tools turned off; one with an existing name replaces it. */
+  importTools(tools: CustomTool[]) {
+    return this.request<ToolsResponse & { imported: string[] }>('POST', '/tools/import', { tools });
+  }
   deleteTool(name: string) {
     return this.request<ToolsResponse>('DELETE', `/tools/${encodeURIComponent(name)}`);
   }

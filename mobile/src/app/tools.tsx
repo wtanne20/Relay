@@ -20,6 +20,7 @@ import { Banner, Button, Field, Icon, IconButton, type IconName } from '../compo
 import { describeError } from '../lib/api';
 import { useClient } from '../lib/connection';
 import { usePageStyle } from '../lib/layout';
+import { parseToolFile, pickToolFile, saveToolFile, toolFile, type ParsedToolFile } from '../lib/toolFile';
 import type { BuiltinTool, CustomTool, ToolDefinition, ToolsResponse } from '../lib/types';
 
 const TOOL_ICONS: Record<string, IconName> = {
@@ -364,6 +365,122 @@ function ToolEditor({
 }
 
 /**
+ * Shows every tool in a file, with its full command, before any of it is
+ * added. Imported tools come in turned off: the user turns each one on
+ * once they've read what it runs.
+ */
+function ImportReview({
+  file,
+  existing,
+  shell,
+  onClose,
+  onImport,
+}: {
+  file: ParsedToolFile;
+  /** Names of the user's current tools. */
+  existing: string[];
+  shell: string;
+  onClose: () => void;
+  onImport: (tools: CustomTool[]) => Promise<void>;
+}) {
+  const [picked, setPicked] = useState<boolean[]>(() => file.tools.map((t) => !existing.includes(t.name)));
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const chosen = file.tools.filter((_, i) => picked[i]);
+  const otherShell = file.shell && shellName(file.shell) !== shellName(shell) ? file.shell : null;
+
+  const go = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onImport(chosen);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet visible onClose={onClose} title="Review tools to import">
+      <ScrollView style={styles.sheetScroll} contentContainerStyle={styles.sheetBody}>
+        <Text style={[type.bodyMedium, styles.muted]}>
+          These tools run commands on this computer. Read each command before you import it. They come in turned off,
+          so nothing runs until you turn a tool on.
+        </Text>
+        {otherShell ? (
+          <Banner
+            kind="warning"
+            message={`These were written for ${shellName(otherShell)}, but commands here run in ${shellName(shell)}. They may need changes to work.`}
+          />
+        ) : null}
+        {file.tools.map((t, i) => {
+          const replaces = existing.includes(t.name);
+          return (
+            <View key={i} style={styles.importCard}>
+              <Pressable
+                onPress={() => setPicked((p) => p.map((v, j) => (j === i ? !v : v)))}
+                style={styles.importHead}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: picked[i] }}
+                accessibilityLabel={`Import ${t.name || 'unnamed tool'}`}
+              >
+                <Icon
+                  name={picked[i] ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                  size={22}
+                  color={picked[i] ? m3.primary : m3.outline}
+                />
+                <Text style={[type.bodyLarge, styles.codeTitle, styles.grow]}>{t.name || '(no name)'}</Text>
+              </Pressable>
+              {replaces ? (
+                <Text style={[type.bodySmall, styles.warn]}>
+                  You already have a tool called {t.name}. Importing this one replaces it.
+                </Text>
+              ) : null}
+              {t.description ? <Text style={type.bodyMedium}>{t.description}</Text> : null}
+              <View style={styles.previewBox}>
+                <Text style={[type.labelMedium, styles.muted]}>Runs</Text>
+                <Text selectable style={styles.previewText}>
+                  {t.command}
+                </Text>
+              </View>
+              {t.parameters.length ? (
+                <View style={styles.params}>
+                  {t.parameters.map((p, j) => (
+                    <View key={j} style={styles.paramLine}>
+                      <Text style={styles.paramName}>
+                        {`{${p.name}}`}
+                        {p.required ? '' : '?'}
+                      </Text>
+                      <Text style={[type.bodySmall, styles.grow]}>{p.description}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              {t.timeout_seconds ? (
+                <Text style={[type.bodySmall, styles.muted]}>Stops after {t.timeout_seconds} s.</Text>
+              ) : null}
+            </View>
+          );
+        })}
+        {error ? <Banner message={error} /> : null}
+      </ScrollView>
+      <View style={styles.sheetButtons}>
+        <View style={styles.grow} />
+        <Button title="Cancel" variant="text" onPress={onClose} />
+        <Button
+          title={chosen.length === 1 ? 'Import 1 tool' : `Import ${chosen.length} tools`}
+          icon="tray-arrow-down"
+          onPress={go}
+          loading={saving}
+          disabled={!chosen.length || saving}
+        />
+      </View>
+    </Sheet>
+  );
+}
+
+/**
  * Every tool the agent can use: the built-in ones (turn them on or off and
  * see what the agent is told about each) and tools of your own.
  */
@@ -375,6 +492,8 @@ export default function ToolsScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   // The open editor: null = closed; editing = the tool's current name.
   const [editor, setEditor] = useState<{ tool: CustomTool; editing: string | null; key: number } | null>(null);
+  const [importing, setImporting] = useState<ParsedToolFile | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -425,6 +544,38 @@ export default function ToolsScreen() {
     setEditor(null);
   };
 
+  const exportTools = async () => {
+    if (!data?.custom.length) return;
+    try {
+      if (await saveToolFile(toolFile(data.custom, data.shell))) {
+        const n = data.custom.length;
+        setNotice(`Exported ${n === 1 ? '1 tool' : `${n} tools`} to relay-tools.json.`);
+      }
+    } catch (e) {
+      alert('Could not export your tools', describeError(e));
+    }
+  };
+
+  const importFile = async () => {
+    setNotice(null);
+    try {
+      const text = await pickToolFile();
+      if (text != null) setImporting(parseToolFile(text));
+    } catch (e) {
+      alert('Could not read that file', describeError(e));
+    }
+  };
+
+  const doImport = async (tools: CustomTool[]) => {
+    const next = await client.importTools(tools);
+    setData(next);
+    setImporting(null);
+    const n = next.imported.length;
+    setNotice(
+      `Imported ${n === 1 ? '1 tool' : `${n} tools`}, turned off. Turn each one on once you're happy with what it runs.`,
+    );
+  };
+
   const remove = () => {
     const name = editor?.editing;
     if (!name) return;
@@ -453,6 +604,7 @@ export default function ToolsScreen() {
           command with a few values the agent fills in.
         </Text>
         {error ? <Banner message={error} actionLabel="Retry" onAction={load} /> : null}
+        {notice ? <Banner kind="info" message={notice} actionLabel="OK" onAction={() => setNotice(null)} /> : null}
 
         <SectionTitle title="Your tools" />
         <Group>
@@ -478,6 +630,10 @@ export default function ToolsScreen() {
           {data ? (
             <View style={styles.addRow}>
               <Button title="Add a tool" icon="plus" variant="tonal" onPress={() => open(EMPTY_TOOL, null)} />
+              <Button title="Import" icon="tray-arrow-down" variant="text" onPress={importFile} />
+              {data.custom.length ? (
+                <Button title="Export" icon="tray-arrow-up" variant="text" onPress={exportTools} />
+              ) : null}
             </View>
           ) : null}
         </Group>
@@ -516,6 +672,15 @@ export default function ToolsScreen() {
           onDelete={remove}
         />
       ) : null}
+      {importing && data ? (
+        <ImportReview
+          file={importing}
+          existing={data.custom.map((t) => t.name)}
+          shell={data.shell}
+          onClose={() => setImporting(null)}
+          onImport={doImport}
+        />
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -545,7 +710,15 @@ const styles = StyleSheet.create({
   code: { fontFamily: mono, fontSize: 13, color: m3.onSurfaceVariant },
   codeTitle: { fontFamily: mono },
   commandLine: { marginTop: 2, color: m3.outline },
-  addRow: { flexDirection: 'row', paddingHorizontal: space.lg, paddingVertical: space.md },
+  addRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.md },
+  importCard: {
+    borderWidth: 1,
+    borderColor: m3.outlineVariant,
+    borderRadius: radius.lg,
+    padding: space.md,
+    gap: space.sm,
+  },
+  importHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   details: { paddingLeft: 56, paddingRight: space.lg, paddingBottom: space.lg, gap: space.sm },
   def: {
     backgroundColor: m3.surfaceContainer,

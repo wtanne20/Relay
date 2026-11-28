@@ -2440,3 +2440,62 @@ async fn custom_tools_are_added_edited_and_run_as_quoted_commands() {
     assert_eq!(v["custom"], json!([]));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn imported_tools_come_in_turned_off() {
+    let h = Harness::start().await;
+    let mine = json!({
+        "name": "say",
+        "description": "Repeat some text back.",
+        "command": "echo {text}",
+        "parameters": [{"name": "text", "description": "What to say", "required": true}],
+    });
+    let (st, _) = h.post("/tools", mine).await;
+    assert_eq!(st, 201);
+
+    // One invalid tool and none are added.
+    let (st, v) = h
+        .post(
+            "/tools/import",
+            json!({"tools": [
+                {"name": "list_files", "description": "List files", "command": "ls", "enabled": true},
+                {"name": "run_command", "description": "x", "command": "echo"},
+            ]}),
+        )
+        .await;
+    assert_eq!(st, 400, "{v}");
+    let (st, _) = h.post("/tools/import", json!({"tools": []})).await;
+    assert_eq!(st, 400);
+    let (st, _) = h
+        .post(
+            "/tools/import",
+            json!({"tools": [
+                {"name": "a", "description": "x", "command": "ls"},
+                {"name": "a", "description": "y", "command": "ls"},
+            ]}),
+        )
+        .await;
+    assert_eq!(st, 400);
+    assert_eq!(h.get("/tools").await["custom"].as_array().map(Vec::len), Some(1));
+
+    // A new tool is added and one with the same name replaces it, all off.
+    let (st, v) = h
+        .post(
+            "/tools/import",
+            json!({"tools": [
+                {"name": "list_files", "description": "List files", "command": "ls", "enabled": true},
+                {"name": "say", "description": "Say it louder.", "command": "echo {text}!",
+                 "parameters": [{"name": "text", "description": "What", "required": true}]},
+            ]}),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["imported"], json!(["list_files", "say"]));
+    let custom = v["custom"].as_array().expect("custom");
+    assert_eq!(custom.len(), 2);
+    assert_eq!(custom[0]["name"], "say");
+    assert_eq!(custom[0]["command"], "echo {text}!");
+    assert_eq!(custom[1]["name"], "list_files");
+    assert!(custom.iter().all(|t| t["enabled"] == false), "{v}");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
