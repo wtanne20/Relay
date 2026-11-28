@@ -2250,3 +2250,126 @@ async fn messages_sent_while_the_agent_works_steer_it() {
     h.wait_queue_idle().await;
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test]
+async fn custom_tools_are_added_edited_and_run_as_quoted_commands() {
+    let h = Harness::start().await;
+    let tools = h.get("/tools").await;
+    assert_eq!(tools["builtin"].as_array().map(Vec::len), Some(8));
+    assert_eq!(tools["custom"], json!([]));
+    let run = &tools["builtin"].as_array().expect("builtin")[4];
+    assert_eq!(run["name"], "run_command");
+    assert_eq!(run["definitions"][0]["function"]["name"], "run_command");
+    assert_eq!(
+        tools["builtin"][7]["definitions"].as_array().map(Vec::len),
+        Some(2),
+        "search_documents comes with read_document"
+    );
+
+    let tool = json!({
+        "name": "say",
+        "description": "Repeat some text back.",
+        "command": "echo {text}",
+        "parameters": [{"name": "text", "description": "What to say", "required": true}],
+    });
+    for bad in [
+        json!({"name": "Say It", "description": "x", "command": "echo"}),
+        json!({"name": "run_command", "description": "x", "command": "echo"}),
+        json!({"name": "say", "description": "", "command": "echo"}),
+        json!({"name": "say", "description": "x", "command": "echo",
+               "parameters": [{"name": "text", "description": "", "required": true}]}),
+    ] {
+        let (st, v) = h.post("/tools", bad.clone()).await;
+        assert_eq!(st, 400, "{bad} -> {v}");
+    }
+    let (st, v) = h.post("/tools", tool.clone()).await;
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["custom"][0]["enabled"], true);
+    let (st, _) = h.post("/tools", tool.clone()).await;
+    assert_eq!(st, 409);
+    let saved = std::fs::read_to_string(h.dir.join("data/config.toml")).expect("config");
+    assert!(saved.contains("[[custom_tools]]"), "{saved}");
+
+    // Rename it, then the old name is gone.
+    let mut renamed = tool.clone();
+    renamed["name"] = json!("say_back");
+    let (st, v) = h
+        .req(reqwest::Method::PUT, "/tools/say", Some(renamed.clone()))
+        .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["custom"][0]["name"], "say_back");
+    let (st, _) = h
+        .req(reqwest::Method::PUT, "/tools/say", Some(renamed.clone()))
+        .await;
+    assert_eq!(st, 404);
+
+    // The agent runs it as a command, asking first, with the value quoted.
+    let proj_dir = h.dir.join("custom-tools");
+    std::fs::create_dir_all(&proj_dir).expect("mkdir");
+    let (_, v) = h
+        .post("/projects", json!({"path": proj_dir.to_string_lossy()}))
+        .await;
+    let pid = v["project"]["id"].as_str().expect("id").to_string();
+    let (st, _) = h
+        .req(
+            reqwest::Method::PATCH,
+            "/settings",
+            Some(json!({"agent": {"approval": "commands"}})),
+        )
+        .await;
+    assert_eq!(st, 200);
+    let (_, v) = h.post(&format!("/projects/{pid}/sessions"), json!({})).await;
+    let sid = v["session"]["id"].as_str().expect("id").to_string();
+    let mut ws = h.ws(&sid).await;
+    assert_eq!(ws.next().await["type"], "hello");
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:say_back {"text": "hi; echo pwned"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let req = ws.until_type("approval_request").await;
+    assert_eq!(req["approval"]["name"], "run_command");
+    assert_eq!(req["approval"]["via_tool"], "say_back");
+    let args: Value =
+        serde_json::from_str(req["approval"]["arguments"].as_str().expect("args")).expect("json");
+    assert_eq!(args["command"], "echo 'hi; echo pwned'");
+    let call_id = req["approval"]["tool_call_id"].as_str().expect("id").to_string();
+    let (st, v) = h
+        .post(
+            &format!("/sessions/{sid}/approval"),
+            json!({"tool_call_id": call_id, "decision": "approve"}),
+        )
+        .await;
+    assert_eq!(st, 200, "{v}");
+    let result = ws.until_type("tool_result").await;
+    assert_eq!(result["name"], "say_back");
+    let out = result["content"].as_str().unwrap_or("");
+    assert!(out.contains("hi; echo pwned"), "{out}");
+    assert!(!out.contains("\npwned"), "{out}");
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    // Turned off, the agent can't use it.
+    let mut off = renamed.clone();
+    off["enabled"] = json!(false);
+    let (st, _) = h
+        .req(reqwest::Method::PUT, "/tools/say_back", Some(off))
+        .await;
+    assert_eq!(st, 200);
+    let (st, _) = h
+        .post(
+            &format!("/sessions/{sid}/prompt"),
+            json!({"content": r#"tool:say_back {"text": "x"}"#}),
+        )
+        .await;
+    assert_eq!(st, 202);
+    let result = ws.until_type("tool_result").await;
+    assert!(result["content"].as_str().unwrap_or("").contains("turned off"));
+    ws.until_status(&["done", "error", "stopped"]).await;
+
+    let (st, v) = h.req(reqwest::Method::DELETE, "/tools/say_back", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(v["custom"], json!([]));
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
